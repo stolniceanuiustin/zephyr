@@ -1,0 +1,111 @@
+/*
+ * Copyright (c) 2026 Analog Devices, Inc.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+/dts-v1/;
+#include <xilinx/zynq7000.dtsi>
+#include <zephyr/dt-bindings/gpio/gpio.h>
+#include <zephyr/dt-bindings/input/input-event-codes.h>
+#include <zephyr/dt-bindings/ethernet/xlnx_gem.h>
+
+#include "zedboard-pinctrl.dtsi"
+
+/ {
+	model = "Avnet ZedBoard";
+	compatible = "avnet,zedboard", "xlnx,zynq-7000";
+
+	#address-cells = <1>;
+	#size-cells = <1>;
+
+	chosen {
+		zephyr,sram = &sram0;
+		zephyr,console = &uart1;
+		zephyr,shell-uart = &uart1;
+		zephyr,ocm = &ocm_high;
+	};
+
+	aliases {
+		led0 = &ld_mio;
+		sw0 = &pb1;
+		sw1 = &pb2;
+	};
+
+	cpus {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		cpu0: cpu@0 {
+			device_type = "cpu";
+			compatible = "arm,cortex-a9";
+			reg = <0>;
+		};
+
+		cpu1: cpu@1 {
+			device_type = "cpu";
+			compatible = "arm,cortex-a9";
+			reg = <1>;
+		};
+	};
+
+	/*
+	 * 512 MB DDR3. Reserve the low 1 MB so Zephyr does not overlap memory
+	 * still in use by U-Boot (relocated code/heap and leftover GEM DMA
+	 * descriptors); loading Zephyr at 0x0 was observed to corrupt GEM DMA
+	 * when booting via U-Boot. The vector table at 0x0 lives within this
+	 * reserved region. 1 MB is a conservative margin, not a hard minimum.
+	 */
+	sram0: memory@100000 {
+		compatible = "mmio-sram";
+		reg = <0x00100000 DT_SIZE_M(511)>;
+	};
+
+	leds {
+		compatible = "gpio-leds";
+
+		ld_mio: led_mio {
+			gpios = <&psgpio_bank0 7 GPIO_ACTIVE_HIGH>;
+			label = "LD_MIO";
+		};
+	};
+
+	gpio_keys {
+		compatible = "gpio-keys";
+
+		pb1: pb1 {
+			gpios = <&psgpio_bank1 18 GPIO_ACTIVE_HIGH>;
+			label = "PB1";
+			zephyr,code = <INPUT_KEY_0>;
+		};
+
+		pb2: pb2 {
+			gpios = <&psgpio_bank1 19 GPIO_ACTIVE_HIGH>;
+			label = "PB2";
+			zephyr,code = <INPUT_KEY_1>;
+		};
+	};
+};
+
+&uart1 {
+	status = "okay";
+	current-speed = <115200>;
+	clock-frequency = <50000000>;
+	pinctrl-0 = <&pinctrl_uart1_default>;
+	pinctrl-names = "default";
+};
+
+&psgpio {
+	status = "okay";
+};
+
+&gem0 {
+	status = "okay";
+	clock-frequency = <1000000000>;
+	mdc-divider = <XLNX_GEM_MDC_DIVIDER_224>;
+	local-mac-address = [00 00 00 01 02 03];
+	init-mdio-phy;
+	mdio-phy-address = <0>;
+	phy-poll-interval = <1000>;
+	link-speed = <XLNX_GEM_LINK_SPEED_100MBIT>;
+};
