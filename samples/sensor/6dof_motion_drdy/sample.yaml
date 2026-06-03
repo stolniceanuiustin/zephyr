@@ -7,3 +7,4 @@ tests:
     filter: dt_alias_exists("6dof_motion_drdy0")
     integration_platforms:
       - nrf52dk/nrf52832
+      - nucleo_f767zi
