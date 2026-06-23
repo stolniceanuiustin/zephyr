@@ -17,8 +17,6 @@
 #ifndef ZEPHYR_SOC_XLNX_ZYNQ7000_PL310_H_
 #define ZEPHYR_SOC_XLNX_ZYNQ7000_PL310_H_
 
-#include <zephyr/cache.h>
-
 /*
  * Bring up the L2C-310 with the MMU and L1 still off. Called from
  * soc_reset_hook(); see pl310.c for the full sequence.

@@ -133,16 +133,10 @@ void soc_reset_hook(void)
 	/*
 	 * Cortex-A9: enable SMP / coherency participation (ACTLR.SMP, bit 6).
 	 *
-	 * On the A9 the load/store-exclusive monitor (LDREX/STREX) for Normal
-	 * Shareable Cacheable memory -- which is how Zephyr maps its data
-	 * (MATTR_SHARED) -- and the SCU cache coherency logic only function
-	 * when ACTLR.SMP == 1. With SMP == 0 a STREX to such memory never
-	 * succeeds, so the very first atomic op (atomic_inc in the logging
-	 * init) spins forever. This is masked when the L2/outer cache is off
-	 * (shareable WB then behaves as non-cacheable and exclusives resolve
-	 * trivially), which is why the board only hangs once the PL310 is
-	 * enabled. Set it here, with caches still off, before anything atomic
-	 * runs. Harmless on a single-core boot.
+	 * LDREX/STREX on Normal Shareable Cacheable memory and the SCU cache
+	 * coherency logic both require ACTLR.SMP == 1 on the Cortex-A9. Without
+	 * it, STREX never succeeds and the first atomic op spins forever. Set it
+	 * here, with caches still off, before anything atomic runs.
 	 */
 	{
 		uint32_t actlr = __get_ACTLR();

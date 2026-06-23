@@ -10,10 +10,7 @@
  * sys_cache_* API keeps both cache levels coherent for DMA.
  */
 
-#include <zephyr/kernel.h>
-#include <zephyr/init.h>
-#include <zephyr/sys/sys_io.h>
-#include <zephyr/sys/util.h>
+#include <zephyr/arch/cpu.h>
 #include <zephyr/sys/barrier.h>
 
 #include "pl310.h"
@@ -23,8 +20,6 @@
 #define PL310_LINE_SIZE         32U
 
 /* Register offsets */
-#define PL310_CACHE_ID          0x000
-#define PL310_CACHE_TYPE        0x004
 #define PL310_CTRL              0x100
 #define PL310_AUX_CTRL          0x104
 #define PL310_TAG_RAM_CTRL      0x108
@@ -34,7 +29,6 @@
 #define PL310_INV_LINE_PA       0x770
 #define PL310_INV_WAY           0x77C
 #define PL310_CLEAN_LINE_PA     0x7B0
-#define PL310_CLEAN_WAY         0x7BC
 #define PL310_CLEAN_INV_LINE_PA 0x7F0
 #define PL310_CLEAN_INV_WAY     0x7FC
 
@@ -135,7 +129,7 @@ void soc_zynq7000_pl310_early_enable(void)
  * registers take physical addresses; the Zynq-7000 MMU is flat-mapped so
  * VA == PA for the DMA buffers these are used on.
  */
-static ALWAYS_INLINE void pl310_range(uintptr_t reg, void *addr, size_t size)
+static void pl310_range(uintptr_t reg, void *addr, size_t size)
 {
 	uintptr_t a = (uintptr_t)addr & ~(PL310_LINE_SIZE - 1U);
 	uintptr_t end = (uintptr_t)addr + size;
