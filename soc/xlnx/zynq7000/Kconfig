@@ -5,6 +5,20 @@
 
 if SOC_FAMILY_XILINX_ZYNQ7000
 
+config SOC_XILINX_PL310
+	bool "PL310 (L2C-310) outer cache"
+	default y
+	depends on DCACHE && CACHE_MANAGEMENT
+	select OUTER_CACHE
+	help
+	  Initialize the ARM L2C-310 (PL310) outer-cache controller built into
+	  the Zynq-7000 PS at 0xF8F02000 and pair every L1 data-cache
+	  maintenance operation with the matching outer-cache operation, so DMA
+	  buffers stay coherent across both cache levels.
+
+	  This selects OUTER_CACHE, which makes the Cortex-A/R cache layer call
+	  the outer-cache operations implemented by this SoC.
+
 rsource "*/Kconfig"
 
 endif # SOC_FAMILY_XILINX_ZYNQ7000

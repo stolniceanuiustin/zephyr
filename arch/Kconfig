@@ -1314,6 +1314,17 @@ config CACHE_CAN_SAY_MEM_COHERENCE
 	  safely used in multiprocessor code without explicit flush or invalidate
 	  operations.
 
+config OUTER_CACHE
+	bool
+	depends on DCACHE
+	help
+	  Selected by a SoC that has an outer (e.g. L2) cache controller sitting
+	  below the CPU-integrated cache, where the outer level is not snooped by
+	  device-side DMA. When set, the architecture cache layer pairs every L1
+	  data-cache maintenance operation with the matching outer-cache operation.
+	  The SoC must provide strong definitions of the z_arm_outer_cache_*
+	  operations declared in include/zephyr/arch/cache.h.
+
 endif # CACHE_MANAGEMENT
 
 endmenu

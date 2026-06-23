@@ -91,3 +91,20 @@ void soc_reset_hook(void)
 	sys_write32(SLCR_UNLOCK_KEY, addr + SLCR_UNLOCK);
 #endif
 }
+
+#ifdef CONFIG_SOC_XILINX_PL310
+	/* AR#54190: fix L2C RAM write-latency before enabling PL310. */
+	{
+		uint32_t l2c_ram = sys_read32(addr + SLCR_L2C_RAM);
+
+		l2c_ram &= ~SLCR_L2C_RAM_MASK;
+		l2c_ram |= SLCR_L2C_RAM_VAL;
+		sys_write32(l2c_ram, addr + SLCR_L2C_RAM);
+	}
+#endif
+#endif
+
+#ifdef CONFIG_SOC_XILINX_PL310
+	soc_zynq7000_pl310_early_enable();
+#endif
+}
