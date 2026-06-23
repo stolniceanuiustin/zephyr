@@ -102,6 +102,38 @@ int arch_dcache_flush_and_invd_all(void)
 	return 0;
 }
 
+#ifdef CONFIG_OUTER_CACHE
+/*
+ * Optional outer-cache pairing. On SoCs with an outer cache controller below
+ * the CPU-integrated L1 cache, where the outer level is not snooped by
+ * device-side DMA, every L1 maintenance op must be paired with the matching
+ * outer op, in this order:
+ *   flush (CPU -> device): L1 clean, then outer clean (push data outward)
+ *   invd  (device -> CPU): outer inv, then L1 inv      (drop stale lines)
+ *
+ * These hooks default to no-ops; a SoC with an outer cache controller provides
+ * strong definitions that override them at link time. This keeps generic
+ * Cortex-A/R code free of SoC-specific knowledge.
+ */
+__weak void z_arm_outer_cache_flush_range(void *addr, size_t size)
+{
+	ARG_UNUSED(addr);
+	ARG_UNUSED(size);
+}
+
+__weak void z_arm_outer_cache_invd_range(void *addr, size_t size)
+{
+	ARG_UNUSED(addr);
+	ARG_UNUSED(size);
+}
+
+__weak void z_arm_outer_cache_flush_and_invd_range(void *addr, size_t size)
+{
+	ARG_UNUSED(addr);
+	ARG_UNUSED(size);
+}
+#endif /* CONFIG_OUTER_CACHE */
+
 int arch_dcache_flush_range(void *start_addr, size_t size)
 {
 	size_t line_size;
@@ -117,6 +149,11 @@ int arch_dcache_flush_range(void *start_addr, size_t size)
 		addr += line_size;
 	}
 
+#ifdef CONFIG_OUTER_CACHE
+	/* Clean L1 first, then outer, so data is pushed outward. */
+	z_arm_outer_cache_flush_range(start_addr, size);
+#endif
+
 	return 0;
 }
 
@@ -127,6 +164,11 @@ int arch_dcache_invd_range(void *start_addr, size_t size)
 	uintptr_t end_addr = addr + size;
 
 	line_size = arch_dcache_line_size_get();
+
+#ifdef CONFIG_OUTER_CACHE
+	/* Invalidate outer first, then L1, so stale outer lines can't refill L1. */
+	z_arm_outer_cache_invd_range(start_addr, size);
+#endif
 
 	/*
 	 * Clean and invalidate the partial cache lines at both ends of the
@@ -172,6 +214,11 @@ int arch_dcache_flush_and_invd_range(void *start_addr, size_t size)
 		L1C_CleanInvalidateDCacheMVA((void *)addr);
 		addr += line_size;
 	}
+
+#ifdef CONFIG_OUTER_CACHE
+	/* L1 clean+inv pushes to outer; outer clean+inv then pushes data out. */
+	z_arm_outer_cache_flush_and_invd_range(start_addr, size);
+#endif
 
 	return 0;
 }
