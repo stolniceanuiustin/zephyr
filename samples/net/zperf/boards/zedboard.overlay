@@ -1,0 +1,21 @@
+/*
+ * Copyright (c) 2026 Analog Devices, Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * zperf-specific GEM tuning for the ZedBoard. Kept in the sample (not the
+ * board) so the board's default configuration is unchanged: this raises the
+ * link to 1G, widens the DMA bursts and the BD rings, and processes RX in the
+ * ISR to sustain bulk-transfer throughput.
+ */
+
+#include <zephyr/dt-bindings/ethernet/xlnx_gem.h>
+
+&gem0 {
+	link-speed = <XLNX_GEM_LINK_SPEED_1GBIT>;
+	amba-ahb-burst-length = <XLNX_GEM_AMBA_AHB_BURST_INCR16>;
+	rx-buffer-descriptors = <128>;
+	tx-buffer-descriptors = <128>;
+	rx-buffer-size = <1536>;
+	tx-buffer-size = <1536>;
+	handle-rx-in-isr;
+};
