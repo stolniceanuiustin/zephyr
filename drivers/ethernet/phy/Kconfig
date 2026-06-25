@@ -56,6 +56,13 @@ config PHY_GENERIC_FIXED_LINK
 	  when the ethernet driver requires a PHY but there is no interface to configure
 	  the PHY.
 
+config PHY_ADIN1300
+	bool "ADIN1300 PHY driver"
+	default y
+	depends on DT_HAS_ADI_ADIN1300_ENABLED
+	help
+	  Enable ADIN1300 PHY driver.
+
 config PHY_ADIN2111
 	bool "ADIN2111 PHY driver"
 	default y

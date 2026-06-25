@@ -10,6 +10,7 @@ endif()
 
 # zephyr-keep-sorted-start
 zephyr_library_sources_ifdef(CONFIG_MDIO_ADIN2111 mdio_adin2111.c)
+zephyr_library_sources_ifdef(CONFIG_MDIO_ADIN6310 mdio_adin6310.c)
 zephyr_library_sources_ifdef(CONFIG_MDIO_ATMEL_SAM mdio_sam.c)
 zephyr_library_sources_ifdef(CONFIG_MDIO_DWCXGMAC mdio_dwcxgmac.c)
 zephyr_library_sources_ifdef(CONFIG_MDIO_DWMAC mdio_dwmac.c)

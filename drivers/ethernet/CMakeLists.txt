@@ -74,3 +74,28 @@ zephyr_library_sources_ifdef(CONFIG_ETH_XLNX_GEM phy_xlnx_gem.c)
 zephyr_library_sources_ifdef(CONFIG_ETH_XMC4XXX eth_xmc4xxx.c)
 zephyr_library_sources_ifdef(CONFIG_SLIP_TAP eth_slip_tap.c)
 # zephyr-keep-sorted-stop
+
+if(CONFIG_ETH_ADIN6310)
+  FILE(GLOB lib_adin6310_srcs ${LIB_ADIN6310_PATH}/src/ses-proxy-srv/src/*.c
+			      ${LIB_ADIN6310_PATH}/src/ses-route-srv/src/*.c
+			      ${LIB_ADIN6310_PATH}/src/ses-tsn-api-srv/src/*.c
+			      ${LIB_ADIN6310_PATH}/src/smp-stk/src/*.c
+  )
+
+  if(CONFIG_ETH_ADIN6310_DISABLE_FW_UPDATE)
+    add_compile_definitions(DISABLE_AUTOMATIC_FW_UPDATE)
+    list(REMOVE_ITEM lib_adin6310_srcs ${LIB_ADIN6310_PATH}/src/ses-tsn-api-srv/src/SES_bootloader.c
+                                      ${LIB_ADIN6310_PATH}/src/ses-tsn-api-srv/src/SES_bootloader_dev.c
+                                      ${LIB_ADIN6310_PATH}/src/ses-tsn-api-srv/src/SES_firmware_dev.c
+                                      ${LIB_ADIN6310_PATH}/src/ses-tsn-api-srv/src/SES_firmware.c)
+  endif()
+
+  zephyr_library_sources(eth_adin6310.c)
+  zephyr_library_sources(${lib_adin6310_srcs})
+  zephyr_include_directories(${LIB_ADIN6310_PATH}/src/ses-proxy-srv/inc
+			     ${LIB_ADIN6310_PATH}/src/ses-route-srv/inc
+			     ${LIB_ADIN6310_PATH}/src/ses-tsn-api-srv/inc
+			     ${LIB_ADIN6310_PATH}/src/smp-stk/inc
+			     ${LIB_ADIN6310_PATH}/src/tsn-model-srv/inc
+  )
+endif()
