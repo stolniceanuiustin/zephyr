@@ -4,14 +4,13 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-#ifndef ZEPHYR_DRIVERS_SENSOR_LTC4296_LTC4296_H_
-#define ZEPHYR_DRIVERS_SENSOR_LTC4296_LTC4296_H_
+#ifndef ZEPHYR_DRIVERS_MISC_LTC4296_LTC4296_H_
+#define ZEPHYR_DRIVERS_MISC_LTC4296_LTC4296_H_
 
 #include <zephyr/kernel.h>
 #include <zephyr/types.h>
 #include <zephyr/device.h>
 #include <zephyr/drivers/gpio.h>
-#include <zephyr/drivers/sensor.h>
 #include <zephyr/drivers/spi.h>
 
 /*
@@ -196,4 +195,7 @@ struct ltc4296_dev_config {
 	struct ltc4296_port_config port_config[LTC4296_MAX_PORTS];
 };
 
-#endif /* ZEPHYR_DRIVERS_SENSOR_LTC4296_LTC4296_H_ */
+struct ltc4296_driver_api {
+};
+
+#endif /* ZEPHYR_DRIVERS_MISC_LTC4296_LTC4296_H_ */

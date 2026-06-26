@@ -128,22 +128,6 @@ int ltc4296_reset(const struct device *dev)
 	return 0;
 }
 
-static int ltc4296_sample_fetch(const struct device *dev, enum sensor_channel chan)
-{
-	return 0;
-}
-
-static int ltc4296_channel_get(const struct device *dev, enum sensor_channel chan,
-			       struct sensor_value *val)
-{
-	return 0;
-}
-
-static int ltc4296_attr_set(const struct device *dev, enum sensor_channel chan,
-			    enum sensor_attribute attr, const struct sensor_value *val)
-{
-	return 0;
-}
 
 int ltc4296_get_port_addr(enum ltc4296_port port_no, enum ltc4296_port_reg_offset_e port_offset,
 			  uint8_t *port_addr)
@@ -423,7 +407,7 @@ int ltc4296_read_port_adc(const struct device *dev, enum ltc4296_port port_no, i
 	int ret;
 	uint8_t port_addr = 0;
 	uint16_t val16;
-	struct ltc4296_dev_config *config = dev->config;
+	const struct ltc4296_dev_config *config = dev->config;
 
 	ret = ltc4296_get_port_addr(port_no, LTC_PORT_ADCDAT, &port_addr);
 	if (ret != 0) {
@@ -524,7 +508,7 @@ int ltc4296_set_port_mfvs(const struct device *dev, enum ltc4296_port port_no)
 	uint8_t port_addr = 0;
 	uint16_t val16 = 0;
 	int mfvs_threshold = 0, val = 0;
-	struct ltc4296_dev_config *config = dev->config;
+	const struct ltc4296_dev_config *config = dev->config;
 
 	ret = ltc4296_get_port_addr(port_no, LTC_PORT_ADCCFG, &port_addr);
 	if (ret != 0) {
@@ -781,7 +765,6 @@ int ltc4296_chk_port_events(const struct device *dev, enum ltc4296_port ltc4296_
 int ltc4296_do_apl(const struct device *dev, enum ltc4296_board_class board_class,
 		   enum ltc4296_port ltc4296_port, struct ltc4296_vi *ltc4296_vi)
 {
-	struct ltc4296_dev_config *config = dev->config;
 	int ret = ADI_LTC_DISCONTINUE_APL;
 	enum ltc4296_port_status port_status;
 	enum ltc4296_pse_status port_pwr_status;
@@ -897,7 +880,6 @@ int ltc4296_do_spoe_sccp(const struct device *dev, enum ltc4296_board_class boar
 			 enum ltc4296_port ltc4296_port, struct ltc4296_vi *ltc4296_vi)
 {
 	int ret;
-	struct ltc4296_dev_config *config = dev->config;
 	enum ltc4296_port_status port_chk;
 	enum ltc4296_pse_status pse_pwr_status;
 	int port_vout_mv, port_vin_mv, port_iout_ma;
@@ -1142,7 +1124,7 @@ int ltc4296_pwr_test(const struct device *dev, enum ltc4296_board_class board_cl
 int ltc4296_retry_spoe_sccp(const struct device *dev, enum ltc4296_port ltc4296_port,
 			    struct ltc4296_vi *ltc4296_vi)
 {
-	struct ltc4296_dev_config *config = dev->config;
+	const struct ltc4296_dev_config *config = dev->config;
 	uint32_t config_power_class;
 
 	config_power_class = config->port_config[ltc4296_port].power_class - LTC4296_PSE_SCCP_CLASS_10;
@@ -1152,7 +1134,7 @@ int ltc4296_retry_spoe_sccp(const struct device *dev, enum ltc4296_port ltc4296_
 
 static int ltc4296_probe(const struct device *dev)
 {
-	struct ltc4296_dev_config *config = dev->config;
+	const struct ltc4296_dev_config *config = dev->config;
 	struct ltc4296_vi ltc4296_vi;
 	uint8_t power_class;
 	uint16_t value;
@@ -1260,10 +1242,7 @@ static int ltc4296_init(const struct device *dev)
 	return ltc4296_probe(dev);
 }
 
-static const struct sensor_driver_api ltc4296_driver_api = {
-	.attr_set = ltc4296_attr_set,
-	.sample_fetch = ltc4296_sample_fetch,
-	.channel_get  = ltc4296_channel_get,
+static const struct ltc4296_driver_api ltc4296_driver_api = {
 };
 
 #define LTC4296_PORT_INIT(parent, inst)											\
@@ -1280,15 +1259,15 @@ static const struct sensor_driver_api ltc4296_driver_api = {
 	static const struct ltc4296_dev_config ltc4296_config_##inst = {                           \
 		.bus = SPI_DT_SPEC_INST_GET(                                                       \
 			inst,                                                                      \
-			(SPI_WORD_SET(8) | SPI_OP_MODE_MASTER | SPI_TRANSFER_MSB), 0),              \
+			(SPI_WORD_SET(8) | SPI_OP_MODE_MASTER | SPI_TRANSFER_MSB)),              \
 		.port_config[0] = LTC4296_PORT_INIT(inst, port0),				  \
 		.port_config[1] = LTC4296_PORT_INIT(inst, port1),				  \
 		.port_config[2] = LTC4296_PORT_INIT(inst, port2),				  \
 		.port_config[3] = LTC4296_PORT_INIT(inst, port3),				  \
 	};                                                                                         \
                                                                                                    \
-	SENSOR_DEVICE_DT_INST_DEFINE(inst, ltc4296_init, NULL, &ltc4296_data_##inst,               \
-				     &ltc4296_config_##inst, POST_KERNEL,                          \
-				     CONFIG_SENSOR_INIT_PRIORITY, &ltc4296_driver_api);
+	DEVICE_DT_INST_DEFINE(inst, ltc4296_init, NULL, &ltc4296_data_##inst,                    \
+			      &ltc4296_config_##inst, POST_KERNEL,                             \
+			      CONFIG_KERNEL_INIT_PRIORITY_DEVICE, &ltc4296_driver_api);
 
 DT_INST_FOREACH_STATUS_OKAY(LTC4296_DEFINE)
