@@ -10,3 +10,11 @@ menuconfig LTC4296
 	select SPI
 	help
 	  Enable the driver for Analog Devices LTC4296 PSE Controller.
+
+if LTC4296
+
+module = LTC4296
+module-str = ltc4296
+source "subsys/logging/Kconfig.template.log_config"
+
+endif # LTC4296

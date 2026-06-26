@@ -9,7 +9,7 @@
 #include <adi/max32/max32690-m4.dtsi>
 #include <adi/max32/max32690-pinctrl.dtsi>
 #include <zephyr/dt-bindings/gpio/adi-max32-gpio.h>
-#include <zephyr/dt-bindings/sensor/ltc4296.h>
+#include <zephyr/dt-bindings/misc/ltc4296.h>
 
 / {
 	model = "Analog Devices ADIN6310 Ethernet Switch";

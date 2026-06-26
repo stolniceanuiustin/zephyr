@@ -4,8 +4,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-#ifndef ZEPHYR_INCLUDE_DRIVERS_SENSOR_LTC4296_H_
-#define ZEPHYR_INCLUDE_DRIVERS_SENSOR_LTC4296_H_
+#ifndef ZEPHYR_INCLUDE_DRIVERS_MISC_LTC4296_H_
+#define ZEPHYR_INCLUDE_DRIVERS_MISC_LTC4296_H_
 
 #include <zephyr/device.h>
 

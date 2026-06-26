@@ -13,14 +13,14 @@
 #include <zephyr/sys/util.h>
 #include <math.h>
 
-#include <zephyr/drivers/sensor/ltc4296.h>
-#include <zephyr/dt-bindings/sensor/ltc4296.h>
+#include <zephyr/drivers/misc/ltc4296.h>
+#include <zephyr/dt-bindings/misc/ltc4296.h>
 
 #include "ltc4296.h"
 #include "ltc4296_sccp.h"
 
 #include <zephyr/logging/log.h>
-LOG_MODULE_REGISTER(LTC4296, CONFIG_SENSOR_LOG_LEVEL);
+LOG_MODULE_REGISTER(LTC4296, CONFIG_LTC4296_LOG_LEVEL);
 
 int ltc4296_spoe_vol_range_mv[12][2] = { {20000,30000},  /* SPoE Class 10         */
 						{20000,30000},  /* SPoE Class 11         */

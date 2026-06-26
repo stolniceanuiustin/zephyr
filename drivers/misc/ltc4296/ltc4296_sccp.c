@@ -1,10 +1,10 @@
 #include <zephyr/kernel.h>
-#include <zephyr/drivers/sensor/ltc4296.h>
+#include <zephyr/drivers/misc/ltc4296.h>
 #include "ltc4296.h"
 #include "ltc4296_sccp.h"
 
 #include <zephyr/logging/log.h>
-LOG_MODULE_REGISTER(LTC4296_SCCP, CONFIG_SENSOR_LOG_LEVEL);
+LOG_MODULE_REGISTER(LTC4296_SCCP, CONFIG_LTC4296_LOG_LEVEL);
 
 #define SCCP_CLASS_SIZE 16
 

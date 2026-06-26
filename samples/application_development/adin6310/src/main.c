@@ -14,7 +14,7 @@ LOG_MODULE_REGISTER(eth_adin6310, CONFIG_LOG_DEFAULT_LEVEL);
 #include <zephyr/net/net_config.h>
 #include <zephyr/drivers/gpio.h>
 #include <zephyr/drivers/spi.h>
-#include <zephyr/drivers/sensor/ltc4296.h>
+#include <zephyr/drivers/misc/ltc4296.h>
 
 #include "SMP_stack_api.h"
 #include "SES_port_api.h"
