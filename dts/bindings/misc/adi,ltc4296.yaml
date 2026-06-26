@@ -1,0 +1,25 @@
+description: LTC4296 PSE Controller
+
+compatible: "adi,ltc4296"
+
+include: spi-device.yaml
+
+child-binding:
+  description: LTC4296 PSE Controller port properties
+  properties:
+    sccpo-gpios:
+      type: phandle-array
+      description: |
+        GPIO used to drive the SCCP output signal to the PD.
+    sccpi-gpios:
+      type: phandle-array
+      description: |
+        GPIO used to sense the SCCP input signal from the PD.
+    adi,power-class:
+      type: int
+      description: |
+        Specifies the SPE's maximum power class.
+    adi,hs-resistor:
+      type: int
+      description: |
+        Specifies the SPE's high-side current sense resistor value.
