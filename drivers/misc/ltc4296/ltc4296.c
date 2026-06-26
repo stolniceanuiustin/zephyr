@@ -322,6 +322,9 @@ int ltc4296_is_port_disabled(const struct device *dev, enum ltc4296_port port_no
 	}
 
 	ret = ltc4296_reg_read(dev, port_addr, &port_status);
+	if (ret != 0) {
+		return ret;
+	}
 	if( (port_status & LTC4296_PSE_STATUS_MSK) == LTC_PSE_STATUS_DISABLED) {
 		*port_chk = LTC_PORT_DISABLED;
 	}
@@ -974,13 +977,25 @@ int ltc4296_do_spoe_sccp(const struct device *dev, enum ltc4296_board_class boar
 					ret = ltc4296_is_pd_compatible(dev, board_class, sccp_response_data, &pd_class);
 					if(ret == ADI_LTC_SCCP_PD_CLASS_COMPATIBLE) {
 						ret = ltc4296_set_port_mfvs(dev, ltc4296_port);
+						if (ret != 0) {
+							return ret;
+						}
 						ret = ltc4296_set_port_pwr(dev, ltc4296_port);
+						if (ret != 0) {
+							return ret;
+						}
 
 						k_sleep(K_MSEC(5)); /* Delay of 5ms */
 
 						ret = ltc4296_port_pwr_available(dev, ltc4296_port);
+						if (ret != 0) {
+							return ret;
+						}
 						ret = ltc4296_set_gadc_vout(dev, ltc4296_port);
-						printf("LTC4296-1 Port%d SCCP completed, PD class %d detected, PSE output enabled \n",ltc4296_port, pd_class);
+						if (ret != 0) {
+							return ret;
+						}
+						LOG_INF("LTC4296-1 Port%d SCCP completed, PD class %d detected, PSE output enabled \n",ltc4296_port, pd_class);
 						return ADI_LTC_SCCP_COMPLETE;
 					} else { /* ADIN_LTC_SCCP_PD_OUTOFRANGE or ADIN_LTC_SCCP_PD_NOT_COMPATIBLE */
 						ret = ltc4296_port_disable(dev, ltc4296_port);
@@ -1209,14 +1224,14 @@ static int ltc4296_init(const struct device *dev)
 {
 	const struct ltc4296_dev_config *cfg = dev->config;
 
-	printf("LTC4296 probe!\n");
+	LOG_INF("LTC4296 probe!\n");
 
 	if (!spi_is_ready_dt(&cfg->bus)) {
 		//LOG_ERR("SPI bus %s not ready", cfg->bus.bus->name);
 		return -ENODEV;
 	}
 
-	for (int i = 0; i < 4; i++){
+	for (int i = 0; i < LTC4296_MAX_PORTS; i++){
 		if (cfg->port_config[i].sccpo_gpio.port) {
 			if (!gpio_is_ready_dt(&cfg->port_config[i].sccpo_gpio)) {
 				//LOG_ERR("GPIO device not ready");
@@ -1227,7 +1242,7 @@ static int ltc4296_init(const struct device *dev)
 		}
 	}
 
-	for (int i = 0; i < 4; i++){
+	for (int i = 0; i < LTC4296_MAX_PORTS; i++){
 		if (cfg->port_config[i].sccpi_gpio.port) {
 			if (!gpio_is_ready_dt(&cfg->port_config[i].sccpi_gpio)) {
 				//LOG_ERR("GPIO device not ready");
@@ -1244,13 +1259,18 @@ static int ltc4296_init(const struct device *dev)
 static const struct ltc4296_driver_api ltc4296_driver_api = {
 };
 
-#define LTC4296_PORT_INIT(parent, inst)											\
+#define LTC4296_PORT_INIT_EXISTS(node)										\
 	{														\
-		.sccpo_gpio = GPIO_DT_SPEC_GET_BY_IDX(DT_CHILD(DT_DRV_INST(parent), inst), sccpo_gpios, 0),		\
-		.sccpi_gpio = GPIO_DT_SPEC_GET_BY_IDX(DT_CHILD(DT_DRV_INST(parent), inst), sccpi_gpios, 0),		\
-		.power_class = DT_PROP_OR(DT_CHILD(DT_DRV_INST(parent), inst), adi_power_class, 0),		\
-		.hs_resistor = DT_PROP_OR(DT_CHILD(DT_DRV_INST(parent), inst), adi_hs_resistor, 0),		\
-	}												\
+		.sccpo_gpio = GPIO_DT_SPEC_GET_BY_IDX_OR(node, sccpo_gpios, 0, {0}),				\
+		.sccpi_gpio = GPIO_DT_SPEC_GET_BY_IDX_OR(node, sccpi_gpios, 0, {0}),				\
+		.power_class = DT_PROP_OR(node, adi_power_class, 0),						\
+		.hs_resistor = DT_PROP_OR(node, adi_hs_resistor, 0),						\
+	}
+
+#define LTC4296_PORT_INIT(parent, inst)											\
+	COND_CODE_1(DT_NODE_EXISTS(DT_CHILD(DT_DRV_INST(parent), inst)),						\
+		    (LTC4296_PORT_INIT_EXISTS(DT_CHILD(DT_DRV_INST(parent), inst))),				\
+		    ({ .power_class = 0, .hs_resistor = 0 }))
 
 #define LTC4296_DEFINE(inst)                                                                       \
 	static struct ltc4296_data ltc4296_data_##inst;                                            \
@@ -1263,6 +1283,7 @@ static const struct ltc4296_driver_api ltc4296_driver_api = {
 		.port_config[1] = LTC4296_PORT_INIT(inst, port1),				  \
 		.port_config[2] = LTC4296_PORT_INIT(inst, port2),				  \
 		.port_config[3] = LTC4296_PORT_INIT(inst, port3),				  \
+		.port_config[4] = LTC4296_PORT_INIT(inst, port4),				  \
 	};                                                                                         \
                                                                                                    \
 	DEVICE_DT_INST_DEFINE(inst, ltc4296_init, NULL, &ltc4296_data_##inst,                    \
