@@ -124,7 +124,7 @@ static int adin6310_spi_write(int intfHandle, int size, void *data_p)
 							   SPI_WORD_SET(8) |
 							   SPI_OP_MODE_MASTER |
 							   SPI_TRANSFER_MSB |
-							   SPI_MODE_GET(0), 0);
+							   SPI_MODE_GET(0));
 	struct spi_buf tx_buf;
 	struct spi_buf_set tx;
 	uint8_t *txb;
@@ -168,7 +168,7 @@ int adin6310_spi_read(uint8_t *buf, uint32_t len)
 							   SPI_WORD_SET(8) |
 							   SPI_OP_MODE_MASTER |
 							   SPI_TRANSFER_MSB |
-							   SPI_MODE_GET(0), 0);
+							   SPI_MODE_GET(0));
 
 	k_mutex_lock(&spi_mutex, K_FOREVER);
 	xfer_buf_rx = k_calloc(len + 1, sizeof(xfer_buf_rx));
@@ -343,7 +343,7 @@ int32_t timesync(uint8_t mac_addr[6]) {
 	return rv;
 }
 
-int adin6310_enable_pse(struct device *ltc4296, uint8_t switch_op)
+int adin6310_enable_pse(const struct device *ltc4296, uint8_t switch_op)
 {
 	/* PoDL is disabled for switch_op == 1 */
 	if (FIELD_GET(BIT(0), switch_op) == 1)
@@ -362,7 +362,7 @@ int main(void)
 	struct k_thread thread_data;
 	struct gpio_callback cb_data;
 	struct ltc4296_vi ltc4296_voltage;
-	struct ltc4296_dev_config *ltc4296_config;
+	const struct ltc4296_dev_config *ltc4296_config;
 	uint8_t mac_addr[6] = {0x00, 0x18, 0x80, 0x03, 0x25, 0x60};
 
 	const struct device *const ltc4296_dev = DEVICE_DT_GET(DT_NODELABEL(ltc4296));
