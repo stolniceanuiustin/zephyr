@@ -1,5 +1,5 @@
-#ifndef ZEPHYR_DRIVERS_SENSOR_LTC4296_SCCP_H_
-#define ZEPHYR_DRIVERS_SENSOR_LTC4296_SCCP_H_
+#ifndef ZEPHYR_DRIVERS_MISC_LTC4296_SCCP_H_
+#define ZEPHYR_DRIVERS_MISC_LTC4296_SCCP_H_
 
 #include <stdint.h>
 
@@ -53,4 +53,4 @@ int sccp_read_write_pd(const struct device *dev, uint8_t addr, uint8_t cmd, uint
 int sccp_reset_pulse(const struct device *dev);
 int sccp_is_pd(const struct device *dev, uint8_t pse_class, uint16_t sccp_response_data, uint8_t *pd_class);
 
-#endif /* ZEPHYR_DRIVERS_SENSOR_LTC4296_SCCP_H_ */
+#endif /* ZEPHYR_DRIVERS_MISC_LTC4296_SCCP_H_ */

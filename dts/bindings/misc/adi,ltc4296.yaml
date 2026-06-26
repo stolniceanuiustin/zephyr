@@ -10,13 +10,11 @@ child-binding:
     sccpo-gpios:
       type: phandle-array
       description: |
-        The WAKEn pin is asserted to communicate with the sensor.  The
-        sensor receives this as an active-low signal.
+        GPIO used to drive the SCCP output signal to the PD.
     sccpi-gpios:
       type: phandle-array
       description: |
-        The WAKEn pin is asserted to communicate with the sensor.  The
-        sensor receives this as an active-low signal.
+        GPIO used to sense the SCCP input signal from the PD.
     adi,power-class:
       type: int
       description: |
