@@ -198,4 +198,29 @@ struct ltc4296_dev_config {
 struct ltc4296_driver_api {
 };
 
+/* SCCP timing constants (microseconds unless noted) */
+#define T_REC			320
+#define T_W1L			300
+#define T_W0L			2000
+#define T_R			250
+#define T_RSTL_NOM		9000
+#define T_MSP			2000
+#define T_WRITESLOT		2750
+#define T_READSLOT		3000
+#define T_MSR			1000
+#define T_POR_PULSE		450000
+
+/* SCCP command codes */
+#define CMD_BROADCAST_ADDR	0xCC
+#define CMD_READ_SCRATCHPAD	0xAA
+#define CMD_READ_PWR_INFO	0x77
+
+#define HIGH			1
+#define LOW			0
+
+int sccp_read_write_pd(const struct device *dev, uint8_t addr, uint8_t cmd, uint8_t *buf);
+int sccp_reset_pulse(const struct device *dev);
+int sccp_is_pd(const struct device *dev, uint8_t pse_class, uint16_t sccp_response_data,
+	       uint8_t *pd_class);
+
 #endif /* ZEPHYR_DRIVERS_MISC_LTC4296_LTC4296_H_ */

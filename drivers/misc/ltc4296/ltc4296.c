@@ -17,7 +17,6 @@
 #include <zephyr/dt-bindings/misc/ltc4296.h>
 
 #include "ltc4296.h"
-#include "ltc4296_sccp.h"
 
 #include <zephyr/logging/log.h>
 LOG_MODULE_REGISTER(LTC4296, CONFIG_LTC4296_LOG_LEVEL);
@@ -1271,3 +1270,206 @@ static const struct ltc4296_driver_api ltc4296_driver_api = {
 			      CONFIG_KERNEL_INIT_PRIORITY_DEVICE, &ltc4296_driver_api);
 
 DT_INST_FOREACH_STATUS_OKAY(LTC4296_DEFINE)
+
+/* SCCP (Single-pair Contactor Control Protocol) implementation */
+
+#define SCCP_CLASS_SIZE       16
+#define SCCP_TYPE_MASK        0xF000
+#define SCCP_CLASS_TYPE_MASK  0x0FFF
+
+static const uint8_t class_compatibility[16][16] = {
+/*         PSE class:  0  1  2  3  4  5  6  7  8  9 10 11 12 13 14 15 */
+/* PD 0  */ {1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+/* PD 1  */ {0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+/* PD 2  */ {0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+/* PD 3  */ {0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+/* PD 4  */ {0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0},
+/* PD 5  */ {0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0},
+/* PD 6  */ {0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0},
+/* PD 7  */ {0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0},
+/* PD 8  */ {0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0},
+/* PD 9  */ {0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0},
+/* PD 10 */ {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 0},
+/* PD 11 */ {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0},
+/* PD 12 */ {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0},
+/* PD 13 */ {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1},
+/* PD 14 */ {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1},
+/* PD 15 */ {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1},
+};
+
+static const uint16_t sccp_classes[SCCP_CLASS_SIZE] = {
+	0x3FE, 0x3FD, 0x3FB, 0x3F7, 0x3F7, 0x3EF,
+	0x3DF, 0x3BF, 0x37F, 0x2FF,
+	0x001, 0x002, 0x003, 0x004, 0x005, 0x006,
+};
+
+static const uint8_t sccp_types[5] = { 0xE, 0xD, 0xB, 0x7, 0xC };
+
+static uint8_t get_crc(uint8_t *buf)
+{
+	uint8_t crc = 0;
+
+	for (uint8_t byte = 0; byte < 2; byte++) {
+		for (uint8_t bit = 0; bit < 8; bit++) {
+			uint8_t x3 = (crc >> 3) & 0x01;
+			uint8_t x4 = (crc >> 4) & 0x01;
+			uint8_t x7 = (crc >> 7) & 0x01;
+			uint8_t in = (buf[byte] >> bit) & 0x01;
+
+			in ^= x7;
+			crc = (crc << 1) | in;
+			crc &= ~(0x30);
+			crc |= ((x3 ^ in) << 4);
+			crc |= ((x4 ^ in) << 5);
+		}
+	}
+	return crc;
+}
+
+static uint8_t sccp_read_line(const struct device *dev)
+{
+	const struct ltc4296_dev_config *cfg = dev->config;
+	struct ltc4296_data *data = dev->data;
+
+	return gpio_pin_get_dt(&cfg->port_config[data->current_sccp_port].sccpi_gpio);
+}
+
+static void sccp_pull_down(const struct device *dev)
+{
+	const struct ltc4296_dev_config *cfg = dev->config;
+	struct ltc4296_data *data = dev->data;
+
+	gpio_pin_set_dt(&cfg->port_config[data->current_sccp_port].sccpo_gpio, 0);
+}
+
+static void sccp_release(const struct device *dev)
+{
+	const struct ltc4296_dev_config *cfg = dev->config;
+	struct ltc4296_data *data = dev->data;
+
+	gpio_pin_set_dt(&cfg->port_config[data->current_sccp_port].sccpo_gpio, 1);
+}
+
+static void sccp_write_bit(const struct device *dev, uint8_t bit)
+{
+	sccp_pull_down(dev);
+	if (bit) {
+		k_busy_wait(T_W1L);
+		sccp_release(dev);
+		k_busy_wait(T_WRITESLOT - T_REC - T_W1L);
+	} else {
+		k_busy_wait(T_W0L + 450);
+		sccp_release(dev);
+	}
+	k_busy_wait(T_REC);
+}
+
+static void sccp_transmit_byte(const struct device *dev, uint8_t tx_byte)
+{
+	for (uint8_t bit_pos = 0; bit_pos < 8; bit_pos++) {
+		sccp_write_bit(dev, (tx_byte >> bit_pos) & 0x01);
+	}
+}
+
+static uint8_t sccp_read_bit(const struct device *dev)
+{
+	sccp_pull_down(dev);
+	k_busy_wait(T_W1L);
+	sccp_release(dev);
+	k_busy_wait(T_MSR - T_W1L);
+	uint8_t bit = sccp_read_line(dev);
+	k_busy_wait(T_READSLOT - T_MSR);
+	k_busy_wait(T_REC);
+	return bit;
+}
+
+static void sccp_receive_response(const struct device *dev, uint8_t *buf)
+{
+	for (uint8_t bytes_rxd = 0; bytes_rxd < 3; bytes_rxd++) {
+		uint8_t rx_byte = 0;
+
+		for (uint8_t bit_pos = 0; bit_pos < 8; bit_pos++) {
+			rx_byte |= (sccp_read_bit(dev) << bit_pos);
+		}
+		buf[bytes_rxd] = rx_byte;
+		k_sleep(K_MSEC(5));
+	}
+}
+
+int sccp_reset_pulse(const struct device *dev)
+{
+	if (!sccp_read_line(dev)) {
+		return ADI_LTC_SCCP_PD_LINE_NOT_HIGH;
+	}
+
+	sccp_pull_down(dev);
+	k_sleep(K_MSEC(3));
+
+	if (sccp_read_line(dev)) {
+		sccp_release(dev);
+		return ADI_LTC_SCCP_PD_LINE_NOT_LOW;
+	}
+
+	k_sleep(K_MSEC(T_RSTL_NOM / 1000 - 3));
+	sccp_release(dev);
+	k_sleep(K_MSEC(T_MSP / 1000));
+
+	uint8_t level = sccp_read_line(dev);
+
+	k_sleep(K_MSEC(4));
+
+	return (level == HIGH) ? ADI_LTC_SCCP_PD_NOT_PRESENT : ADI_LTC_SCCP_PD_PRESENT;
+}
+
+int sccp_read_write_pd(const struct device *dev, uint8_t addr, uint8_t cmd, uint8_t *buf)
+{
+	int ret = sccp_reset_pulse(dev);
+
+	if (ret != ADI_LTC_SCCP_PD_PRESENT) {
+		return ret;
+	}
+
+	k_sleep(K_MSEC(5));
+	sccp_transmit_byte(dev, addr);
+	k_sleep(K_MSEC(5));
+	sccp_transmit_byte(dev, cmd);
+	k_sleep(K_MSEC(5));
+	sccp_receive_response(dev, buf);
+
+	if (get_crc(buf) != buf[2]) {
+		LOG_ERR("PD CRC Error, CRC is 0x%x", buf[2]);
+		return ADI_LTC_SCCP_PD_CRC_FAILED;
+	}
+
+	return ADI_LTC_SCCP_PD_PRESENT;
+}
+
+int sccp_is_pd(const struct device *dev, uint8_t pse_class, uint16_t sccp_response_data,
+	       uint8_t *pd_class)
+{
+	uint16_t val = sccp_response_data & SCCP_CLASS_TYPE_MASK;
+	uint8_t sccp_type = (sccp_response_data & SCCP_TYPE_MASK) >> 12;
+	uint8_t i, pd_type = 0;
+
+	for (i = 0; i < SCCP_CLASS_SIZE; i++) {
+		if (sccp_classes[i] == val) {
+			pd_type = i;
+			break;
+		}
+	}
+
+	if (sccp_type != sccp_types[4]) {
+		*pd_class = i;
+		return ADI_LTC_SCCP_PD_CLASS_NOT_SUPPORTED;
+	}
+
+	if (pd_type < 10 || pd_type > 15) {
+		*pd_class = i;
+		return ADI_LTC_SCCP_PD_CLASS_NOT_SUPPORTED;
+	}
+
+	*pd_class = i;
+	return (class_compatibility[pd_type][pse_class + 10] == 1)
+		? ADI_LTC_SCCP_PD_CLASS_COMPATIBLE
+		: ADI_LTC_SCCP_PD_CLASS_NOT_SUPPORTED;
+}
