@@ -344,12 +344,52 @@
 				#size-cells = <0>;
 			};
 
+			dac0: dac0@60000 {
+				compatible = "infineon,autanalog-ctdac";
+				reg = <0x60000 0x1000>;
+				clk-dst = <0x200>;
+				status = "disabled";
+				#io-channel-cells = <1>;
+				#address-cells = <1>;
+				#size-cells = <0>;
+
+				/* FW channel (default) */
+				channel@f {
+					reg = <15>;
+					zephyr,resolution = <12>;
+				};
+			};
+
+			dac1: dac1@70000 {
+				compatible = "infineon,autanalog-ctdac";
+				reg = <0x70000 0x1000>;
+				clk-dst = <0x201>;
+				status = "disabled";
+				#io-channel-cells = <1>;
+				#address-cells = <1>;
+				#size-cells = <0>;
+
+				/* FW channel (default): direct value writes via Zephyr DAC API */
+				channel@f {
+					reg = <15>;
+					zephyr,resolution = <12>;
+				};
+			};
+
 			adc0: adc0@80000 {
 				compatible = "infineon,autanalog-sar-adc";
 				/* Offset within AutAnalog subsystem */
 				reg = <0x80000 0xf20>;
 				status = "disabled";
 				#io-channel-cells = <1>;
+			};
+
+			prb0: prb@e0300 {
+				compatible = "infineon,autanalog-prb";
+				reg = <0xe0300 0x100>;
+				status = "disabled";
+				#address-cells = <1>;
+				#size-cells = <0>;
 			};
 		};
 
@@ -519,7 +559,7 @@
 				reg-names = "m_can", "message_ram";
 				clk-dst = <0x10b>;
 				status = "disabled";
-				bosch,mram-cfg = <0x0 15 15 8 8 0 15 15>;
+				bosch,mram-cfg = <0x0 15 15 16 0 0 15 15>;
 				interrupts = <106 4>, <107 4>;
 				interrupt-names = "int0", "int1";
 			};
@@ -530,7 +570,7 @@
 				reg-names = "m_can", "message_ram";
 				clk-dst = <0x10c>;
 				status = "disabled";
-				bosch,mram-cfg = <0x1000 15 15 8 8 0 15 15>;
+				bosch,mram-cfg = <0x1000 15 15 16 0 0 15 15>;
 				interrupts = <108 4>, <109 4>;
 				interrupt-names = "int0", "int1";
 			};

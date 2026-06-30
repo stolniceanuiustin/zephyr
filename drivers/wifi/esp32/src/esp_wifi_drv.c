@@ -1010,10 +1010,9 @@ static void esp32_wifi_init(struct net_if *iface)
 #if defined(CONFIG_ESP32_WIFI_AP_STA_MODE)
 	struct wifi_nm_instance *nm = wifi_nm_get_instance("esp32_wifi_nm");
 #endif
-	struct ethernet_context *eth_ctx = net_if_l2_data(iface);
 	uint8_t *mac_addr;
 
-	eth_ctx->eth_if_type = L2_ETH_IF_TYPE_WIFI;
+	net_eth_set_if_type_wifi(iface);
 
 #if defined(CONFIG_ESP32_WIFI_AP_STA_MODE)
 	if (iface == esp32_wifi_iface_ap) {
@@ -1084,7 +1083,6 @@ static int esp32_wifi_dev_init(const struct device *dev)
 
 	wifi_init_config_t config = WIFI_INIT_CONFIG_DEFAULT();
 	esp_err_t ret = esp_wifi_init(&config);
-	esp_wifi_set_mode(ESP32_WIFI_MODE_NULL);
 
 	if (ret == ESP_ERR_NO_MEM) {
 		LOG_ERR("Not enough memory to initialize Wi-Fi.");
@@ -1094,6 +1092,13 @@ static int esp32_wifi_dev_init(const struct device *dev)
 		LOG_ERR("Unable to initialize the Wi-Fi: %d", ret);
 		return -EIO;
 	}
+
+	ret = esp_wifi_set_mode(ESP32_WIFI_MODE_NULL);
+	if (ret != ESP_OK) {
+		LOG_ERR("Fail to set Wi-Fi mode: %d", ret);
+		return -EIO;
+	}
+
 	if (IS_ENABLED(CONFIG_WIFI_STA_AUTO_DHCPV4)) {
 		net_mgmt_init_event_callback(&esp32_dhcp_cb, wifi_event_handler, DHCPV4_MASK);
 		net_mgmt_add_event_callback(&esp32_dhcp_cb);

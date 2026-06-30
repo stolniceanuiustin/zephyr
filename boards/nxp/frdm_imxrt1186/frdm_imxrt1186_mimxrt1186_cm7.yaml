@@ -18,10 +18,12 @@ supported:
   - flash
   - gpio
   - can
+  - counter
   - uart
   - hwinfo
   - mbox
   - i2c
+  - i3c
   - watchdog
   - pwm
 vendor: nxp

@@ -17,7 +17,14 @@ from west.configuration import config
 from west.util import WestNotFound, west_topdir
 from west.version import __version__
 
-from build_helpers import FIND_BUILD_DIR_DESCRIPTION, find_build_dir, is_zephyr_build, load_domains
+from build_helpers import (
+    BUILD_HELPERS_LOGGER,
+    FIND_BUILD_DIR_DESCRIPTION,
+    find_build_dir,
+    forward_logging_to_west,
+    is_zephyr_build,
+    load_domains,
+)
 from zcmake import DEFAULT_CMAKE_GENERATOR, CMakeCache, run_build, run_cmake
 from zephyr_ext_common import Forceable
 
@@ -213,6 +220,9 @@ class Build(Forceable):
     def do_run(self, args, remainder):
         self.args = args        # Avoid having to pass them around
         self.config_board = config_get('board', None)
+        # Forward debug output from the build_helpers/zcmake module
+        # loggers so it is visible under "west -v" / "west -vv".
+        forward_logging_to_west(self, [BUILD_HELPERS_LOGGER, 'zcmake'])
         self.dbg(f'args: {args} remainder: {remainder}',
                 level=Verbosity.DBG_EXTREME)
         # Store legacy -s option locally
@@ -702,7 +712,7 @@ class Build(Forceable):
         #
         # west build -- -DOVERLAY_CONFIG=relative-path.conf
         final_cmake_args = [f'-DWEST_PYTHON={pathlib.Path(sys.executable).as_posix()}',
-                            f'-DWEST_TOPDIR={west_topdir(self.source_dir)}',
+                            f'-DWEST_TOPDIR={pathlib.Path(str(west_topdir(self.source_dir))).as_posix()}',
                             f'-DWEST_VERSION={str(__version__)}',
                             f'-B{self.build_dir}',
                             f'-G{config_get("generator", DEFAULT_CMAKE_GENERATOR)}']
@@ -740,7 +750,7 @@ class Build(Forceable):
         if self.args.build_opt:
             extra_args.append('--')
             extra_args.extend(self.args.build_opt)
-        if self.args.verbose:
+        if self.verbosity >= Verbosity.DBG:
             self._append_verbose_args(extra_args,
                                       not bool(self.args.build_opt))
 

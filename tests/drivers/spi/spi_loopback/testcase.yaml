@@ -313,6 +313,18 @@ tests:
       - CONFIG_NRF_REGTOOL_VERBOSITY=2
     platform_allow:
       - nrf54h20dk/nrf54h20/cpuapp
+  drivers.spi.nrf54h_flpr_fast_8mhz:
+    sysbuild: true
+    extra_args:
+      - EXTRA_DTC_OVERLAY_FILE="boards/nrf_at_8mhz.overlay"
+    platform_allow:
+      - nrf54h20dk/nrf54h20/cpuflpr/xip
+  drivers.spi.nrf54h_flpr_fast_32mhz:
+    sysbuild: true
+    extra_args:
+      - EXTRA_DTC_OVERLAY_FILE="boards/nrf_at_32mhz.overlay"
+    platform_allow:
+      - nrf54h20dk/nrf54h20/cpuflpr/xip
   drivers.spi.nrf54l_1mhz:
     extra_args: EXTRA_DTC_OVERLAY_FILE="boards/nrf_at_1mhz.overlay"
     platform_allow:
@@ -401,10 +413,13 @@ tests:
     extra_configs:
       - CONFIG_SPI_SILABS_EUSART_DMA=y
       - CONFIG_SPI_ASYNC=n
-  drivers.spi.silabs_siwx91x.loopback:
-    filter: CONFIG_SOC_FAMILY_SILABS_SIWX91X
+  drivers.spi.loopback.siwx91x_udma:
     platform_allow:
+      - siwx917_dk2605a
       - siwx917_rb4338a
+      - siwx917_rb4342a
+    extra_args:
+      - EXTRA_DTC_OVERLAY_FILE="overlay-siwx917-udma.overlay"
   drivers.spi.cc23x0.loopback.dma.no_async:
     filter: CONFIG_SOC_FAMILY_TI_SIMPLELINK
     platform_allow:

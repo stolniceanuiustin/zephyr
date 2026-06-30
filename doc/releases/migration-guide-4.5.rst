@@ -48,9 +48,9 @@ Boards
   :kconfig:option:`CONFIG_SOC_SERIES_NRF54L` and
   :kconfig:option:`CONFIG_SOC_SERIES_NRF71` checks. Both symbols are kept
   as deprecated stubs that default to ``y`` when the corresponding SoC
-  series is selected, so existing ``CONFIG_NRF_PLATFORM_*=y`` lines and
-  ``depends on NRF_PLATFORM_*`` clauses keep building with a Kconfig
-  deprecation warning. Out-of-tree Kconfig, CMake and code using these
+  series is selected and :kconfig:option:`CONFIG_NRF_PLATFORM_DEPRECATED_SYMBOLS` is enabled,
+  so existing ``CONFIG_NRF_PLATFORM_*=y`` lines and ``depends on NRF_PLATFORM_*`` clauses keep
+  building with a Kconfig deprecation warning. Out-of-tree Kconfig, CMake and code using these
   symbols should be updated:
 
   * The ``CONFIG_NRF_PLATFORM_HALTIUM`` with
@@ -78,23 +78,16 @@ Boards
   to 300 MHz, which also affects the bus and kernel clocks, resulting in slightly
   higher frequencies.
 
+* :kconfig:option:`CONFIG_GPIO` is no longer enabled by default on most STM32 boards.
+  (boards with GPIO hogs keep it enabled as GPIO is needed for hogs to work).
+  Applications that relied on ``CONFIG_GPIO=y`` being the default will need to enable
+  the option explicitly. (:github:`109468`)
+
 Device Drivers and Devicetree
 *****************************
 
-Haptics
-=======
-
-* The ``cirrus,cs40l5x`` compatible has been replaced by variant-specific compatibles
-  :dtcompatible:`cirrus,cs40l50`, :dtcompatible:`cirrus,cs40l51`, :dtcompatible:`cirrus,cs40l52`,
-  and :dtcompatible:`cirrus,cs40l53`. Applications using the old compatible must update their
-  devicetree nodes accordingly.
-
-.. Group contents in this section by subsystem, e.g.:
-..
-.. ADC
-.. ===
-..
-.. ...
+.. Only place contents common to all device drivers here. Contents specific to one driver subsystem
+   goes into its own subsection, below.
 
 * The :c:macro:`DEVICE_API` macro is now mandatory for declaring device driver API instances of any
   upstream driver class, including in out-of-tree drivers. :c:macro:`DEVICE_API_GET` now asserts
@@ -103,6 +96,13 @@ Haptics
   must also declare the relationship with :c:macro:`DEVICE_API_EXTENDS`, so that
   :c:macro:`DEVICE_API_GET` for the parent class succeeds on devices implementing the child API.
   See :ref:`device_driver_api` for details.
+
+.. Group contents in this section by subsystem, e.g.:
+..
+.. ADC
+.. ===
+..
+.. ...
 
 .. zephyr-keep-sorted-start re(^\w) ignorecase
 
@@ -121,6 +121,17 @@ Clock Control
   ``clock-div`` properties remain supported but are deprecated. Existing
   RT11xx overlays should be updated using the mapping
   ``loop-div = clock-mult * 2`` and ``post-div = clock-div``.
+
+Controller Area Network (CAN)
+=============================
+
+* The header files for the NXP SJA1000 (``can_sja1000.h``) and Bosch M_CAN (``can_mcan.h``) CAN
+  controller driver backends where converted to library-specific includes. Out-of-tree drivers based
+  on these backends will need to update their include directives accordingly.
+
+* The Bosch M_CAN driver now solely uses RX FIFO0 for processing received CAN frames, ensuring these
+  are processed in the order received on the bus. Out-of-tree users may want to update any
+  ``bosch,mram-cfg`` devicetree property overrides to allocate all FIFO elements to RX FIFO0.
 
 Devicetree
 ==========
@@ -148,6 +159,26 @@ Display
   selection have been removed in favour of setting the pixel-format property directly in devicetree
   on the SDL pseudo-device node using the PANEL_PIXEL_FORMAT_* macros from
   :zephyr_file:`include/zephyr/dt-bindings/display/panel.h`. (:github:`104099`)
+
+DMA
+===
+
+* :dtcompatible:`silabs,siwx91x-dma` has been renamed :dtcompatible:`silabs,udma`. The Kconfig
+  options have also been renamed to align with this new name (``DMA_SILABS_SIWX91X`` in
+  ``DMA_SILABS_SIWX91X_UDMA`` and ``DMA_SILABS_SIWX91X_SG_BUFFER_COUNT`` in
+  ``DMA_SILABS_SIWX91X_UDMA_DESCR_COUNT``)
+
+* To align with the other drivers, ``GPDMA_SILABS_SIWX91X_DESCRIPTOR_COUNT`` has been renamed in
+  ``DMA_SILABS_SIWX91X_GPDMA_DESCR_COUNT``.
+
+ESPI
+====
+
+* ECUSTOM_HOST_SUBS_INTERRUPT_EN has been deprecated in favor of new API that allows fine-grained
+  enable/disable control of individual eSPI hardware interrupts.
+  This replaces the current all-or-nothing approach, which is tightly coupled to
+  CONFIG_ESPI_PERIPHERAL_CUSTOM_OPCODE and single eSPI ACPI HW block instance in all eSPI drivers.
+  This will be completely removed in the next Zephyr release to give time for transition.
 
 Ethernet
 ========
@@ -194,6 +225,14 @@ GPIO
 
 * On STM32F1 series, GPIO output pins now use 50 MHz max. speed instead of 10 MHz. (:github:`104690`)
 
+Haptics
+=======
+
+* The ``cirrus,cs40l5x`` compatible has been replaced by variant-specific compatibles
+  :dtcompatible:`cirrus,cs40l50`, :dtcompatible:`cirrus,cs40l51`, :dtcompatible:`cirrus,cs40l52`,
+  and :dtcompatible:`cirrus,cs40l53`. Applications using the old compatible must update their
+  devicetree nodes accordingly.
+
 Input
 =====
 
@@ -222,6 +261,25 @@ Input
   * ``CONFIG_INPUT_FT5336_PERIOD`` → :kconfig:option:`CONFIG_INPUT_FT5336_PERIOD_MS`
   * ``CONFIG_INPUT_CST8XX_PERIOD`` → :kconfig:option:`CONFIG_INPUT_CST8XX_PERIOD_MS`
   * ``CONFIG_INPUT_FT6146_PERIOD`` → :kconfig:option:`CONFIG_INPUT_FT6146_PERIOD_MS`
+
+Interrupt Controllers
+=====================
+
+* All interrupt controller bindings now use ``flags`` as the interrupt cell name
+  instead of ``sense``. The following interrupt controller bindings were updated:
+
+  * :dtcompatible:`intel,ioapic`
+  * :dtcompatible:`intel,loapic`
+  * :dtcompatible:`cdns,xtensa-core-intc`
+  * :dtcompatible:`intel,ace-intc`
+  * :dtcompatible:`intel,cavs-intc`
+  * :dtcompatible:`snps,designware-intc`
+  * :dtcompatible:`mediatek,adsp_intc`
+
+  Drivers using these interrupt controllers are updated to use ``flags`` as the cell name.
+  However, any out-of-tree drivers that directly access interrupt properties using
+  ``DT_INST_IRQ(n, sense)`` or ``DT_IRQ(node, sense)`` should be updated to use ``flags`` instead
+  of ``sense``.
 
 NXP
 ===
@@ -285,11 +343,34 @@ Sensor
   GIRQ configuration is now handled via the ``microchip,dmec-ecia-girq`` binding include
   (:github:`104808`).
 
+* The devicetree compatible ``tdk,ntcg163jf103ft1`` has been renamed to
+  :dtcompatible:`tdk,ntcgxx3jx103x` to reflect that the compensation values are identical for TDK
+  NTCG thermistor parts with the same resistance (R25) and beta (B25/85) values, as indicated in the
+  part naming scheme (:github:`110123`).
+
 Serial
 ======
 
 * The return type of :c:func:`uart_irq_update` is now ``void`` instead of ``int``.
   (:github:`105231`)
+
+SPI
+===
+
+* ``SPI_SILABS_SIWX91X_GSPI_DMA`` and ``SPI_SILABS_SIWX91X_GSPI_DMA_MAX_BLOCKS`` have been removed.
+  They are replaced by ``SPI_SILABS_SIWX91X_GSPI_DMA_DESCR_COUNT`` which allow to enable DMA and
+  configure the descriptor count.
+
+Stepper
+=======
+
+* The ``activate-stallguard2``, ``stallguard-threshold-velocity`` and ``stallguard-velocity-check-interval-ms``
+  properties of :dtcompatible:`adi,tmc50xx-stepper-ctrl` and :dtcompatible:`adi,tmc51xx-stepper-ctrl` have
+  been removed. The stallguard configuration is now done at runtime using
+  :c:func:`tmc50xx_stepper_ctrl_configure_stallguard`, :c:func:`tmc51xx_stepper_ctrl_configure_stallguard`
+  and :c:struct:`tmc_stallguard_settings`. Out-of-tree drivers using these properties
+  must be updated to remove them.
+  (:github:`110062`)
 
 STM32
 =====
@@ -301,6 +382,14 @@ STM32
 * SoC DTSI files now consistently use interrupt priority zero for all peripherals.
   Applications must now explicitly configure interrupt priorities using Devicetree
   if they previously relied on the values found in SoC DTSI files. (:github:`106188`)
+
+* :dtcompatible:`st,stm32-sai` binding has been restructured to reflect the SAI hardware
+  topology. The parent node now represents the SAI Block controller, while a new
+  ``child-binding`` represents the SAI Sub-Block instances.
+  The following properties shall be moved from the parent SAI node to a child sub-block node:
+  ``dmas``, ``dma-names`` (now validated against ``enum: [tx, rx]``), ``pinctrl-0``,
+  ``pinctrl-names``, ``mclk-enable``, ``mclk-divider``, ``synchronous``, and
+  ``fifo-threshold``. (:github:`104423`)
 
 Syscon
 ======
@@ -428,6 +517,8 @@ Bluetooth Classic
 
   (:github:`108022`)
 
+* Renamed ``BT_DEVICE_VEDNOR_ID`` to :kconfig:option:`BT_DEVICE_VENDOR_ID` to fix a typo.
+
 Bluetooth HCI
 =============
 
@@ -471,6 +562,11 @@ Networking
   :kconfig:option:`CONFIG_NET_MAX_NEXTHOPS` and use the
   :kconfig:option:`CONFIG_NET_IPV6_*` symbols directly.
 
+* The ``samples/net/wifi/test_certs/rsa2k`` enterprise test certificates have
+  been removed. TF-PSA-Crypto cannot decrypt their DES-encrypted PKCS#8 private
+  keys. Use ``samples/net/wifi/test_certs/rsa2k_no_des`` instead, or set
+  :envvar:`WIFI_TEST_CERTS_DIR` to another AES-encrypted certificate directory.
+
 
 Ethernet
 ========
@@ -508,6 +604,31 @@ gPTP
   New :c:func:`gptp_get_port_number` and :c:func:`gptp_set_port_number`
   can be used instead.
 
+LoRaWAN
+*******
+
+* The native LoRaWAN backend
+  (:kconfig:option:`CONFIG_LORA_MODULE_BACKEND_NATIVE`) now requires
+  :c:func:`lorawan_start` before the following runtime configuration APIs are
+  accepted:
+
+  * :c:func:`lorawan_set_datarate` and :c:func:`lorawan_set_conf_msg_tries`
+    return ``-EPERM`` if called before start.
+  * :c:func:`lorawan_enable_adr` (which has a ``void`` return type) logs a
+    warning and drops the call if invoked before start.
+
+  Configuration values previously latched by these APIs before
+  :c:func:`lorawan_start` are no longer retained.  Applications that called
+  them during initialization must move the calls to after start. They may still
+  run before or after a successful :c:func:`lorawan_join`.
+
+  :c:func:`lorawan_set_channels_mask` is unaffected and remains callable any
+  time after :c:func:`lorawan_start`, since the channel mask influences the
+  Join-Request channel selection itself.
+
+  These ordering requirements do not apply to the LoRaMac-node backend
+  (:kconfig:option:`CONFIG_LORA_MODULE_BACKEND_LORAMAC_NODE`).
+
 Other subsystems
 ****************
 
@@ -544,6 +665,14 @@ Other subsystems
      ZTEST_BENCHMARK(suite, my_bench, 100, setup, teardown) { /* ... */ }
      ZTEST_BENCHMARK_TIMED(suite, my_bench, 1000, setup, teardown) { /* ... */ }
 
+Random
+======
+
+* ``CONFIG_CTR_DRBG_CSPRNG_GENERATOR`` has been removed.
+  Use :kconfig:option:`CONFIG_PSA_CSPRNG_GENERATOR` instead.
+
+* ``CONFIG_CS_CTR_DRBG_PERSONALIZATION`` has been removed. It did not have any effect.
+
 Modules
 *******
 
@@ -569,6 +698,10 @@ Mbed TLS
 * ``CONFIG_PSA_CRYPTO_CLIENT`` has been removed as it was a duplicate of
   :kconfig:option:`CONFIG_PSA_CRYPTO`. If you were using it, use
   :kconfig:option:`CONFIG_PSA_CRYPTO` instead. (:github:`108960`)
+
+* Interface CMake library ``mbedTLS`` has been renamed to ``mbedtls_iface``. The former is kept
+  as an alias to the latter for backward compatibility, but it will be removed in future
+  releases.
 
 Architectures
 *************

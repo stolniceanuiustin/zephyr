@@ -234,3 +234,13 @@
 &erm0 {
 	status = "okay";
 };
+
+&crc {
+	status = "okay";
+};
+
+&flexcan0 {
+	status = "okay";
+	pinctrl-0 = <&pinmux_flexcan0>;
+	pinctrl-names = "default";
+};
