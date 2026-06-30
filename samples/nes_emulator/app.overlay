@@ -1,0 +1,21 @@
+/*
+ * NES controller GPIO mapping.
+ * psgpio_bank2 = EMIO GPIO bank (Zynq MIO is banks 0-1, EMIO starts at bank 2).
+ * Pins 0,1,2 = EMIO bits 0,1,2 as assigned in Vivado block design.
+ *
+ * XDC mapping (JA PMOD header):
+ *   EMIO[0] = JA1 (Y11)  = LATCH
+ *   EMIO[1] = JA2 (AA11) = CLOCK
+ *   EMIO[2] = JA3 (Y10)  = DATA
+ */
+/ {
+    zephyr,user {
+        nes-latch-gpios = <&psgpio_bank2 0 GPIO_ACTIVE_HIGH>;
+        nes-clock-gpios = <&psgpio_bank2 1 GPIO_ACTIVE_HIGH>;
+        nes-data-gpios  = <&psgpio_bank2 2 GPIO_ACTIVE_HIGH>;
+    };
+};
+
+&psgpio {
+    status = "okay";
+};
