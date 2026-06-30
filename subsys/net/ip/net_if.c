@@ -247,7 +247,7 @@ static void update_txtime_stats_detail(struct net_pkt *pkt,
 	}
 }
 
-static bool net_if_tx(struct net_if *iface, struct net_pkt *pkt)
+static void net_if_tx(struct net_if *iface, struct net_pkt *pkt)
 {
 	struct net_linkaddr ll_dst = { 0 };
 	struct net_context *context;
@@ -256,10 +256,6 @@ static bool net_if_tx(struct net_if *iface, struct net_pkt *pkt)
 
 	/* We collect send statistics for each socket priority if enabled */
 	uint8_t pkt_priority;
-
-	if (!pkt) {
-		return false;
-	}
 
 	create_time = net_pkt_create_time(pkt);
 
@@ -273,7 +269,7 @@ static bool net_if_tx(struct net_if *iface, struct net_pkt *pkt)
 		if (net_linkaddr_set(&ll_dst,
 				     net_pkt_lladdr_dst(pkt)->addr,
 				     net_pkt_lladdr_dst(pkt)->len) < 0) {
-			return false;
+			return;
 		}
 	}
 
@@ -357,8 +353,6 @@ static bool net_if_tx(struct net_if *iface, struct net_pkt *pkt)
 	if (ll_dst.len > 0) {
 		net_if_call_link_cb(iface, &ll_dst, status);
 	}
-
-	return true;
 }
 
 void net_process_tx_packet(struct net_pkt *pkt)
@@ -3493,13 +3487,20 @@ const struct net_in6_addr *net_if_ipv6_select_src_addr_hint(struct net_if *dst_i
 	}
 
 	if (!net_ipv6_is_ll_addr(dst) && !net_ipv6_is_addr_mcast_link(dst)) {
-		struct net_if_ipv6_prefix *prefix;
 		uint8_t prefix_len = 128;
 
+#if defined(CONFIG_NET_NATIVE_IPV6)
+		struct net_if_ipv6_prefix *prefix;
+
+		/* On-link prefix bookkeeping is only maintained by the native
+		 * IPv6 stack; offloaded interfaces fall back to a full-length
+		 * match.
+		 */
 		prefix = net_if_ipv6_prefix_get(dst_iface, dst);
 		if (prefix) {
 			prefix_len = prefix->len;
 		}
+#endif /* CONFIG_NET_NATIVE_IPV6 */
 
 		/* If caller has supplied interface, then use that */
 		if (dst_iface) {
@@ -5604,7 +5605,7 @@ static void remove_ipv6_ifaddr(struct net_if *iface,
 		k_mutex_lock(&lock, K_FOREVER);
 		if (sys_slist_find_and_remove(&active_dad_timers,
 					      &ifaddr->dad_node)) {
-			/* Addreess with active DAD timer would still have
+			/* Address with active DAD timer would still have
 			 * stale entry in the neighbor cache.
 			 */
 			net_ipv6_nbr_rm(iface, &ifaddr->address.in6_addr);

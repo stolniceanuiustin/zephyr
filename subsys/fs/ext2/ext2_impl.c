@@ -25,7 +25,7 @@ static bool initialized;
 #define BLOCK_MEMORY_BUFFER_SIZE (CONFIG_EXT2_MAX_BLOCK_COUNT * CONFIG_EXT2_MAX_BLOCK_SIZE)
 #define BLOCK_STRUCT_BUFFER_SIZE (CONFIG_EXT2_MAX_BLOCK_COUNT * sizeof(struct ext2_block))
 
-/* Structures for blocks slab alocator */
+/* Structures for blocks slab allocator */
 struct k_mem_slab ext2_block_memory_slab, ext2_block_struct_slab;
 char __aligned(sizeof(void *)) __ext2_block_memory_buffer[BLOCK_MEMORY_BUFFER_SIZE];
 char __aligned(sizeof(void *)) __ext2_block_struct_buffer[BLOCK_STRUCT_BUFFER_SIZE];
@@ -253,6 +253,13 @@ int ext2_verify_disk_superblock(struct ext2_disk_superblock *sb)
 	if (sys_le16_to_cpu(sb->s_inode_size) != EXT2_GOOD_OLD_INODE_SIZE) {
 		LOG_ERR("Filesystem with inode size %d is not supported", sb->s_inode_size);
 		return -ENOTSUP;
+	}
+
+	/* Reject zero divisors used during block-group and inode lookup. */
+	if (sys_le32_to_cpu(sb->s_blocks_per_group) == 0 ||
+	    sys_le32_to_cpu(sb->s_inodes_per_group) == 0) {
+		LOG_ERR("Invalid superblock: s_blocks_per_group or s_inodes_per_group is zero");
+		return -EINVAL;
 	}
 
 	/* Check if file system may contain errors. */

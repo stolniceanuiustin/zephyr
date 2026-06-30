@@ -1145,7 +1145,10 @@ config FPU
 
 	  If it is necessary for multiple threads to perform concurrent floating
 	  point operations, the "FPU register sharing" option must be enabled to
-	  preserve the floating point registers across context switches.
+	  preserve the floating point registers across context switches. This is
+	  done automatically if the platform enables an architecture-specific option
+	  enabling the compiler to generate FP instructions for general puprose
+	  integer work.
 
 	  Note that this option cannot be selected for the platforms that do not
 	  include a hardware floating point unit; the floating point support for
@@ -1302,6 +1305,17 @@ config CACHE_CAN_SAY_MEM_COHERENCE
 	  used to determine if a pointer lies inside "coherence regions" and can be
 	  safely used in multiprocessor code without explicit flush or invalidate
 	  operations.
+
+config OUTER_CACHE
+	bool
+	depends on DCACHE
+	help
+	  Selected by a SoC that has an outer (e.g. L2) cache controller sitting
+	  below the CPU-integrated cache, where the outer level is not snooped by
+	  device-side DMA. When set, the architecture cache layer pairs every L1
+	  data-cache maintenance operation with the matching outer-cache operation.
+	  The SoC must provide strong definitions of the z_arm_outer_cache_*
+	  operations declared in include/zephyr/arch/cache.h.
 
 endif # CACHE_MANAGEMENT
 

@@ -959,13 +959,13 @@ def test_testplan_load(
 
 TESTDATA_5 = [
     (False, False, None, 1, 2,
-     ['plat1/testA', 'plat1/testB', 'plat1/testC',
+     ['plat1/testA', 'plat2/testA', 'plat1/testB',
       'plat3/testA', 'plat3/testB', 'plat3/testC']),
     (False, False, None, 1, 5,
      ['plat1/testA',
       'plat3/testA', 'plat3/testB', 'plat3/testC']),
     (False, False, None, 2, 2,
-     ['plat2/testA', 'plat2/testB']),
+     ['plat2/testB', 'plat1/testC']),
     (True, False, None, 1, 2,
      ['plat1/testA', 'plat2/testA', 'plat1/testB',
       'plat3/testA', 'plat3/testB', 'plat3/testC']),
@@ -1000,15 +1000,20 @@ def test_testplan_generate_subset(
         shuffle_tests=shuffle,
         shuffle_tests_seed=seed
     )
+    def make_inst(ts_name, status):
+        inst = mock.Mock(status=status)
+        inst.testsuite.name = ts_name
+        return inst
+
     testplan.instances = {
-        'plat1/testA': mock.Mock(status=TwisterStatus.NONE),
-        'plat1/testB': mock.Mock(status=TwisterStatus.NONE),
-        'plat1/testC': mock.Mock(status=TwisterStatus.NONE),
-        'plat2/testA': mock.Mock(status=TwisterStatus.NONE),
-        'plat2/testB': mock.Mock(status=TwisterStatus.NONE),
-        'plat3/testA': mock.Mock(status=TwisterStatus.SKIP),
-        'plat3/testB': mock.Mock(status=TwisterStatus.SKIP),
-        'plat3/testC': mock.Mock(status=TwisterStatus.ERROR),
+        'plat1/testA': make_inst('testA', TwisterStatus.NONE),
+        'plat1/testB': make_inst('testB', TwisterStatus.NONE),
+        'plat1/testC': make_inst('testC', TwisterStatus.NONE),
+        'plat2/testA': make_inst('testA', TwisterStatus.NONE),
+        'plat2/testB': make_inst('testB', TwisterStatus.NONE),
+        'plat3/testA': make_inst('testA', TwisterStatus.SKIP),
+        'plat3/testB': make_inst('testB', TwisterStatus.SKIP),
+        'plat3/testC': make_inst('testC', TwisterStatus.ERROR),
     }
 
     testplan.generate_subset(subset, sets)
@@ -1250,9 +1255,15 @@ def test_testplan_info(capfd):
     assert 'dummy text\n' in out
 
 
+# Platforms with twister=False (here 'p1e1') are still listed in platforms so
+# references to them resolve, but they are never added as default platforms.
 TESTDATA_8 = [
-    (False, ['p1e2/unit_testing', 'p2/unit_testing', 'p3/unit_testing'], ['p2/unit_testing', 'p3/unit_testing']),
-    (True, ['p1e2/unit_testing', 'p2/unit_testing', 'p3/unit_testing'], ['p3/unit_testing']),
+    (False,
+     ['p1e1/unit_testing', 'p1e2/unit_testing', 'p2/unit_testing', 'p3/unit_testing'],
+     ['p2/unit_testing', 'p3/unit_testing']),
+    (True,
+     ['p1e1/unit_testing', 'p1e2/unit_testing', 'p2/unit_testing', 'p3/unit_testing'],
+     ['p3/unit_testing']),
 ]
 
 @pytest.mark.parametrize(

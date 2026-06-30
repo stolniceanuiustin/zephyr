@@ -2,7 +2,6 @@
 
 Avnet ZedBoard
 ##############
-
 Overview
 ********
 
@@ -14,7 +13,6 @@ on a single die. The board is co-developed by Avnet, Digilent, Xilinx, and ARM.
 .. figure:: zedboard.webp
    :align: center
    :alt: Avnet ZedBoard
-
    Avnet ZedBoard (Credit: Avnet)
 
 Hardware

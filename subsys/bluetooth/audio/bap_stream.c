@@ -932,7 +932,7 @@ static bool valid_snk_state_transition(enum bt_bap_ep_state old_state,
 	case BT_BAP_EP_STATE_RELEASING:
 		switch (new_state) {
 		case BT_BAP_EP_STATE_IDLE:
-		case BT_BAP_EP_STATE_QOS_CONFIGURED:
+		case BT_BAP_EP_STATE_CODEC_CONFIGURED:
 			valid_transition = true;
 			break;
 		default:
@@ -1030,7 +1030,7 @@ static bool valid_src_state_transition(enum bt_bap_ep_state old_state,
 	case BT_BAP_EP_STATE_RELEASING:
 		switch (new_state) {
 		case BT_BAP_EP_STATE_IDLE:
-		case BT_BAP_EP_STATE_QOS_CONFIGURED:
+		case BT_BAP_EP_STATE_CODEC_CONFIGURED:
 			valid_transition = true;
 			break;
 		default:
@@ -1146,10 +1146,7 @@ void bt_bap_stream_detach(struct bt_bap_stream *stream)
 {
 	LOG_DBG("stream %p conn %p ep %p", stream, (void *)stream->conn, (void *)stream->ep);
 
-	if (stream->conn != NULL) {
-		bt_conn_unref(stream->conn);
-		stream->conn = NULL;
-	}
+	bt_conn_drop(&stream->conn);
 	stream->codec_cfg = NULL;
 
 	if (stream->ep != NULL) {

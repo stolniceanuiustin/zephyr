@@ -729,7 +729,7 @@ static int exit_dpd(const struct device *const dev)
 	int rc = 0;
 
 	if (dev_config->has_dpd) {
-		/* When relasing the flash chip from DPD mode, make sure that
+		/* When releasing the flash chip from DPD mode, make sure that
 		 * enough time has passed since the DPD command was issued,
 		 * otherwise the request might get ignored by the chip.
 		 * This minimal interval is the sum of the time the flash
@@ -1309,6 +1309,15 @@ static int flash_chip_init(const struct device *dev)
 			LOG_ERR("SFDP signature mismatch: %08x, expected: %08x",
 				sfdp_signature, JESD216_SFDP_MAGIC);
 			return -ENODEV;
+		}
+
+		/* sfdp_read() may have changed io mode, so make sure
+		 * to switch back to target io mode.
+		 */
+		rc = switch_to_target_io_mode(dev);
+		if (rc < 0) {
+			LOG_ERR("Failed to switch to target io mode: %d", rc);
+			return rc;
 		}
 	}
 

@@ -477,13 +477,9 @@ static void nxp_enet_phy_cb(const struct device *phy,
 		}
 
 		ENET_SetMII(data->base, speed, duplex);
-
-		net_eth_carrier_on(data->iface);
-	} else {
-		net_eth_carrier_off(data->iface);
 	}
 
-	LOG_INF("Link is %s", state->is_up ? "up" : "down");
+	net_eth_carrier_set(data->iface, state->is_up);
 }
 
 static void eth_nxp_enet_iface_init(struct net_if *iface)

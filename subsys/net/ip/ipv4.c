@@ -19,6 +19,7 @@ LOG_MODULE_REGISTER(net_ipv4, CONFIG_NET_IPV4_LOG_LEVEL);
 #include <zephyr/net/net_context.h>
 #include <zephyr/net/virtual.h>
 #include <zephyr/net/ethernet.h>
+#include <zephyr/net/ipv4_nat.h>
 #include "net_private.h"
 #include "connection.h"
 #include "net_stats.h"
@@ -101,7 +102,8 @@ int net_ipv4_create(struct net_pkt *pkt,
 		net_ipv4_set_ecn(&tos, net_pkt_ip_ecn(pkt));
 	}
 
-	if (IS_ENABLED(CONFIG_NET_IPV4_PMTU) && net_pkt_ipv4_pmtu(pkt)) {
+	if ((IS_ENABLED(CONFIG_NET_IPV4_PMTU) && net_pkt_ipv4_pmtu(pkt)) ||
+	    net_pkt_dont_fragment(pkt)) {
 		flags = NET_IPV4_DF;
 	}
 
@@ -608,5 +610,9 @@ void net_ipv4_init(void)
 
 	if (IS_ENABLED(CONFIG_NET_IPV4_ACD)) {
 		net_ipv4_acd_init();
+	}
+
+	if (IS_ENABLED(CONFIG_NET_IPV4_NAT)) {
+		net_ipv4_nat_init();
 	}
 }

@@ -13,9 +13,21 @@
 #include <zephyr/arch/arm/mmu/arm_mmu.h>
 #include "soc.h"
 
+#ifdef CONFIG_SOC_XILINX_PL310
+#include "pl310.h"
+#endif
+
 /* System Level Control Registers (SLCR) */
 #define SLCR_UNLOCK     0x0008
 #define SLCR_UNLOCK_KEY 0xdf0d
+
+#ifdef CONFIG_SOC_XILINX_PL310
+/* AR#54190: L2C RAM latency - must be set before PL310 enable */
+#define SLCR_L2C_RAM      0x0A1C
+#define SLCR_L2C_RAM_MASK 0x00070707
+#define SLCR_L2C_RAM_VAL  0x00020202
+#endif
+
 #define AXI_GPIO_MMU_ENTRY(id)\
 	MMU_REGION_FLAT_ENTRY("axigpio",\
 			      DT_REG_ADDR(id),\
@@ -45,6 +57,15 @@ static const struct arm_mmu_region mmu_regions[] = {
 			      DT_REG_SIZE(DT_NODELABEL(slcr)),
 			      MT_DEVICE | MATTR_SHARED | MPERM_R | MPERM_W),
 #endif
+
+#ifdef CONFIG_SOC_XILINX_PL310
+	/* PL310 (L2C-310) outer-cache controller registers */
+	MMU_REGION_FLAT_ENTRY("pl310",
+			      0xF8F02000,
+			      0x1000,
+			      MT_DEVICE | MATTR_SHARED | MPERM_R | MPERM_W),
+#endif
+
 
 /* GEMs */
 #if DT_NODE_HAS_STATUS_OKAY(DT_NODELABEL(gem0))
@@ -106,10 +127,33 @@ void soc_reset_hook(void)
 	sctlr &= ~SCTLR_A_Msk;
 	__set_SCTLR(sctlr);
 
+	/* Cortex-A9: ACTLR.SMP (bit 6) required for LDREX/STREX on Normal Shareable memory. */
+	{
+		uint32_t actlr = __get_ACTLR();
+
+		actlr |= BIT(6);
+		__set_ACTLR(actlr);
+	}
+
 #if DT_NODE_HAS_STATUS_OKAY(DT_NODELABEL(slcr))
 	mm_reg_t addr = DT_REG_ADDR(DT_NODELABEL(slcr));
 
 	/* Unlock System Level Control Registers (SLCR) */
 	sys_write32(SLCR_UNLOCK_KEY, addr + SLCR_UNLOCK);
+
+#ifdef CONFIG_SOC_XILINX_PL310
+	/* AR#54190: fix L2C RAM write-latency before enabling PL310. */
+	{
+		uint32_t l2c_ram = sys_read32(addr + SLCR_L2C_RAM);
+
+		l2c_ram &= ~SLCR_L2C_RAM_MASK;
+		l2c_ram |= SLCR_L2C_RAM_VAL;
+		sys_write32(l2c_ram, addr + SLCR_L2C_RAM);
+	}
+#endif
+#endif
+
+#ifdef CONFIG_SOC_XILINX_PL310
+	soc_zynq7000_pl310_early_enable();
 #endif
 }

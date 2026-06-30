@@ -3,3 +3,7 @@
 
 config BOARD_ZEDBOARD
 	select PINCTRL if UART_XLNX_PS
+
+config UART_XLNX_PS
+	default y if BOARD_ZEDBOARD
+	select PINCTRL if BOARD_ZEDBOARD

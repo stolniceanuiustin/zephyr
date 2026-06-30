@@ -620,6 +620,7 @@ static void i2c_dw_isr(const struct device *port)
 		if (intr_stat.bits.rx_full) {
 			if (dw->state != I2C_DW_CMD_SEND) {
 				dw->state = I2C_DW_CMD_SEND;
+				dw->read_in_progress = false;
 				if (slave_cb->write_requested) {
 					slave_cb->write_requested(dw->slave_cfg);
 				}
@@ -1458,8 +1459,6 @@ static int i2c_dw_initialize(const struct device *dev)
 	{                                                                                          \
 		BUILD_ASSERT(DT_INST_IRQN(n) == PCIE_IRQ_DETECT,                                   \
 			     "Only runtime IRQ configuration is supported");                       \
-		BUILD_ASSERT(IS_ENABLED(CONFIG_DYNAMIC_INTERRUPTS),                                \
-			     "DW I2C PCI needs CONFIG_DYNAMIC_INTERRUPTS");                        \
 		const struct i2c_dw_rom_config *const dev_cfg = port->config;                      \
 		unsigned int irq = pcie_alloc_irq(dev_cfg->pcie->bdf);                             \
 		if (irq == PCIE_CONF_INTR_IRQ_NONE) {                                              \
