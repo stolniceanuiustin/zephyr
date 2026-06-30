@@ -144,6 +144,21 @@
 			tx-fifo-depth = <128>;
 		};
 
+		sdio0: mmc@e0100000 {
+			compatible = "xlnx,versal-8.9a";
+			status = "disabled";
+			reg = <0xe0100000 0x1000>;
+			interrupts = <GIC_SPI 24 IRQ_TYPE_LEVEL
+				      IRQ_DEFAULT_PRIORITY>;
+			broken-cd;
+
+			sdmmc0 {
+				compatible = "zephyr,sdmmc-disk";
+				disk-name = "SD";
+				status = "okay";
+			};
+		};
+
 		psgpio: gpio@e000a000 {
 			compatible = "xlnx,ps-gpio";
 			status = "disabled";

@@ -67,6 +67,36 @@ static const struct arm_mmu_region mmu_regions[] = {
 #endif
 
 
+/* UARTs */
+#if DT_NODE_HAS_STATUS_OKAY(DT_NODELABEL(uart0))
+	MMU_REGION_FLAT_ENTRY("uart0",
+			      DT_REG_ADDR(DT_NODELABEL(uart0)),
+			      DT_REG_SIZE(DT_NODELABEL(uart0)),
+			      MT_DEVICE | MATTR_SHARED | MPERM_R | MPERM_W),
+#endif
+#if DT_NODE_HAS_STATUS_OKAY(DT_NODELABEL(uart1))
+	MMU_REGION_FLAT_ENTRY("uart1",
+			      DT_REG_ADDR(DT_NODELABEL(uart1)),
+			      DT_REG_SIZE(DT_NODELABEL(uart1)),
+			      MT_DEVICE | MATTR_SHARED | MPERM_R | MPERM_W),
+#endif
+
+/* PS GPIO */
+#if DT_NODE_HAS_STATUS_OKAY(DT_NODELABEL(psgpio))
+	MMU_REGION_FLAT_ENTRY("psgpio",
+			      DT_REG_ADDR(DT_NODELABEL(psgpio)),
+			      DT_REG_SIZE(DT_NODELABEL(psgpio)),
+			      MT_DEVICE | MATTR_SHARED | MPERM_R | MPERM_W),
+#endif
+
+/* SDIO */
+#if DT_NODE_HAS_STATUS_OKAY(DT_NODELABEL(sdio0))
+	MMU_REGION_FLAT_ENTRY("sdio0",
+			      DT_REG_ADDR(DT_NODELABEL(sdio0)),
+			      DT_REG_SIZE(DT_NODELABEL(sdio0)),
+			      MT_DEVICE | MATTR_SHARED | MPERM_R | MPERM_W),
+#endif
+
 /* GEMs */
 #if DT_NODE_HAS_STATUS_OKAY(DT_NODELABEL(gem0))
 	MMU_REGION_FLAT_ENTRY("gem0",

@@ -32,6 +32,12 @@
 		sw1 = &pb2;
 	};
 
+	sdio_clk: sdio-clk {
+		compatible = "fixed-clock";
+		clock-frequency = <100000000>;
+		#clock-cells = <0>;
+	};
+
 	cpus {
 		#address-cells = <1>;
 		#size-cells = <0>;
@@ -105,6 +111,12 @@
 	status = "okay";
 };
 
+&sdio0 {
+	status = "okay";
+	power-delay-ms = <10>;
+	clocks = <&sdio_clk>;
+};
+
 &gem0 {
 	status = "okay";
 	clock-frequency = <1000000000>;
@@ -113,5 +125,5 @@
 	init-mdio-phy;
 	mdio-phy-address = <0>;
 	phy-poll-interval = <1000>;
-	link-speed = <XLNX_GEM_LINK_SPEED_100MBIT>;
+	link-speed = <XLNX_GEM_LINK_SPEED_1GBIT>;
 };
