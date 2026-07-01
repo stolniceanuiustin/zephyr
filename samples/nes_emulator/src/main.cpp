@@ -18,7 +18,7 @@ LOG_MODULE_REGISTER(nes_main, LOG_LEVEL_INF);
 #define EMU_PRIORITY      5
 #define INPUT_PRIORITY    4   /* higher priority than emulator so input is always fresh */
 
-extern uint32_t pixels[256 * 240];
+extern uint8_t pixels[256 * 240];
 extern volatile bool RENDER_ENABLED;
 
 /* Shared controller byte — input thread writes, emulator thread reads */
@@ -75,10 +75,23 @@ static void emu_thread_fn(void *p1, void *p2, void *p3)
     uint32_t emu_us = 0, send_us = 0;
     int prof = 0;
 
+    /* Real-time frame pacing. The NES runs at ~60 Hz; the emulator is far
+     * faster than that, so without throttling the game plays at several times
+     * normal speed. We compute each frame's deadline as an absolute tick count
+     * from a fixed base (base + frame * TICKS_PER_SEC / NES_FPS) — multiplying
+     * before dividing keeps rounding from accumulating, so the cadence stays
+     * locked to 60 Hz with no long-term drift. */
+    const int NES_FPS = 60;
+    int64_t base_ticks = k_uptime_ticks();
+    uint64_t frame = 0;
+
     while (1) {
         uint32_t t0 = k_cycle_get_32();
 
-        for (int i = 0; i <= 500; i++) {
+        /* Emulate exactly one NES frame. ppu_render_scanline() advances the
+         * scanline counter and sets RENDER_ENABLED when it wraps past the last
+         * scanline, marking the frame boundary. */
+        do {
             ppu_render_scanline();
 
             int cpu_ticks = 113 + (leap_cycle ? 1 : 0);
@@ -87,30 +100,33 @@ static void emu_thread_fn(void *p1, void *p2, void *p3)
             for (int j = 0; j < cpu_ticks; j++) {
                 cpu_clock();
             }
-        }
+        } while (!RENDER_ENABLED);
 
         controller[0] = controller_byte;
+        RENDER_ENABLED = false;
 
         uint32_t t1 = k_cycle_get_32();
 
-        if (RENDER_ENABLED) {
-            fb_udp_send_frame(pixels, 256, 240);
-            RENDER_ENABLED = false;
-        }
+        fb_udp_send_frame(pixels, 256, 240);
 
         uint32_t t2 = k_cycle_get_32();
 
         emu_us += k_cyc_to_us_floor32(t1 - t0);
         send_us += k_cyc_to_us_floor32(t2 - t1);
-        if (++prof >= 60) {
-            LOG_INF("avg/frame: emu=%u us  send=%u us  (~%u fps)",
-                    emu_us / 60, send_us / 60,
-                    1000000U / ((emu_us + send_us) / 60));
+        if (++prof >= NES_FPS) {
+            LOG_INF("avg/frame: emu=%u us  send=%u us  (capped ~%u fps)",
+                    emu_us / NES_FPS, send_us / NES_FPS, NES_FPS);
             emu_us = send_us = 0;
             prof = 0;
         }
 
-        k_yield();
+        /* Sleep until this frame's absolute deadline. If emulation+send already
+         * overran the budget the deadline is in the past and k_sleep() returns
+         * immediately (no artificial slowdown below real time). */
+        frame++;
+        int64_t deadline = base_ticks +
+            (int64_t)((frame * CONFIG_SYS_CLOCK_TICKS_PER_SEC) / NES_FPS);
+        k_sleep(K_TIMEOUT_ABS_TICKS(deadline));
     }
 }
 

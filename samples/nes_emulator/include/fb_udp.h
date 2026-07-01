@@ -8,7 +8,8 @@ extern "C" {
 #endif
 
 int fb_udp_init(void);
-void fb_udp_send_frame(const uint32_t *pixels, int width, int height);
+/* pixels is one byte per pixel (6-bit NES palette index); width*height bytes. */
+void fb_udp_send_frame(const uint8_t *pixels, int width, int height);
 
 #ifdef __cplusplus
 }
