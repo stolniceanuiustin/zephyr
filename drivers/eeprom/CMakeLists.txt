@@ -15,6 +15,7 @@ zephyr_library_sources_ifdef(CONFIG_USERSPACE eeprom_handlers.c)
 zephyr_library_sources_ifdef(CONFIG_EEPROM_SHELL eeprom_shell.c)
 
 # zephyr-keep-sorted-start
+zephyr_library_sources_ifdef(CONFIG_EEPROM_ADI_AXI_SYSID eeprom_adi_axi_sysid.c)
 zephyr_library_sources_ifdef(CONFIG_EEPROM_AT2X eeprom_at2x.c)
 zephyr_library_sources_ifdef(CONFIG_EEPROM_AT2X_EMUL eeprom_at2x_emul.c)
 zephyr_library_sources_ifdef(CONFIG_EEPROM_EMULATOR eeprom_emulator.c)
