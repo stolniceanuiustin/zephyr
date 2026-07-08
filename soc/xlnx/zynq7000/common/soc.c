@@ -13,9 +13,22 @@
 #include <zephyr/arch/arm/mmu/arm_mmu.h>
 #include "soc.h"
 
+#ifdef CONFIG_CACHE_PL310
+#include <zephyr/drivers/cache/pl310.h>
+#endif
+
 /* System Level Control Registers (SLCR) */
 #define SLCR_UNLOCK     0x0008
 #define SLCR_UNLOCK_KEY 0xdf0d
+
+/*
+ * L2C RAM write-latency control (AR#54190). The PL310 latencies programmed by
+ * the driver assume these SLCR-side RAM latencies; fix them before the L2 is
+ * enabled.
+ */
+#define SLCR_L2C_RAM      0x0A1C
+#define SLCR_L2C_RAM_MASK 0x00FFFFFF
+#define SLCR_L2C_RAM_VAL  0x00020202
 #define AXI_GPIO_MMU_ENTRY(id)\
 	MMU_REGION_FLAT_ENTRY("axigpio",\
 			      DT_REG_ADDR(id),\
@@ -89,10 +102,8 @@ void soc_reset_hook(void)
 
 	/* Unlock System Level Control Registers (SLCR) */
 	sys_write32(SLCR_UNLOCK_KEY, addr + SLCR_UNLOCK);
-#endif
-}
 
-#ifdef CONFIG_SOC_XILINX_PL310
+#ifdef CONFIG_CACHE_PL310
 	/* AR#54190: fix L2C RAM write-latency before enabling PL310. */
 	{
 		uint32_t l2c_ram = sys_read32(addr + SLCR_L2C_RAM);
@@ -101,10 +112,11 @@ void soc_reset_hook(void)
 		l2c_ram |= SLCR_L2C_RAM_VAL;
 		sys_write32(l2c_ram, addr + SLCR_L2C_RAM);
 	}
-#endif
-#endif
+#endif /* CONFIG_CACHE_PL310 */
+#endif /* slcr okay */
 
-#ifdef CONFIG_SOC_XILINX_PL310
-	soc_zynq7000_pl310_early_enable();
+#ifdef CONFIG_CACHE_PL310
+	/* Enable the PL310 outer cache while the MMU and L1 are still off. */
+	z_pl310_early_enable();
 #endif
 }
