@@ -23,6 +23,8 @@ manifest:
       url-base: https://github.com/zephyrproject-rtos
     - name: babblesim
       url-base: https://github.com/BabbleSim
+    - name: adi
+      url-base: https://github.com/analogdevicesinc
 
   group-filter: [-babblesim, -optional, -testing]
 
@@ -301,6 +303,10 @@ manifest:
     - name: libmctp
       revision: b6be45dfc5c67c43c3a5e12589ae3845ea00ab5e
       path: modules/lib/libmctp
+    - name: libiio
+      remote: adi
+      revision: main
+      path: modules/lib/libiio
     - name: libmetal
       revision: c41f476ba425663cadf7e456b6432e4b21591278
       path: modules/hal/libmetal
