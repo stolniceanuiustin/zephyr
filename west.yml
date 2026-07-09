@@ -304,8 +304,8 @@ manifest:
       revision: b6be45dfc5c67c43c3a5e12589ae3845ea00ab5e
       path: modules/lib/libmctp
     - name: libiio
-      remote: adi
-      revision: main
+      url: https://github.com/ralucabozdog/libiio
+      revision: zedboard-full-speed-iiod
       path: modules/lib/libiio
     - name: libmetal
       revision: c41f476ba425663cadf7e456b6432e4b21591278
