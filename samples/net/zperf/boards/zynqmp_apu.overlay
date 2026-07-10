@@ -1,0 +1,101 @@
+/*
+ * ZCU102 (ZynqMP A53/APU) ethernet overlay for zperf.
+ *
+ * The A53 devicetree (dts/arm64/xilinx/zynqmp_a53.dtsi) only wires up the GIC,
+ * UARTs and TTC timers -- it has no GEM (ethernet) node. The GEM peripheral is
+ * described in the R5 dtsi (dts/arm/xilinx/zynqmp.dtsi); this overlay ports the
+ * relevant instance to the A53 SoC bus.
+ *
+ * IMPORTANT: the A53 soc uses 2-cell #address-cells/#size-cells, so every reg
+ * must be the 64-bit form <hi lo hi lo>, unlike the R5 dtsi's 1-cell regs.
+ *
+ * ZCU102 board specifics come straight from the U-Boot banner:
+ *   "ZYNQ GEM: ff0e0000, mdio bus ff0e0000, phyaddr 12, interface rgmii-id"
+ * => GEM3 @ 0xff0e0000, PHY at MDIO address 12, RGMII.
+ */
+
+#include <zephyr/dt-bindings/ethernet/xlnx_gem.h>
+
+/ {
+	chosen {
+		zephyr,ethernet = &gem3;
+	};
+};
+
+&soc {
+	gem3: ethernet@ff0e0000 {
+		compatible = "xlnx,gem";
+		/* mac regs, then the CRL_APB GEM3_CLK_CTRL clkc reg (0xff5e005c) */
+		reg = <0x0 0xff0e0000 0x0 0x1000>,
+		      <0x0 0xff5e005c 0x0 0x4>;
+		reg-names = "mac", "clkc";
+		status = "okay";
+
+		interrupts = <GIC_SPI 63 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>,
+			     <GIC_SPI 64 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>;
+		interrupt-names = "irq_0", "irq_1";
+
+		/* TX clock is derived from the IO PLL (1.5 GHz by default). */
+		clock-frequency = <1500000000>;
+		phy-handle = <&gem3_phy>;
+
+		amba-ahb-burst-length = <XLNX_GEM_AMBA_AHB_BURST_INCR16>;
+		hw-rx-buffer-size = <XLNX_GEM_HW_RX_BUFFER_SIZE_8KB>;
+		hw-rx-buffer-offset = <0>;
+		hw-tx-buffer-size-full;
+		rx-buffer-descriptors = <32>;
+		tx-buffer-descriptors = <32>;
+		rx-buffer-size = <1536>;
+		tx-buffer-size = <1536>;
+		discard-rx-fcs;
+		unicast-hash;
+
+		/* ARP resolves (no checksum) but ICMP/TCP are dropped: the GEM's
+		 * HW checksum engine is emitting bad IP/TCP/UDP checksums, so the
+		 * peer silently discards every frame. Disable offload and let the
+		 * Zephyr stack compute checksums in software.
+		 */
+		// disable-rx-checksum-offload;
+		// disable-tx-checksum-offload;
+
+		local-mac-address = [ 00 0a 35 01 67 01 ];
+
+		gem3_mdio: mdio {
+			compatible = "xlnx,gem-mdio";
+			status = "okay";
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			/* ZCU102: TI DP83867 RGMII PHY at MDIO address 12.
+			 * U-Boot banner reports "interface rgmii-id", so the PHY
+			 * must apply ~2 ns internal TX+RX clock delays. The generic
+			 * MII driver never programs the DP83867 RGMIICTL/RGMIIDCTL
+			 * registers, so link negotiates but frames are sampled on the
+			 * wrong clock edge -> ARP never resolves, all off-board
+			 * traffic is lost. Use the dedicated driver in rgmii-id mode.
+			 * Delay value 7 = 2.0 ns (0.25 ns per step).
+			 */
+			gem3_phy: phy@c {
+				compatible = "ti,dp83867";
+				reg = <12>;
+				status = "okay";
+				ti,interface-type = "rgmii-id";
+
+				/* Board-tuned RGMII internal delays taken from
+				 * Xilinx's ZCU102 devicetree (GEM3 <-> DP83867 @0xc):
+				 *   rx = 0x8 (2.25 ns), tx = 0xa (2.75 ns).
+				 * These match the actual ZCU102 PCB trace lengths;
+				 * the generic ~2 ns (value 7) guess was marginal.
+				 * (delay = 0.25 ns * (value + 1))
+				 */
+				ti,rx-internal-delay = <0x8>;
+				ti,tx-internal-delay = <0xa>;
+
+				/* ZCU102 straps RX_DV/RX_CTRL in a mode that needs
+				 * the CFG4 strap quirk cleared for reliable RX.
+				 */
+				ti,dp83867-rxctrl-strap-quirk;
+			};
+		};
+	};
+};
