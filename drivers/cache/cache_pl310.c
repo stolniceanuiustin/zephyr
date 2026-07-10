@@ -51,8 +51,8 @@
 #define PL310_NODE DT_DRV_INST(0)
 
 #define PL310_BASE    ((uintptr_t)DT_REG_ADDR(PL310_NODE))
-#define PL310_HAS_TAG_LATENCY  DT_INST_NODE_HAS_PROP(0, arm_tag_latency)
-#define PL310_HAS_DATA_LATENCY DT_INST_NODE_HAS_PROP(0, arm_data_latency)
+#define PL310_HAS_TAG_LATENCY  DT_INST_NODE_HAS_PROP(0, tag_ram_latency)
+#define PL310_HAS_DATA_LATENCY DT_INST_NODE_HAS_PROP(0, data_ram_latency)
 
 static inline void pl310_sync(void)
 {
@@ -77,11 +77,11 @@ void z_pl310_early_enable(void)
 	sys_write32(0, PL310_BASE + PL310_CTRL);
 
 #if PL310_HAS_TAG_LATENCY
-	sys_write32(DT_INST_PROP_BY_IDX(0, arm_tag_latency, 0),
+	sys_write32(DT_INST_PROP(0, tag_ram_latency),
 		    PL310_BASE + PL310_TAG_RAM_CTRL);
 #endif
 #if PL310_HAS_DATA_LATENCY
-	sys_write32(DT_INST_PROP_BY_IDX(0, arm_data_latency, 0),
+	sys_write32(DT_INST_PROP(0, data_ram_latency),
 		    PL310_BASE + PL310_DATA_RAM_CTRL);
 #endif
 

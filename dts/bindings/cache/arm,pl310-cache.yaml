@@ -12,7 +12,7 @@ description: |
   is set; it does not implement the cache_data_* API (L1 keeps owning that).
 
   SoC-specific values (aux control straps, RAM latencies) are supplied as
-  properties, mirroring the Linux arm,pl310-cache binding.
+  properties.
 
 compatible: "arm,pl310-cache"
 
@@ -22,17 +22,21 @@ properties:
   reg:
     required: true
 
-  arm,data-latency:
-    type: array
+  data-ram-latency:
+    type: int
     description: |
-      Cycles of latency for the data RAM. The n-th cell is a raw value written
-      to the Data RAM Latency Control register (offset 0x10C). SoC default.
+      Raw value written to the Data RAM Latency Control register (offset 0x10C),
+      carrying the setup/read/write latency fields pre-packed for this SoC. This
+      is a register image rather than a cycle count, so it is not the ARM-defined
+      arm,data-latency property. SoC default.
 
-  arm,tag-latency:
-    type: array
+  tag-ram-latency:
+    type: int
     description: |
-      Cycles of latency for the tag RAM. The n-th cell is a raw value written
-      to the Tag RAM Latency Control register (offset 0x108). SoC default.
+      Raw value written to the Tag RAM Latency Control register (offset 0x108),
+      carrying the setup/read/write latency fields pre-packed for this SoC. This
+      is a register image rather than a cycle count, so it is not the ARM-defined
+      arm,tag-latency property. SoC default.
 
   arm,shared-override:
     type: boolean

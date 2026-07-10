@@ -53,9 +53,9 @@
 			reg = <0xf8f02000 0x1000>;
 			/* Zynq-7000: 8 ways x 64 KB = 512 KB */
 			arm,num-ways = <8>;
-			/* Xilinx defaults for Zynq-7000 */
-			arm,tag-latency = <0x00000111>;
-			arm,data-latency = <0x00000121>;
+			/* Xilinx defaults for Zynq-7000 (raw RAM latency ctrl regs) */
+			tag-ram-latency = <0x00000111>;
+			data-ram-latency = <0x00000121>;
 			/* required or the core hangs at MMU enable */
 			arm,shared-override;
 			status = "okay";
