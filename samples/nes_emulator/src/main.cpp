@@ -1,5 +1,7 @@
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
+#include <zephyr/sys/device_mmio.h>
+#include <string.h>
 
 #include "bus.h"
 #include "cartridge.h"
@@ -10,6 +12,8 @@
 #include "fb_udp.h"
 
 LOG_MODULE_REGISTER(nes_main, LOG_LEVEL_INF);
+
+static volatile uint8_t *bram_fb;
 
 #define ROM_PATH "" /* ROM loaded by U-Boot into RAM, path unused */
 
@@ -107,6 +111,7 @@ static void emu_thread_fn(void *p1, void *p2, void *p3)
 
         uint32_t t1 = k_cycle_get_32();
 
+        memcpy((void *)bram_fb, pixels, 256 * 240);
         fb_udp_send_frame(pixels, 256, 240);
 
         uint32_t t2 = k_cycle_get_32();
@@ -141,6 +146,10 @@ K_THREAD_DEFINE(emu_thread, EMU_STACK_SIZE,
 int main(void)
 {
     LOG_INF("NES Emulator starting on Zephyr");
+
+    mm_reg_t bram_virt;
+    device_map(&bram_virt, 0x40000000UL, 0x10000, K_MEM_CACHE_NONE);
+    bram_fb = (volatile uint8_t *)bram_virt;
 
     if (nes_controller_init() != 0) {
         LOG_WRN("NES controller init failed — running without input");
