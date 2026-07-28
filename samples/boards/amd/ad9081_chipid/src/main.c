@@ -7,6 +7,7 @@
  *   [x] SPI0 -> AD9081/AD9082: read PROD_ID (0x9081/0x9082)
  *   [x] SPI1 -> HMC7044: scratchpad read/write check
  *   [x] HMC7044 clock + SYSREF configuration (PLL1/PLL2 lock)
+ *   [x] AXI plane alive: JESD204 RX/TX core identity (MAGIC/version/lanes)
  *   [ ] AXI adxcvr / jesd204 rx-tx / transport cores
  *   [ ] link bring-up: CGS -> ILAS -> Data
  *   [ ] DMA capture (axi_dmac)
@@ -24,6 +25,7 @@ LOG_MODULE_REGISTER(main, LOG_LEVEL_INF);
 
 #include "ad9081.h"
 #include "hmc7044.h"
+#include "axi_jesd.h"
 
 int main(void)
 {
@@ -56,6 +58,14 @@ int main(void)
 	}
 	LOG_INF("SUCCESS: AD90%02x detected over SPI", prod_id & 0xFF);
 
-	LOG_INF("=== bring-up milestone: both SPI control planes alive ===");
+	/* Prove the PL AXI plane is alive before link bring-up. */
+	ret = axi_jesd_probe();
+	if (ret) {
+		LOG_ERR("AXI JESD204 probe failed (%d)", ret);
+		return ret;
+	}
+	LOG_INF("SUCCESS: PL AXI plane alive, JESD204 cores identified");
+
+	LOG_INF("=== bring-up milestone: SPI + PL AXI planes alive ===");
 	return 0;
 }
