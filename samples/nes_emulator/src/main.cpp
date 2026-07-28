@@ -150,6 +150,7 @@ int main(void)
     mm_reg_t bram_virt;
     device_map(&bram_virt, 0x40000000UL, 0x10000, K_MEM_CACHE_NONE);
     bram_fb = (volatile uint8_t *)bram_virt;
+    LOG_INF("BRAM mapped: phys=0x40000000 virt=0x%08x", (uint32_t)bram_virt);
 
     if (nes_controller_init() != 0) {
         LOG_WRN("NES controller init failed — running without input");
