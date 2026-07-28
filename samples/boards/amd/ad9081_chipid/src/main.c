@@ -8,7 +8,16 @@
  *   [x] SPI1 -> HMC7044: scratchpad read/write check
  *   [x] HMC7044 clock + SYSREF configuration (PLL1/PLL2 lock)
  *   [x] AXI plane alive: JESD204 RX/TX core identity (MAGIC/version/lanes)
- *   [ ] AXI adxcvr / jesd204 rx-tx / transport cores
+ *   [x] AXI adxcvr: GT transceiver clock-mux config (DEVICE_INIT phase)
+ *   [ ] AXI jesd204 rx/tx link + transport cores (configure-only)
+ *   [ ] JESD204 bring-up FSM: reset GT + link enable + SYSREF, then status
+ *
+ * IMPORTANT: JESD204 is a negotiated multi-device link -- the transceiver, link
+ * cores, SYSREF and the AD9082 cannot be brought up or status-checked in
+ * isolation. Each block only *configures* here; the actual activation and the
+ * single meaningful status check happen together in the bring-up FSM at the end
+ * (mirroring the no-OS/Linux jesd204 state machine). So blocks are added as
+ * "configure-only" until enough exist to run the FSM.
  *   [ ] link bring-up: CGS -> ILAS -> Data
  *   [ ] DMA capture (axi_dmac)
  *
@@ -26,6 +35,7 @@ LOG_MODULE_REGISTER(main, LOG_LEVEL_INF);
 #include "ad9081.h"
 #include "hmc7044.h"
 #include "axi_jesd.h"
+#include "axi_adxcvr.h"
 
 int main(void)
 {
@@ -66,6 +76,19 @@ int main(void)
 	}
 	LOG_INF("SUCCESS: PL AXI plane alive, JESD204 cores identified");
 
-	LOG_INF("=== bring-up milestone: SPI + PL AXI planes alive ===");
+	/*
+	 * GT transceiver config only (clock-mux select, held in reset). The
+	 * reset-release + status poll is deferred to the JESD204 bring-up FSM,
+	 * because GT-ready is only meaningful once the link layer and SYSREF are
+	 * up around it -- gating on it standalone times out.
+	 */
+	ret = axi_adxcvr_configure();
+	if (ret) {
+		LOG_ERR("AXI adxcvr (GT) config failed (%d)", ret);
+		return ret;
+	}
+	LOG_INF("SUCCESS: GT transceivers configured (TX QPLL0 / RX CPLL)");
+
+	LOG_INF("=== bring-up milestone: all blocks configured, FSM next ===");
 	return 0;
 }
