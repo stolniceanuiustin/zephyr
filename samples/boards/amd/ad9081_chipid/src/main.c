@@ -11,6 +11,7 @@
  *   [x] AXI adxcvr: GT transceiver clock-mux config (DEVICE_INIT phase)
  *   [x] AXI jesd204 rx/tx link cores config (LINK_INIT phase)
  *   [x] AXI TPL transport cores config (datapath format / data-source select)
+ *   [x] AXI DMAC engines bound (RX S2MM capture / TX MM2S playback)
  *   [ ] JESD204 bring-up FSM: reset GT + link enable + SYSREF, then status
  *
  * IMPORTANT: JESD204 is a negotiated multi-device link -- the transceiver, link
@@ -29,6 +30,7 @@
  */
 
 #include <zephyr/kernel.h>
+#include <zephyr/device.h>
 
 #include <zephyr/logging/log.h>
 LOG_MODULE_REGISTER(main, LOG_LEVEL_INF);
@@ -107,6 +109,25 @@ int main(void)
 		return ret;
 	}
 	LOG_INF("SUCCESS: TPL transport cores configured (8 converters)");
+
+	/*
+	 * Datapath DMA engines. The ADI AXI DMAC driver binds from the overlay
+	 * and auto-probes each core (direction/width/version) at POST_KERNEL --
+	 * we just confirm both are ready. Actual capture/playback (dma_config +
+	 * dma_start) is driven later, once samples flow through the live link.
+	 */
+	{
+		const struct device *rx_dma = DEVICE_DT_GET(DT_NODELABEL(rx_dmac));
+		const struct device *tx_dma = DEVICE_DT_GET(DT_NODELABEL(tx_dmac));
+
+		if (!device_is_ready(rx_dma) || !device_is_ready(tx_dma)) {
+			LOG_ERR("AXI DMAC engines not ready (rx=%d tx=%d)",
+				device_is_ready(rx_dma), device_is_ready(tx_dma));
+			return -ENODEV;
+		}
+		LOG_INF("SUCCESS: AXI DMAC engines ready (%s, %s)",
+			rx_dma->name, tx_dma->name);
+	}
 
 	LOG_INF("=== bring-up milestone: all blocks configured, FSM next ===");
 	return 0;

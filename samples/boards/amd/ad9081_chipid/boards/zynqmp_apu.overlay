@@ -65,6 +65,29 @@
 			};
 		};
 
+		/*
+		 * AD9081 datapath DMA engines in the PL (ADI AXI DMAC). Addresses
+		 * from the on-board bitstream (system.hwh): RX is S2MM (device ->
+		 * memory, ADC capture), TX is MM2S (memory -> device, DAC playback).
+		 * Direction / data width / cyclic support are auto-probed by the
+		 * driver from the core, so we only need reg here. No interrupt line
+		 * is wired to the PS GIC for these cores; the driver falls back to
+		 * its polling path (dma_get_status pumps the transfer).
+		 */
+		rx_dmac: dma@9c420000 {
+			compatible = "adi,axi-dmac";
+			reg = <0x0 0x9c420000 0x0 0x10000>;
+			#dma-cells = <1>;
+			status = "okay";
+		};
+
+		tx_dmac: dma@9c430000 {
+			compatible = "adi,axi-dmac";
+			reg = <0x0 0x9c430000 0x0 0x10000>;
+			#dma-cells = <1>;
+			status = "okay";
+		};
+
 		psgpio: gpio@ff0a0000 {
 			compatible = "xlnx,ps-gpio";
 			status = "okay";
