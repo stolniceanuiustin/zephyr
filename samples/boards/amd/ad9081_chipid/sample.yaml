@@ -1,8 +1,10 @@
 sample:
-  name: AD9081 SPI chip-ID probe
+  name: AD9081 + HMC7044 JESD204B bring-up
   description: >
-    Reads the AD9081 PROD_ID (0x9081) over the ZynqMP PS Cadence SPI to prove
-    the SPI bring-up path (EMIO routing, clocking, CS, bit order).
+    Bottom-up bring-up of the AD9081/AD9082 MxFE + HMC7044 clock over the
+    ZynqMP PS Cadence SPI. Proves both SPI control planes (EMIO routing,
+    clocking, CS, framing): HMC7044 scratchpad check on SPI1 and AD9081
+    PROD_ID (0x9081/0x9082) on SPI0. Grows toward the full JESD204B link.
 tests:
   sample.boards.amd.ad9081_chipid:
     platform_allow:
@@ -10,6 +12,8 @@ tests:
     tags: spi
     harness: console
     harness_config:
-      type: one_line
+      type: multi_line
+      ordered: false
       regex:
+        - "SUCCESS: HMC7044 scratchpad read/write confirmed"
         - "SUCCESS: AD90[89][12] detected over SPI"

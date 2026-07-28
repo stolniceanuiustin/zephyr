@@ -7,8 +7,10 @@
  * ships without the PS SPI and PS GPIO controllers; we add them under /soc
  * (overlay nodes merge into the existing soc node).
  *
- * SPI0 -> AD9081/AD9082 (CS0), PS Cadence SPI routed over EMIO to the FMC.
- * SPI reference clock is 100 MHz (SPI0_REF_CTRL from the AD9081 XSA).
+ * SPI0 -> AD9081/AD9082 (CS0), SPI1 -> HMC7044 (CS0), both PS Cadence SPI
+ * routed over EMIO to the FMC. SPI reference clock is 100 MHz
+ * (SPI0/1_REF_CTRL from the AD9081 XSA). On ZynqMP, no-OS maps the AD9081 to
+ * PSU_SPI_0 / PHY_CS=0 and the HMC7044 to PSU_SPI_1 / CLK_CS=0.
  */
 / {
 	soc {
@@ -38,6 +40,28 @@
 				 * Active low.
 				 */
 				reset-gpios = <&psgpio_bank4 23 GPIO_ACTIVE_LOW>;
+			};
+		};
+
+		spi1: spi@ff050000 {
+			compatible = "cdns,spi";
+			reg = <0x0 0xff050000 0x0 0x1000>;
+			status = "okay";
+			interrupts = <GIC_SPI 20 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+			fifo-width = <8>;
+			rx-fifo-depth = <128>;
+			tx-fifo-depth = <128>;
+			clock-frequency = <100000000>;
+
+			hmc7044: hmc7044@0 {
+				compatible = "adi,hmc7044-probe";
+				reg = <0>;
+				/* HMC7044 SPI: mode 0, MSB first.
+				 * 10 MHz is safe for register access.
+				 */
+				spi-max-frequency = <10000000>;
 			};
 		};
 
