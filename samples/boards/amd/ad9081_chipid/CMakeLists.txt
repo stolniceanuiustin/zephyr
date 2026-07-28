@@ -13,6 +13,7 @@ target_sources(app PRIVATE
   src/hmc7044.c
   src/axi_jesd.c
   src/axi_adxcvr.c
+  src/axi_jesd204.c
   ${ADI_API_SRCS}
 )
 

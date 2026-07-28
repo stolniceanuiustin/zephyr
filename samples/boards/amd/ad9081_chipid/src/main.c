@@ -9,7 +9,8 @@
  *   [x] HMC7044 clock + SYSREF configuration (PLL1/PLL2 lock)
  *   [x] AXI plane alive: JESD204 RX/TX core identity (MAGIC/version/lanes)
  *   [x] AXI adxcvr: GT transceiver clock-mux config (DEVICE_INIT phase)
- *   [ ] AXI jesd204 rx/tx link + transport cores (configure-only)
+ *   [x] AXI jesd204 rx/tx link cores config (LINK_INIT phase)
+ *   [ ] TPL transport cores (configure-only)
  *   [ ] JESD204 bring-up FSM: reset GT + link enable + SYSREF, then status
  *
  * IMPORTANT: JESD204 is a negotiated multi-device link -- the transceiver, link
@@ -36,6 +37,7 @@ LOG_MODULE_REGISTER(main, LOG_LEVEL_INF);
 #include "hmc7044.h"
 #include "axi_jesd.h"
 #include "axi_adxcvr.h"
+#include "axi_jesd204.h"
 
 int main(void)
 {
@@ -88,6 +90,14 @@ int main(void)
 		return ret;
 	}
 	LOG_INF("SUCCESS: GT transceivers configured (TX QPLL0 / RX CPLL)");
+
+	/* JESD204 link cores: program link geometry + ILAS, held disabled. */
+	ret = axi_jesd204_configure();
+	if (ret) {
+		LOG_ERR("AXI jesd204 link config failed (%d)", ret);
+		return ret;
+	}
+	LOG_INF("SUCCESS: JESD204 link cores configured (M8/L4/F4/K32)");
 
 	LOG_INF("=== bring-up milestone: all blocks configured, FSM next ===");
 	return 0;
