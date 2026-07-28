@@ -16,7 +16,8 @@ target_sources(app PRIVATE
   src/axi_jesd204.c
   src/axi_tpl.c
   src/jesd_fsm.c
+  src/xilinx_transceiver.c
   ${ADI_API_SRCS}
 )
 
-target_include_directories(app PRIVATE src/adi_api)
+target_include_directories(app PRIVATE src src/adi_api)

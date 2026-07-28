@@ -32,6 +32,7 @@
 LOG_MODULE_REGISTER(axi_adxcvr, LOG_LEVEL_INF);
 
 #include "axi_adxcvr.h"
+#include "xilinx_transceiver.h"
 
 /*
  * AXI base addresses (from the on-board bitstream system.hwh). Not in the A53
@@ -44,10 +45,39 @@ LOG_MODULE_REGISTER(axi_adxcvr, LOG_LEVEL_INF);
 
 /* Register offsets (no-OS axi_adxcvr.c). */
 #define ADXCVR_REG_VERSION 0x0000
+#define ADXCVR_REG_FPGA_INFO    0x001C
+#define ADXCVR_REG_FPGA_VOLTAGE 0x0140
 #define ADXCVR_REG_RESETN  0x0010
 #define ADXCVR_REG_STATUS  0x0014
 #define ADXCVR_REG_CONTROL 0x0020
 #define ADXCVR_REG_SYNTH   0x0024
+
+/* FPGA info decode (no-OS xilinx_transceiver.h AXI_INFO_*). */
+#define ADXCVR_INFO_TECH(x)        ((x) >> 24)
+#define ADXCVR_INFO_FAMILY(x)      (((x) >> 16) & 0xff)
+#define ADXCVR_INFO_SPEED_GRADE(x) (((x) >> 8) & 0xff)
+#define ADXCVR_INFO_DEV_PACKAGE(x) ((x) & 0xff)
+#define ADXCVR_INFO_VOLTAGE(x)     ((x) & 0xffff)
+
+/* Link-mode field of REG_SYNTH: 1 = 204B (8b/10b), 2 = 204C (64b/66b). */
+#define ADXCVR_SYNTH_LINK_MODE(x)  (((x) >> 12) & 0x3)
+#define ADXCVR_LINK_MODE_204B      1
+#define ADXCVR_LINK_MODE_204C      2
+
+/* DRP indirection registers (no-OS axi_adxcvr.c). */
+#define ADXCVR_REG_DRP_SEL(x)    (0x0040 + (x))
+#define ADXCVR_REG_DRP_CTRL(x)   (0x0044 + (x))
+#define ADXCVR_DRP_CTRL_WR       BIT(28)
+#define ADXCVR_DRP_CTRL_ADDR(x)  (((x) & 0xFFF) << 16)
+#define ADXCVR_DRP_CTRL_WDATA(x) (((x) & 0xFFFF) << 0)
+#define ADXCVR_REG_DRP_STATUS(x) (0x0048 + (x))
+#define ADXCVR_DRP_STATUS_BUSY   BIT(16)
+#define ADXCVR_DRP_STATUS_RDATA(x) (((x) & 0xFFFF) << 0)
+
+#define ADXCVR_DRP_PORT_ADDR_COMMON  0x00
+#define ADXCVR_DRP_PORT_ADDR_CHANNEL 0x20
+#define ADXCVR_DRP_PORT_COMMON(x)    (x)
+#define ADXCVR_DRP_PORT_CHANNEL(x)   (0x100 + (x))
 
 /* REG_RESETN bits. */
 #define ADXCVR_RESETN        BIT(0)
@@ -87,19 +117,40 @@ LOG_MODULE_REGISTER(axi_adxcvr, LOG_LEVEL_INF);
 #define PCORE_VER_MINOR(x) (((x) >> 8) & 0xff)
 #define PCORE_VER_PATCH(x) ((x) & 0xff)
 
-/* One GT transceiver instance (TX or RX side). */
+/*
+ * One GT transceiver instance (TX or RX side). Note struct adxcvr is forward-
+ * declared to the verbatim xilinx_transceiver.c via xcvr_shim.h; that file only
+ * ever handles a pointer to it and calls adxcvr_drp_read/write (below), so the
+ * full definition living here is fine.
+ */
 struct adxcvr {
 	const char *name;
 	uintptr_t base;
 	uint8_t sys_clk_sel;
 	uint8_t out_clk_sel;
 	bool lpm_enable;
+	bool cpll_enable;
+	bool qpll_enable;
+	/* target rates for the DRP divider solve (kHz). */
+	uint32_t lane_rate_khz;
+	uint32_t ref_rate_khz;
 	/* read back from the core */
 	uint32_t version;
 	uint32_t num_lanes;
 	bool tx_enable;
 	uint32_t xcvr_type;
+	/* Xilinx GT reconfiguration state (drives the verbatim DRP math). */
+	struct xilinx_xcvr xlx_xcvr;
 };
+
+/*
+ * zcu102 ad9081_m8_l4 profile (no-OS ADXCVR_*_KHZ): 10 Gbps lanes off a 500 MHz
+ * GT refclk. TX uses QPLL0, RX uses CPLL. These are the rates no-OS feeds to
+ * adxcvr_clk_set_rate() -- programming the GT dividers over DRP at runtime
+ * rather than trusting whatever the bitstream synthesised.
+ */
+#define ADXCVR_REF_CLK_KHZ  500000
+#define ADXCVR_LANE_CLK_KHZ 10000000
 
 static struct adxcvr adxcvr_tx = {
 	.name = "tx_adxcvr",
@@ -107,6 +158,8 @@ static struct adxcvr adxcvr_tx = {
 	.sys_clk_sel = ADXCVR_SYS_CLK_QPLL0,
 	.out_clk_sel = ADXCVR_PROGDIV_CLK,
 	.lpm_enable = false,
+	.lane_rate_khz = ADXCVR_LANE_CLK_KHZ,
+	.ref_rate_khz = ADXCVR_REF_CLK_KHZ,
 };
 
 static struct adxcvr adxcvr_rx = {
@@ -115,6 +168,8 @@ static struct adxcvr adxcvr_rx = {
 	.sys_clk_sel = ADXCVR_SYS_CLK_CPLL,
 	.out_clk_sel = ADXCVR_PROGDIV_CLK,
 	.lpm_enable = true,
+	.lane_rate_khz = ADXCVR_LANE_CLK_KHZ,
+	.ref_rate_khz = ADXCVR_REF_CLK_KHZ,
 };
 
 static inline uint32_t adxcvr_read(const struct adxcvr *x, uint32_t reg)
@@ -126,6 +181,69 @@ static inline void adxcvr_write(const struct adxcvr *x, uint32_t reg,
 				uint32_t val)
 {
 	sys_write32(val, x->base + reg);
+}
+
+/*
+ * DRP (Dynamic Reconfiguration Port) accessors. The verbatim GT divider math in
+ * xilinx_transceiver.c reaches the transceiver only through these two functions
+ * (declared in xcvr_shim.h). Ports of no-OS adxcvr_drp_read/write +
+ * adxcvr_drp_wait_idle; plain AXI MMIO under the hood.
+ */
+static int adxcvr_drp_wait_idle(struct adxcvr *x, uint32_t drp_addr)
+{
+	uint32_t val;
+	int timeout = 20;
+
+	while (timeout-- > 0) {
+		val = adxcvr_read(x, ADXCVR_REG_DRP_STATUS(drp_addr));
+		if (!(val & ADXCVR_DRP_STATUS_BUSY)) {
+			return ADXCVR_DRP_STATUS_RDATA(val);
+		}
+		k_msleep(1);
+	}
+
+	LOG_ERR("%s: DRP wait idle timeout", x->name);
+	return -1;
+}
+
+int adxcvr_drp_read(struct adxcvr *x, unsigned int drp_port,
+		    unsigned int reg, unsigned int *val)
+{
+	uint32_t drp_addr = (drp_port < ADXCVR_DRP_PORT_CHANNEL(0)) ?
+			    ADXCVR_DRP_PORT_ADDR_COMMON :
+			    ADXCVR_DRP_PORT_ADDR_CHANNEL;
+	int ret;
+
+	adxcvr_write(x, ADXCVR_REG_DRP_SEL(drp_addr), drp_port & 0xFF);
+	adxcvr_write(x, ADXCVR_REG_DRP_CTRL(drp_addr), ADXCVR_DRP_CTRL_ADDR(reg));
+
+	ret = adxcvr_drp_wait_idle(x, drp_addr);
+	if (ret < 0) {
+		return ret;
+	}
+
+	*val = ret & 0xFFFF;
+	return 0;
+}
+
+int adxcvr_drp_write(struct adxcvr *x, unsigned int drp_port,
+		     unsigned int reg, unsigned int val)
+{
+	uint32_t drp_addr = (drp_port < ADXCVR_DRP_PORT_CHANNEL(0)) ?
+			    ADXCVR_DRP_PORT_ADDR_COMMON :
+			    ADXCVR_DRP_PORT_ADDR_CHANNEL;
+	int ret;
+
+	adxcvr_write(x, ADXCVR_REG_DRP_SEL(drp_addr), drp_port & 0xFF);
+	adxcvr_write(x, ADXCVR_REG_DRP_CTRL(drp_addr),
+		     ADXCVR_DRP_CTRL_WR | ADXCVR_DRP_CTRL_ADDR(reg) |
+		     ADXCVR_DRP_CTRL_WDATA(val));
+
+	ret = adxcvr_drp_wait_idle(x, drp_addr);
+	if (ret < 0) {
+		return ret;
+	}
+	return 0;
 }
 
 static int axi_adxcvr_map(void)
@@ -155,15 +273,166 @@ SYS_INIT(axi_adxcvr_map, PRE_KERNEL_1, 0);
  * no-OS adxcvr_init() steps 1-6 (minus the DRP set_rate). Returns 0, or negative
  * errno if the core reports an unexpected transceiver type.
  */
+/*
+ * Read the FPGA identity registers into xlx_xcvr. The verbatim VCO-range setup
+ * (xilinx_xcvr_setup_cpll/qpll_vco_range) consults tech/family/speed/package/
+ * voltage when PCORE major > 0x10, so they must be populated. Port of no-OS
+ * adxcvr_get_info().
+ */
+static void adxcvr_get_info(struct adxcvr *x)
+{
+	uint32_t info = adxcvr_read(x, ADXCVR_REG_FPGA_INFO);
+	uint32_t volt = adxcvr_read(x, ADXCVR_REG_FPGA_VOLTAGE);
+
+	x->xlx_xcvr.tech = ADXCVR_INFO_TECH(info);
+	x->xlx_xcvr.family = ADXCVR_INFO_FAMILY(info);
+	x->xlx_xcvr.speed_grade = ADXCVR_INFO_SPEED_GRADE(info);
+	x->xlx_xcvr.dev_package = ADXCVR_INFO_DEV_PACKAGE(info);
+	x->xlx_xcvr.voltage = ADXCVR_INFO_VOLTAGE(volt);
+}
+
+/*
+ * Program the GT dividers over DRP for the target lane rate. Verbatim port of
+ * no-OS adxcvr_clk_set_rate(): solve the CPLL/QPLL config, then write OUT_DIV,
+ * PROGDIV (+rate), CDR and CLK25_DIV per lane. This is the step the "trust the
+ * bitstream" build skipped -- without it the GT output clock never runs and
+ * RESET_DONE never asserts (STATUS stays 0x0).
+ */
+static int adxcvr_clk_set_rate(struct adxcvr *x, unsigned long rate,
+			       unsigned long parent_rate)
+{
+	struct xilinx_xcvr_cpll_config cpll_conf;
+	struct xilinx_xcvr_qpll_config qpll_conf;
+	uint32_t out_div, clk25_div, prog_div;
+	uint32_t i;
+	int ret = 0;
+
+	clk25_div = DIV_ROUND_CLOSEST(parent_rate, 25000);
+
+	if (x->cpll_enable) {
+		ret = xilinx_xcvr_calc_cpll_config(&x->xlx_xcvr, parent_rate, rate,
+						   &cpll_conf, &out_div);
+	} else {
+		ret = xilinx_xcvr_calc_qpll_config(&x->xlx_xcvr, x->sys_clk_sel,
+						   parent_rate, rate, &qpll_conf,
+						   &out_div);
+	}
+	if (ret < 0) {
+		LOG_ERR("%s: no %s config for %lu kHz @ ref %lu kHz", x->name,
+			x->cpll_enable ? "CPLL" : "QPLL", rate, parent_rate);
+		return ret;
+	}
+
+	for (i = 0; i < x->num_lanes; i++) {
+		if (x->cpll_enable) {
+			ret = xilinx_xcvr_cpll_write_config(&x->xlx_xcvr,
+					ADXCVR_DRP_PORT_CHANNEL(i), &cpll_conf);
+		} else if ((i % 4 == 0) && x->qpll_enable) {
+			ret = xilinx_xcvr_qpll_write_config(&x->xlx_xcvr,
+					x->sys_clk_sel,
+					ADXCVR_DRP_PORT_COMMON(i), &qpll_conf);
+		}
+		if (ret < 0) {
+			return ret;
+		}
+
+		ret = xilinx_xcvr_write_out_div(&x->xlx_xcvr,
+				ADXCVR_DRP_PORT_CHANNEL(i),
+				x->tx_enable ? -1 : (int32_t)out_div,
+				x->tx_enable ? (int32_t)out_div : -1);
+		if (ret < 0) {
+			return ret;
+		}
+
+		if (x->out_clk_sel == ADXCVR_PROGDIV_CLK) {
+			unsigned int max_progdiv, div = 1, ratio;
+
+			if (x->xlx_xcvr.encoding == ENC_66B64B) {
+				ratio = 66;
+			} else {
+				ratio = 40;
+			}
+
+			/* Set RX|TX_PROGDIV_RATE = 2 on GTY4. */
+			ret = xilinx_xcvr_write_prog_div_rate(&x->xlx_xcvr,
+					ADXCVR_DRP_PORT_CHANNEL(i),
+					x->tx_enable ? -1 : 2,
+					x->tx_enable ? 2 : -1);
+			if (!ret) {
+				div = 2;
+			}
+
+			switch (x->xlx_xcvr.type) {
+			case XILINX_XCVR_TYPE_US_GTH3:
+				max_progdiv = 100;
+				if (x->xlx_xcvr.encoding == ENC_66B64B) {
+					div = 2;
+				}
+				break;
+			case XILINX_XCVR_TYPE_US_GTH4:
+				max_progdiv = 132;
+				if (x->xlx_xcvr.encoding == ENC_66B64B) {
+					div = 2;
+				}
+				break;
+			case XILINX_XCVR_TYPE_US_GTY4:
+				max_progdiv = 100;
+				break;
+			default:
+				return -EINVAL;
+			}
+
+			prog_div = DIV_ROUND_CLOSEST(ratio * out_div, 2 * div);
+
+			if (prog_div > max_progdiv) {
+				prog_div = 0; /* disabled */
+				LOG_WRN("%s: no PROGDIV for OUTDIV=%u, disabling output",
+					x->name, out_div);
+			}
+
+			ret = xilinx_xcvr_write_prog_div(&x->xlx_xcvr,
+					ADXCVR_DRP_PORT_CHANNEL(i),
+					x->tx_enable ? -1 : (int32_t)prog_div,
+					x->tx_enable ? (int32_t)prog_div : -1);
+			if (ret < 0) {
+				return ret;
+			}
+		}
+
+		if (!x->tx_enable) {
+			ret = xilinx_xcvr_configure_cdr(&x->xlx_xcvr,
+					ADXCVR_DRP_PORT_CHANNEL(i), rate, out_div,
+					x->lpm_enable);
+			if (ret < 0) {
+				return ret;
+			}
+			ret = xilinx_xcvr_write_rx_clk25_div(&x->xlx_xcvr,
+					ADXCVR_DRP_PORT_CHANNEL(i), clk25_div);
+		} else {
+			ret = xilinx_xcvr_write_tx_clk25_div(&x->xlx_xcvr,
+					ADXCVR_DRP_PORT_CHANNEL(i), clk25_div);
+		}
+		if (ret < 0) {
+			return ret;
+		}
+	}
+
+	x->lane_rate_khz = rate;
+	return 0;
+}
+
 static int adxcvr_configure(struct adxcvr *x)
 {
 	uint32_t synth = adxcvr_read(x, ADXCVR_REG_SYNTH);
 	uint32_t control;
+	int ret;
 
 	x->version = adxcvr_read(x, ADXCVR_REG_VERSION);
 	x->num_lanes = ADXCVR_SYNTH_NUM_LANES(synth);
 	x->tx_enable = ADXCVR_SYNTH_TX_ENABLE(synth);
 	x->xcvr_type = ADXCVR_SYNTH_XCVR_TYPE(synth);
+	x->qpll_enable = (synth >> 20) & 1;
+	x->cpll_enable = (x->sys_clk_sel == ADXCVR_SYS_CLK_CPLL);
 
 	LOG_INF("%s @ 0x%08lx: PCORE v%u.%u.%u, %u lanes, type=%u, %s",
 		x->name, (unsigned long)x->base,
@@ -177,6 +446,18 @@ static int adxcvr_configure(struct adxcvr *x)
 			XILINX_XCVR_TYPE_US_GTH4);
 	}
 
+	/* Populate the Xilinx GT reconfiguration context for the DRP math. */
+	x->xlx_xcvr.ad_xcvr = x;
+	x->xlx_xcvr.type = x->xcvr_type;
+	x->xlx_xcvr.version = x->version;
+	x->xlx_xcvr.refclk_ppm = PM_200;
+	x->xlx_xcvr.encoding =
+		(ADXCVR_SYNTH_LINK_MODE(synth) == ADXCVR_LINK_MODE_204C) ?
+		ENC_66B64B : ENC_8B10B;
+	if (PCORE_VER_MAJOR(x->version) > 0x10) {
+		adxcvr_get_info(x);
+	}
+
 	/* Assert reset while we set the clock selection. */
 	adxcvr_write(x, ADXCVR_REG_RESETN, 0);
 
@@ -185,9 +466,22 @@ static int adxcvr_configure(struct adxcvr *x)
 		  ADXCVR_OUTCLK_SEL(x->out_clk_sel);
 	adxcvr_write(x, ADXCVR_REG_CONTROL, control);
 
-	LOG_INF("%s: CONTROL=0x%04x (sysclk=%u outclk=%u lpm=%u)",
+	LOG_INF("%s: CONTROL=0x%04x (sysclk=%u outclk=%u lpm=%u) enc=%s",
 		x->name, control, x->sys_clk_sel, x->out_clk_sel,
-		x->lpm_enable);
+		x->lpm_enable,
+		x->xlx_xcvr.encoding == ENC_66B64B ? "64b/66b" : "8b/10b");
+
+	/*
+	 * Program the GT dividers over DRP (no-OS did this in adxcvr_init). Held
+	 * in reset above; the FSM releases reset later in adxcvr_clk_enable().
+	 */
+	ret = adxcvr_clk_set_rate(x, x->lane_rate_khz, x->ref_rate_khz);
+	if (ret) {
+		LOG_ERR("%s: GT divider programming failed (%d)", x->name, ret);
+		return ret;
+	}
+	LOG_INF("%s: GT dividers programmed for %u kHz lane @ %u kHz ref",
+		x->name, x->lane_rate_khz, x->ref_rate_khz);
 
 	return 0;
 }
