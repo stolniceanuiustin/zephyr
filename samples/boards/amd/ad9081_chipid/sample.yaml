@@ -1,0 +1,15 @@
+sample:
+  name: AD9081 SPI chip-ID probe
+  description: >
+    Reads the AD9081 PROD_ID (0x9081) over the ZynqMP PS Cadence SPI to prove
+    the SPI bring-up path (EMIO routing, clocking, CS, bit order).
+tests:
+  sample.boards.amd.ad9081_chipid:
+    platform_allow:
+      - zynqmp_apu
+    tags: spi
+    harness: console
+    harness_config:
+      type: one_line
+      regex:
+        - "SUCCESS: AD90[89][12] detected over SPI"

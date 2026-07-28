@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# Minimal binding for the AD9081 SPI chip-ID probe sample. Just an SPI device
+# with a reset (RSTB) GPIO -- not a full AD9081 driver binding.
+
+description: AD9081 SPI chip-ID probe device
+
+compatible: "adi,ad9081-probe"
+
+include:
+  - name: spi-device.yaml
+
+properties:
+  reset-gpios:
+    type: phandle-array
+    description: AD9081 hardware reset (RSTB), active low.

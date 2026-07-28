@@ -1,0 +1,110 @@
+#include <zephyr/dt-bindings/gpio/gpio.h>
+#include <zephyr/dt-bindings/interrupt-controller/arm-gic.h>
+
+/*
+ * Everything this sample needs is defined here in the overlay, so no shared
+ * SoC/board devicetree files have to be touched. The arm64 zynqmp_a53.dtsi
+ * ships without the PS SPI and PS GPIO controllers; we add them under /soc
+ * (overlay nodes merge into the existing soc node).
+ *
+ * SPI0 -> AD9081/AD9082 (CS0), PS Cadence SPI routed over EMIO to the FMC.
+ * SPI reference clock is 100 MHz (SPI0_REF_CTRL from the AD9081 XSA).
+ */
+/ {
+	soc {
+		spi0: spi@ff040000 {
+			compatible = "cdns,spi";
+			reg = <0x0 0xff040000 0x0 0x1000>;
+			status = "okay";
+			interrupts = <GIC_SPI 19 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+			fifo-width = <8>;
+			rx-fifo-depth = <128>;
+			tx-fifo-depth = <128>;
+			clock-frequency = <100000000>;
+
+			ad9081: ad9081@0 {
+				compatible = "adi,ad9081-probe";
+				reg = <0>;
+				/* AD9081/AD9082 SPI: mode 0, MSB first.
+				 * 10 MHz is safe for register access.
+				 */
+				spi-max-frequency = <10000000>;
+				/*
+				 * RSTB. no-OS zcu102 PHY_RESET =
+				 * GPIO_OFFSET(78) + 55 = global PS GPIO 133 =
+				 * EMIO pin 55 = bank4 (EMIO[63:32]) pin 23.
+				 * Active low.
+				 */
+				reset-gpios = <&psgpio_bank4 23 GPIO_ACTIVE_LOW>;
+			};
+		};
+
+		psgpio: gpio@ff0a0000 {
+			compatible = "xlnx,ps-gpio";
+			status = "okay";
+			reg = <0x0 0xff0a0000 0x0 0x1000>;
+			interrupts = <GIC_SPI 16 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>;
+			interrupt-names = "irq_0";
+
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			/* MIO banks 0..2, EMIO banks 3..5 (see xlnx,ps-gpio). */
+			psgpio_bank0: psgpio_bank@0 {
+				compatible = "xlnx,ps-gpio-bank";
+				reg = <0x0>;
+				gpio-controller;
+				#gpio-cells = <2>;
+				ngpios = <26>;
+				status = "okay";
+			};
+
+			psgpio_bank1: psgpio_bank@1 {
+				compatible = "xlnx,ps-gpio-bank";
+				reg = <0x1>;
+				gpio-controller;
+				#gpio-cells = <2>;
+				ngpios = <26>;
+				status = "okay";
+			};
+
+			psgpio_bank2: psgpio_bank@2 {
+				compatible = "xlnx,ps-gpio-bank";
+				reg = <0x2>;
+				gpio-controller;
+				#gpio-cells = <2>;
+				ngpios = <26>;
+				status = "okay";
+			};
+
+			psgpio_bank3: psgpio_bank@3 {
+				compatible = "xlnx,ps-gpio-bank";
+				reg = <0x3>;
+				gpio-controller;
+				#gpio-cells = <2>;
+				ngpios = <32>;
+				status = "okay";
+			};
+
+			psgpio_bank4: psgpio_bank@4 {
+				compatible = "xlnx,ps-gpio-bank";
+				reg = <0x4>;
+				gpio-controller;
+				#gpio-cells = <2>;
+				ngpios = <32>;
+				status = "okay";
+			};
+
+			psgpio_bank5: psgpio_bank@5 {
+				compatible = "xlnx,ps-gpio-bank";
+				reg = <0x5>;
+				gpio-controller;
+				#gpio-cells = <2>;
+				ngpios = <32>;
+				status = "okay";
+			};
+		};
+	};
+};
