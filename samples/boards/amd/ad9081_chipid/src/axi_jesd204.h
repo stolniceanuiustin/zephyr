@@ -25,4 +25,11 @@ int axi_jesd204_configure(void);
 int axi_jesd204_tx_lane_clk_enable(void);
 int axi_jesd204_rx_lane_clk_enable(void);
 
+/*
+ * Read and log the TX/RX link state (link enabled?, CGS/ILAS/DATA phase).
+ * Returns 0 when both the framer and deframer report DATA, -EIO otherwise.
+ * Meaningful only at the end of the bring-up sequence (LINK_RUNNING).
+ */
+int axi_jesd204_status_read(void);
+
 #endif /* AXI_JESD204_H_ */

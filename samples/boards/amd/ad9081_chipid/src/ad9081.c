@@ -23,6 +23,7 @@
 #include <zephyr/init.h>
 #include <zephyr/kernel/mm.h>
 #include <zephyr/sys/device_mmio.h>
+#include <string.h>
 
 #include <zephyr/logging/log.h>
 LOG_MODULE_REGISTER(ad9081, LOG_LEVEL_INF);
@@ -238,5 +239,183 @@ int ad9081_probe(uint16_t *prod_id)
 	if (prod_id) {
 		*prod_id = chip_id.prod_id;
 	}
+	return 0;
+}
+
+void *ad9081_get_device(void)
+{
+	return &ad9081_dev;
+}
+
+/*
+ * ------------------------- MxFE datapath configuration ------------------------
+ *
+ * Parameters are the zcu102_ad9081_m8_l4 profile (no-OS
+ * projects/ad9081/profiles/zcu102_ad9081_m8_l4/app_config.h), driven through the
+ * ADI API exactly as no-OS ad9081_setup()/setup_tx()/setup_rx().
+ *
+ *   DAC 12 GHz, ADC 4 GHz, device REFCLK 250 MHz (on-chip CLK PLL used).
+ *   TX: main interp 6, chan interp 8; JRX deframer mode 9, M8 L4 F4 K32 NP16.
+ *   RX: coarse/fine decim 4/4; JTX framer mode 10, M8 L4 F4 K32 NP16.
+ */
+
+/* Clocks. */
+#define AD9081_DAC_CLK_HZ 12000000000ULL
+#define AD9081_ADC_CLK_HZ 4000000000ULL
+#define AD9081_REF_CLK_HZ 250000000ULL
+
+/* TX (JRX / deframer) datapath. */
+#define AD9081_TX_MAIN_INTERP 6
+#define AD9081_TX_CHAN_INTERP 8
+
+static uint8_t tx_dac_chan_xbar[4] = { 0x1, 0x2, 0x4, 0x8 };
+static int64_t tx_main_shift[4] = { 2000000000, 2000000000, 2000000000,
+				    2000000000 };
+static int64_t tx_chan_shift[8] = { 0 };
+static uint16_t tx_chan_gain[8] = { 1024, 1024, 1024, 1024, 0, 0, 0, 0 };
+static uint8_t tx_logical_lane_map[8] = { 0, 2, 7, 7, 1, 7, 7, 3 };
+
+static adi_cms_jesd_param_t tx_jesd_param = {
+	.jesd_l = 4,
+	.jesd_f = 4,
+	.jesd_m = 8,
+	.jesd_s = 1,
+	.jesd_hd = 1,
+	.jesd_k = 32,
+	.jesd_n = 16,
+	.jesd_np = 16,
+	.jesd_cs = 0,
+	.jesd_subclass = 1,
+	.jesd_scr = 1,
+	.jesd_duallink = 0,
+	.jesd_jesdv = 1,
+	.jesd_mode_id = 9,
+};
+
+/* RX (JTX / framer) datapath. */
+static uint8_t rx_cddc_select = 0xF;  /* all 4 coarse DDCs */
+static uint8_t rx_fddc_select = 0x33; /* fine DDCs 0,1,4,5 */
+static int64_t rx_cddc_shift[4] = { 2000000000, 2000000000, 2000000000,
+				    2000000000 };
+static int64_t rx_fddc_shift[8] = { 0 };
+static uint8_t rx_cddc_dcm[4] = { AD9081_CDDC_DCM_4, AD9081_CDDC_DCM_4,
+				  AD9081_CDDC_DCM_4, AD9081_CDDC_DCM_4 };
+static uint8_t rx_fddc_dcm[8] = { AD9081_FDDC_DCM_4, AD9081_FDDC_DCM_4, 0, 0,
+				  AD9081_FDDC_DCM_4, AD9081_FDDC_DCM_4, 0, 0 };
+static uint8_t rx_cc2r_en[4] = { 0 };
+static uint8_t rx_fc2r_en[8] = { 0 };
+static uint8_t rx_logical_lane_map[8] = { 2, 0, 7, 7, 7, 7, 3, 1 };
+static uint8_t rx_link_converter_select[16] = { 0, 1, 2, 3, 8, 9, 10, 11,
+						0, 0, 0, 0, 0,  0, 0,  0 };
+
+static adi_cms_jesd_param_t rx_jesd_param[2] = {
+	[0] = {
+		.jesd_l = 4,
+		.jesd_f = 4,
+		.jesd_m = 8,
+		.jesd_s = 1,
+		.jesd_hd = 1,
+		.jesd_k = 32,
+		.jesd_n = 16,
+		.jesd_np = 16,
+		.jesd_cs = 0,
+		.jesd_subclass = 1,
+		.jesd_scr = 1,
+		.jesd_duallink = 0,
+		.jesd_jesdv = 1,
+		.jesd_mode_id = 10,
+	},
+};
+
+static adi_ad9081_jtx_conv_sel_t rx_jesd_conv_sel[2];
+
+/* Map the flat converter-select array into the ADI per-virtual-converter struct. */
+static void ad9081_fill_conv_sel(void)
+{
+	adi_ad9081_jtx_conv_sel_t *s = &rx_jesd_conv_sel[0];
+
+	s->virtual_converter0_index = rx_link_converter_select[0];
+	s->virtual_converter1_index = rx_link_converter_select[1];
+	s->virtual_converter2_index = rx_link_converter_select[2];
+	s->virtual_converter3_index = rx_link_converter_select[3];
+	s->virtual_converter4_index = rx_link_converter_select[4];
+	s->virtual_converter5_index = rx_link_converter_select[5];
+	s->virtual_converter6_index = rx_link_converter_select[6];
+	s->virtual_converter7_index = rx_link_converter_select[7];
+	s->virtual_converter8_index = rx_link_converter_select[8];
+	s->virtual_converter9_index = rx_link_converter_select[9];
+	s->virtual_convertera_index = rx_link_converter_select[10];
+	s->virtual_converterb_index = rx_link_converter_select[11];
+	s->virtual_converterc_index = rx_link_converter_select[12];
+	s->virtual_converterd_index = rx_link_converter_select[13];
+	s->virtual_convertere_index = rx_link_converter_select[14];
+	s->virtual_converterf_index = rx_link_converter_select[15];
+}
+
+int ad9081_setup_datapath(void)
+{
+	adi_ad9081_device_t *dev = &ad9081_dev;
+	uint8_t pll_status;
+	int32_t err;
+
+	LOG_INF("AD9081 datapath setup (DAC 12G / ADC 4G, ref 250M)");
+
+	/* On-chip CLK PLL: ref (250M) != dac (12G), so the PLL is engaged. */
+	err = adi_ad9081_device_clk_config_set(dev, AD9081_DAC_CLK_HZ,
+					       AD9081_ADC_CLK_HZ,
+					       AD9081_REF_CLK_HZ);
+	if (err != API_CMS_ERROR_OK) {
+		LOG_ERR("clk_config_set failed (%d)", err);
+		return -EIO;
+	}
+
+	err = adi_ad9081_device_clk_pll_lock_status_get(dev, &pll_status);
+	if (err != API_CMS_ERROR_OK) {
+		LOG_ERR("clk_pll_lock_status_get failed (%d)", err);
+		return -EIO;
+	}
+	if (pll_status != 3) {
+		LOG_ERR("device CLK PLL not locked (status=0x%x)", pll_status);
+		return -EIO;
+	}
+	LOG_INF("device CLK PLL locked (status=0x%x)", pll_status);
+
+	/* TX deframer (JRX): install chip-side lane map, start the TX datapath. */
+	memcpy(dev->serdes_info.des_settings.lane_mapping[0],
+	       tx_logical_lane_map, sizeof(tx_logical_lane_map));
+
+	err = adi_ad9081_device_startup_tx(dev, AD9081_TX_MAIN_INTERP,
+					   AD9081_TX_CHAN_INTERP,
+					   tx_dac_chan_xbar, tx_main_shift,
+					   tx_chan_shift, &tx_jesd_param);
+	if (err != API_CMS_ERROR_OK) {
+		LOG_ERR("device_startup_tx failed (%d)", err);
+		return -EIO;
+	}
+
+	err = adi_ad9081_dac_duc_nco_gains_set(dev, tx_chan_gain);
+	if (err != API_CMS_ERROR_OK) {
+		LOG_ERR("dac_duc_nco_gains_set failed (%d)", err);
+		return -EIO;
+	}
+	LOG_INF("TX datapath up: interp %ux%u, JRX deframer mode 9 (M8 L4 F4)",
+		AD9081_TX_MAIN_INTERP, AD9081_TX_CHAN_INTERP);
+
+	/* RX framer (JTX): install chip-side lane map + converter select. */
+	memcpy(dev->serdes_info.ser_settings.lane_mapping[0],
+	       rx_logical_lane_map, sizeof(rx_logical_lane_map));
+	ad9081_fill_conv_sel();
+
+	err = adi_ad9081_device_startup_rx(dev, rx_cddc_select, rx_fddc_select,
+					   rx_cddc_shift, rx_fddc_shift,
+					   rx_cddc_dcm, rx_fddc_dcm, rx_cc2r_en,
+					   rx_fc2r_en, rx_jesd_param,
+					   rx_jesd_conv_sel);
+	if (err != API_CMS_ERROR_OK) {
+		LOG_ERR("device_startup_rx failed (%d)", err);
+		return -EIO;
+	}
+	LOG_INF("RX datapath up: decim 4/4, JTX framer mode 10 (M8 L4 F4)");
+
 	return 0;
 }

@@ -46,6 +46,8 @@ LOG_MODULE_REGISTER(axi_jesd204, LOG_LEVEL_INF);
 /* TX uses CONF0 at 0x210; RX uses LINK_CONF0 at 0x210 (same offset). */
 #define JESD204_REG_CONF0             0x210
 #define JESD204_REG_LINK_CONF4        0x21C
+#define JESD204_RG_LINK_STATE         0xc4
+#define JESD204_REG_LINK_STATUS       0x280
 #define JESD204_RX_REG_LINK_CONF2     0x240
 #define JESD204_TX_REG_ILAS(x, y)     (((x) * 32 + (y) * 4) + 0x310)
 
@@ -274,4 +276,31 @@ int axi_jesd204_rx_lane_clk_enable(void)
 {
 	jesd_write(&jesd_rx, JESD204_REG_LINK_DISABLE, 0x0);
 	return 0;
+}
+
+/* TX deframer link-state label (8B/10B: WAIT/CGS/ILAS/DATA). */
+static const char *const tx_status_label[] = { "WAIT", "CGS", "ILAS", "DATA" };
+/* RX framer link-state label (8B/10B: RESET/WAIT-PHY/CGS/DATA). */
+static const char *const rx_status_label[] = { "RESET", "WAIT_PHY", "CGS",
+					       "DATA" };
+
+int axi_jesd204_status_read(void)
+{
+	uint32_t tx_state = jesd_read(&jesd_tx, JESD204_RG_LINK_STATE) & 0x1;
+	uint32_t rx_state = jesd_read(&jesd_rx, JESD204_RG_LINK_STATE) & 0x1;
+	uint32_t tx_status = jesd_read(&jesd_tx, JESD204_REG_LINK_STATUS);
+	uint32_t rx_status = jesd_read(&jesd_rx, JESD204_REG_LINK_STATUS);
+
+	LOG_INF("jesd204-tx: link %s, status=0x%08x [%s]",
+		tx_state ? "disabled" : "enabled", tx_status,
+		tx_status_label[tx_status & 0x3]);
+	LOG_INF("jesd204-rx: link %s, status=0x%08x [%s]",
+		rx_state ? "disabled" : "enabled", rx_status,
+		rx_status_label[rx_status & 0x3]);
+
+	/* Both ends carrying DATA (0x3) is the healthy end state. */
+	if ((tx_status & 0x3) == 0x3 && (rx_status & 0x3) == 0x3) {
+		return 0;
+	}
+	return -EIO;
 }

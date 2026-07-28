@@ -12,7 +12,8 @@
  *   [x] AXI jesd204 rx/tx link cores config (LINK_INIT phase)
  *   [x] AXI TPL transport cores config (datapath format / data-source select)
  *   [x] AXI DMAC engines bound (RX S2MM capture / TX MM2S playback)
- *   [ ] JESD204 bring-up FSM: reset GT + link enable + SYSREF, then status
+ *   [x] AD9082 datapath config (CLK PLL, TX/RX NCOs, on-chip JESD framer/deframer)
+ *   [x] JESD204 bring-up FSM: reset GT + link enable + SYSREF, then status
  *
  * IMPORTANT: JESD204 is a negotiated multi-device link -- the transceiver, link
  * cores, SYSREF and the AD9082 cannot be brought up or status-checked in
@@ -41,6 +42,7 @@ LOG_MODULE_REGISTER(main, LOG_LEVEL_INF);
 #include "axi_adxcvr.h"
 #include "axi_jesd204.h"
 #include "axi_tpl.h"
+#include "jesd_fsm.h"
 
 int main(void)
 {
@@ -72,6 +74,19 @@ int main(void)
 		return ret;
 	}
 	LOG_INF("SUCCESS: AD90%02x detected over SPI", prod_id & 0xFF);
+
+	/*
+	 * Configure the MxFE datapath through the ADI API lib (CLK PLL, TX interp
+	 * + DAC NCOs + JRX deframer, RX decim + ADC NCOs + JTX framer). The chip
+	 * JESD links are configured but not enabled -- the FSM enables them with
+	 * the FPGA cores.
+	 */
+	ret = ad9081_setup_datapath();
+	if (ret) {
+		LOG_ERR("AD9081 datapath setup failed (%d)", ret);
+		return ret;
+	}
+	LOG_INF("SUCCESS: AD9082 datapath configured (chip JESD links ready)");
 
 	/* Prove the PL AXI plane is alive before link bring-up. */
 	ret = axi_jesd_probe();
@@ -129,6 +144,19 @@ int main(void)
 			rx_dma->name, tx_dma->name);
 	}
 
-	LOG_INF("=== bring-up milestone: all blocks configured, FSM next ===");
+	LOG_INF("=== all blocks configured, running JESD204 bring-up ===");
+
+	/*
+	 * Bring the link up: activate the transceiver, link cores and the chip's
+	 * framer/deframer together, then read link status. A failure here is
+	 * expected until every knob is right -- the value is seeing *where* the
+	 * link stalls (CGS/ILAS/DATA), not a clean pass.
+	 */
+	ret = jesd204_bringup();
+	if (ret) {
+		LOG_WRN("JESD204 bring-up did not reach DATA (%d)", ret);
+		return ret;
+	}
+	LOG_INF("SUCCESS: JESD204B link up");
 	return 0;
 }
