@@ -174,7 +174,7 @@ int jesd204_bringup(void)
 	/* One-shot chain summary: the first FAIL is where the link stalls. */
 	LOG_INF("=== JESD204 bring-up summary ===");
 	for (i = 0; i < nsteps; i++) {
-		LOG_INF("  [%c] %s", steps[i].rc ? 'x' : ' ', steps[i].name);
+		LOG_INF("  [%s] %s", steps[i].rc ? "FAIL" : " ok ", steps[i].name);
 	}
 
 	if (fpga_ok == 0) {

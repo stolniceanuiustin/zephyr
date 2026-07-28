@@ -43,6 +43,7 @@ LOG_MODULE_REGISTER(main, LOG_LEVEL_INF);
 #include "axi_jesd204.h"
 #include "axi_tpl.h"
 #include "jesd_fsm.h"
+#include "jesd_test.h"
 
 int main(void)
 {
@@ -158,5 +159,17 @@ int main(void)
 		return ret;
 	}
 	LOG_INF("SUCCESS: JESD204B link up");
+
+	/*
+	 * Rung 1 datapath validation: now that the link carries DATA, prove the
+	 * receive serial path is actually bit-error-free with a PN test (chip
+	 * ADC PN test mode -> FPGA RX TPL PN monitor). No DMA/analog yet.
+	 */
+	ret = jesd_test_rx_pn();
+	if (ret) {
+		LOG_WRN("Rung 1 receive-path PN test failed (%d)", ret);
+		return ret;
+	}
+	LOG_INF("SUCCESS: receive datapath verified bit-error-free (PN)");
 	return 0;
 }

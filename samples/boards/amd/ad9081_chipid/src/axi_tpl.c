@@ -55,6 +55,17 @@ LOG_MODULE_REGISTER(axi_tpl, LOG_LEVEL_INF);
 #define ADC_CHAN_FORMAT_ENABLE  BIT(4)
 #define ADC_CHAN_FORMAT_SIGNEXT BIT(6)
 
+/*
+ * ADC PN monitor (axi_adc_core.h). CHAN_STATUS latches PN_OOS/PN_ERR sticky per
+ * converter; CHAN_CNTRL_3 selects which PN polynomial the core's checker expects.
+ */
+#define ADC_REG_CHAN_STATUS(c)  (0x0404 + (c) * 0x40)
+#define ADC_PN_ERR              BIT(2) /* PN bit error since last clear */
+#define ADC_PN_OOS              BIT(1) /* PN out-of-sync since last clear */
+#define ADC_REG_CHAN_CNTRL_3(c) (0x0418 + (c) * 0x40)
+#define ADC_PN_SEL_MASK         (0xfU << 16)
+#define ADC_PN_SEL(x)           (((x) & 0xf) << 16)
+
 /* DAC (TX) core specifics. */
 #define DAC_REG_SYNC_CONTROL  0x0044
 #define DAC_SYNC              BIT(0)
@@ -225,4 +236,59 @@ int axi_tpl_enable(void)
 		return ret;
 	}
 	return tpl_check(&tpl_tx);
+}
+
+/*
+ * ADC PN monitor -- port of no-OS axi_adc_pn_mon()/axi_adc_set_pnsel().
+ *
+ * The chip's ADC datapath is put into a PN test mode (e.g. PN9/PN23); the same
+ * polynomial is programmed into each RX TPL converter's checker (CHAN_CNTRL_3).
+ * The core then compares the de-framed samples against its own locally generated
+ * PN and latches PN_OOS/PN_ERR sticky per converter. This exercises the whole
+ * receive serial path (chip framer -> GT -> FPGA link -> TPL) with a
+ * deterministic pattern and zero DMA/analog -- the real "link is bit-error-free"
+ * proof behind the CGS/ILAS/DATA milestone.
+ *
+ * pn_sel uses the AXI ADC PN codes (axi_adc_core.h enum): PN9=0, PN23A=1,
+ * PN7=4, PN15=5, PN23=6, PN31=7. delay_ms is the observation window.
+ * Returns 0 if every converter stays in-sync and error-free, -EIO otherwise.
+ */
+int axi_tpl_adc_pn_mon(uint32_t pn_sel, uint32_t delay_ms)
+{
+	struct axi_tpl *t = &tpl_rx;
+	uint32_t reg;
+	int ret = 0;
+
+	/* Enable each converter and point its PN checker at the chosen sequence. */
+	for (uint32_t c = 0; c < TPL_NUM_CHANNELS; c++) {
+		reg = tpl_read(t, ADC_REG_CHAN_CNTRL(c));
+		reg |= ADC_CHAN_ENABLE;
+		tpl_write(t, ADC_REG_CHAN_CNTRL(c), reg);
+
+		reg = tpl_read(t, ADC_REG_CHAN_CNTRL_3(c));
+		reg &= ~ADC_PN_SEL_MASK;
+		reg |= ADC_PN_SEL(pn_sel);
+		tpl_write(t, ADC_REG_CHAN_CNTRL_3(c), reg);
+	}
+	k_msleep(1);
+
+	/* Clear the sticky status bits, then let errors accumulate. */
+	for (uint32_t c = 0; c < TPL_NUM_CHANNELS; c++) {
+		tpl_write(t, ADC_REG_CHAN_STATUS(c), 0xff);
+	}
+	k_msleep(delay_ms);
+
+	/* Any non-zero status = out-of-sync or bit error on that converter. */
+	for (uint32_t c = 0; c < TPL_NUM_CHANNELS; c++) {
+		reg = tpl_read(t, ADC_REG_CHAN_STATUS(c));
+		if (reg != 0) {
+			LOG_WRN("%s ch%u: PN status 0x%02x (%s%s)", t->name, c,
+				reg, (reg & ADC_PN_OOS) ? "OOS " : "",
+				(reg & ADC_PN_ERR) ? "ERR" : "");
+			ret = -EIO;
+		} else {
+			LOG_INF("%s ch%u: PN clean", t->name, c);
+		}
+	}
+	return ret;
 }
