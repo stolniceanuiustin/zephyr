@@ -16,4 +16,13 @@
  */
 int hmc7044_probe(void);
 
+/*
+ * Program the HMC7044 clock tree (PLL1/PLL2/VCO, output dividers and SYSREF)
+ * for the zcu102 AD9082-FMC-EBZ-A2 profile, then report PLL1/PLL2 lock status.
+ * Faithful port of no-OS hmc7044_setup().
+ *
+ * Returns 0 on success, negative errno otherwise.
+ */
+int hmc7044_setup_clocks(void);
+
 #endif /* HMC7044_H_ */

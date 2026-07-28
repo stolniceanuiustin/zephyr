@@ -6,7 +6,7 @@
  *
  *   [x] SPI0 -> AD9081/AD9082: read PROD_ID (0x9081/0x9082)
  *   [x] SPI1 -> HMC7044: scratchpad read/write check
- *   [ ] HMC7044 clock + SYSREF configuration
+ *   [x] HMC7044 clock + SYSREF configuration (PLL1/PLL2 lock)
  *   [ ] AXI adxcvr / jesd204 rx-tx / transport cores
  *   [ ] link bring-up: CGS -> ILAS -> Data
  *   [ ] DMA capture (axi_dmac)
@@ -39,6 +39,14 @@ int main(void)
 		return ret;
 	}
 	LOG_INF("SUCCESS: HMC7044 scratchpad read/write confirmed");
+
+	/* Program the HMC7044 clock tree + SYSREF (PLL1/PLL2 lock). */
+	ret = hmc7044_setup_clocks();
+	if (ret) {
+		LOG_ERR("HMC7044 clock setup failed (%d)", ret);
+		return ret;
+	}
+	LOG_INF("SUCCESS: HMC7044 clock tree configured");
 
 	/* MxFE. */
 	ret = ad9081_probe(&prod_id);
