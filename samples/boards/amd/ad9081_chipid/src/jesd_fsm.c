@@ -43,84 +43,88 @@ LOG_MODULE_REGISTER(jesd_fsm, LOG_LEVEL_INF);
 /* Chip-side link select: the deframer (JRX) link 0. */
 #define AD9081_JRX_LINK AD9081_LINK_0
 
+/*
+ * Bring-up is deliberately best-effort: a JESD204 link stalls at the *first*
+ * broken stage, but which stage that is, is exactly what we're trying to learn.
+ * So instead of aborting on the first failure (which blinds us to everything
+ * downstream), each step records its result and we press on. The chip SPI ops
+ * and the FPGA AXI status reads are all safe to attempt regardless of GT state.
+ * A one-line-per-step summary at the end shows the whole chain in one boot.
+ */
+struct step_result {
+	const char *name;
+	int rc;
+};
+
+#define MAX_STEPS 12
+
+static void record(struct step_result *steps, int *n, const char *name, int rc)
+{
+	if (*n < MAX_STEPS) {
+		steps[*n].name = name;
+		steps[*n].rc = rc;
+		(*n)++;
+	}
+	if (rc) {
+		LOG_WRN("step %-22s : FAIL (%d)", name, rc);
+	} else {
+		LOG_INF("step %-22s : ok", name);
+	}
+}
+
 int jesd204_bringup(void)
 {
 	adi_ad9081_device_t *dev = ad9081_get_device();
-	uint8_t jesd_pll_status;
-	uint16_t rx_link_status;
-	uint16_t tx_link_status;
+	struct step_result steps[MAX_STEPS];
+	uint8_t jesd_pll_status = 0;
+	uint16_t rx_link_status = 0;
+	uint16_t tx_link_status = 0;
+	int nsteps = 0;
+	int fpga_ok;
+	int i;
 	int32_t err;
-	int ret;
 
 	if (dev == NULL) {
 		LOG_ERR("AD9081 device not initialised");
 		return -ENODEV;
 	}
 
-	LOG_INF("--- JESD204B bring-up sequence ---");
+	LOG_INF("--- JESD204B bring-up sequence (best-effort, full chain) ---");
 
 	/*
 	 * SETUP / SYNC. Subclass 1: one-shot SYNC then NCO sync. The chip aligns
 	 * to the continuous SYSREF from the HMC7044.
 	 */
 	err = adi_ad9081_jesd_oneshot_sync(dev, JESD_SUBCLASS_1);
-	if (err != API_CMS_ERROR_OK) {
-		LOG_ERR("chip oneshot_sync failed (%d)", err);
-		return -EIO;
-	}
+	record(steps, &nsteps, "chip oneshot_sync", err ? -EIO : 0);
 
 	err = adi_ad9081_device_nco_sync_post(dev);
-	if (err != API_CMS_ERROR_OK) {
-		LOG_ERR("chip nco_sync_post failed (%d)", err);
-		return -EIO;
-	}
-	LOG_INF("phase SYNC: chip one-shot SYNC + NCO sync done");
+	record(steps, &nsteps, "chip nco_sync_post", err ? -EIO : 0);
 
 	/*
-	 * CLOCKS_ENABLE. Release the GT resets (both directions) so the lanes are
-	 * clocked, then check the chip's JESD PLL and run 204C calibration on the
-	 * deframer, and finally enable the FPGA link-core lane clocks.
+	 * CLOCKS_ENABLE. Release the GT resets (each direction independently so a
+	 * TX failure doesn't hide RX), check the chip's JESD PLL and run 204C
+	 * calibration on the deframer, then enable the FPGA link-core lane clocks.
 	 */
-	ret = axi_adxcvr_enable();
-	if (ret) {
-		LOG_ERR("GT transceiver enable failed (%d)", ret);
-		return ret;
-	}
-	LOG_INF("phase CLOCKS_ENABLE: GT transceivers ready");
+	record(steps, &nsteps, "GT TX reset-release", axi_adxcvr_tx_enable());
+	record(steps, &nsteps, "GT RX reset-release", axi_adxcvr_rx_enable());
 
 	err = adi_ad9081_jesd_pll_lock_status_get(dev, &jesd_pll_status);
 	if (err != API_CMS_ERROR_OK) {
-		LOG_ERR("chip jesd_pll_lock_status_get failed (%d)", err);
-		return -EIO;
+		record(steps, &nsteps, "chip JESD PLL read", -EIO);
+	} else {
+		LOG_INF("chip JESD PLL status = 0x%x", jesd_pll_status);
+		record(steps, &nsteps, "chip JESD PLL lock",
+		       jesd_pll_status ? 0 : -EIO);
 	}
-	if (!jesd_pll_status) {
-		LOG_ERR("chip JESD PLL not locked (status=0x%x)",
-			jesd_pll_status);
-		return -EIO;
-	}
-	LOG_INF("phase CLOCKS_ENABLE: chip JESD PLL locked (0x%x)",
-		jesd_pll_status);
 
 	/* 204C background calibration on the deframer (force reset, no boost). */
 	err = adi_ad9081_jesd_rx_calibrate_204c(dev, 1, 0, 1);
-	if (err != API_CMS_ERROR_OK) {
-		LOG_ERR("chip jesd_rx_calibrate_204c failed (%d)", err);
-		return -EIO;
-	}
-	LOG_INF("phase CLOCKS_ENABLE: chip JRX 204C calibration done");
+	record(steps, &nsteps, "chip JRX 204C cal", err ? -EIO : 0);
 
 	/* FPGA link cores: release the framer/deframer lane clocks. */
-	ret = axi_jesd204_rx_lane_clk_enable();
-	if (ret) {
-		LOG_ERR("FPGA jesd204-rx lane clk enable failed (%d)", ret);
-		return ret;
-	}
-	ret = axi_jesd204_tx_lane_clk_enable();
-	if (ret) {
-		LOG_ERR("FPGA jesd204-tx lane clk enable failed (%d)", ret);
-		return ret;
-	}
-	LOG_INF("phase CLOCKS_ENABLE: FPGA link cores enabled");
+	record(steps, &nsteps, "FPGA rx lane clk", axi_jesd204_rx_lane_clk_enable());
+	record(steps, &nsteps, "FPGA tx lane clk", axi_jesd204_tx_lane_clk_enable());
 
 	/*
 	 * LINK_ENABLE. Enable the chip's JRX deframer; the JTX framer runs once
@@ -128,24 +132,20 @@ int jesd204_bringup(void)
 	 * arrives. Give the link a moment to negotiate CGS -> ILAS -> DATA.
 	 */
 	err = adi_ad9081_jesd_rx_link_enable_set(dev, AD9081_JRX_LINK, 1);
-	if (err != API_CMS_ERROR_OK) {
-		LOG_ERR("chip jesd_rx_link_enable_set failed (%d)", err);
-		return -EIO;
-	}
-	LOG_INF("phase LINK_ENABLE: chip JRX deframer enabled");
+	record(steps, &nsteps, "chip JRX enable", err ? -EIO : 0);
 
 	k_msleep(10);
 
 	/*
-	 * LINK_RUNNING. Read link status on both ends. This is the single
-	 * meaningful status check -- everything before was configuration.
+	 * LINK_RUNNING. Read link status on both ends. This is the meaningful
+	 * status check -- everything before was configuration/activation.
 	 */
-	LOG_INF("phase LINK_RUNNING: reading link status");
+	LOG_INF("--- link status ---");
 
 	err = adi_ad9081_jesd_tx_link_status_get(dev, AD9081_LINK_0,
 						 &tx_link_status);
 	if (err == API_CMS_ERROR_OK) {
-		LOG_INF("chip JTX (framer) link status = 0x%04x", tx_link_status);
+		LOG_INF("chip JTX (framer)   link status = 0x%04x", tx_link_status);
 	} else {
 		LOG_WRN("chip jesd_tx_link_status_get failed (%d)", err);
 	}
@@ -153,17 +153,17 @@ int jesd204_bringup(void)
 	err = adi_ad9081_jesd_rx_link_status_get(dev, AD9081_JRX_LINK,
 						 &rx_link_status);
 	if (err == API_CMS_ERROR_OK) {
-		LOG_INF("chip JRX (deframer) link status = 0x%04x",
-			rx_link_status);
+		LOG_INF("chip JRX (deframer) link status = 0x%04x", rx_link_status);
 	} else {
 		LOG_WRN("chip jesd_rx_link_status_get failed (%d)", err);
 	}
 
 	/* FPGA-side link state (CGS/ILAS/DATA). */
-	ret = axi_jesd204_status_read();
+	fpga_ok = axi_jesd204_status_read();
+	record(steps, &nsteps, "FPGA link DATA", fpga_ok);
 
 	/* TPL datapath verify + DAC re-sync now that the link clocks run. */
-	if (ret == 0) {
+	if (fpga_ok == 0) {
 		int tpl = axi_tpl_enable();
 
 		if (tpl) {
@@ -171,10 +171,16 @@ int jesd204_bringup(void)
 		}
 	}
 
-	if (ret == 0) {
+	/* One-shot chain summary: the first FAIL is where the link stalls. */
+	LOG_INF("=== JESD204 bring-up summary ===");
+	for (i = 0; i < nsteps; i++) {
+		LOG_INF("  [%c] %s", steps[i].rc ? 'x' : ' ', steps[i].name);
+	}
+
+	if (fpga_ok == 0) {
 		LOG_INF("=== JESD204B LINK UP (both ends carrying DATA) ===");
 	} else {
-		LOG_WRN("=== JESD204B link NOT fully up (see status above) ===");
+		LOG_WRN("=== JESD204B link NOT fully up (see summary above) ===");
 	}
-	return ret;
+	return fpga_ok;
 }

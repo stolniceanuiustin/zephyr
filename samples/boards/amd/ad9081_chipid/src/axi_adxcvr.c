@@ -200,10 +200,10 @@ static int adxcvr_configure(struct adxcvr *x)
 static int adxcvr_reset(struct adxcvr *x)
 {
 	int retry = 1;
+	uint32_t status = 0;
 
 	do {
 		int timeout = 100;
-		uint32_t status = 0;
 
 		adxcvr_write(x, ADXCVR_REG_RESETN, 0);
 		k_busy_wait(2);
@@ -218,6 +218,14 @@ static int adxcvr_reset(struct adxcvr *x)
 		}
 	} while (retry--);
 
+	/*
+	 * RESET_DONE never asserted. The raw STATUS word tells us why: 0x0 means
+	 * the GT PLL never locked -- almost always a missing/wrong reference clock
+	 * at the transceiver (QPLL0 for TX, CPLL for RX) rather than a reset-pulse
+	 * problem. A nonzero value with bit0 clear points at the elastic buffer.
+	 */
+	LOG_ERR("%s: RESET_DONE not set after 2x100ms (raw STATUS=0x%08x)",
+		x->name, status);
 	return -ETIMEDOUT;
 }
 
@@ -296,5 +304,15 @@ int axi_adxcvr_enable(void)
 	if (ret) {
 		return ret;
 	}
+	return adxcvr_clk_enable(&adxcvr_rx);
+}
+
+int axi_adxcvr_tx_enable(void)
+{
+	return adxcvr_clk_enable(&adxcvr_tx);
+}
+
+int axi_adxcvr_rx_enable(void)
+{
 	return adxcvr_clk_enable(&adxcvr_rx);
 }

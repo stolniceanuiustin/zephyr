@@ -27,4 +27,12 @@ int axi_adxcvr_configure(void);
  */
 int axi_adxcvr_enable(void);
 
+/*
+ * Same as axi_adxcvr_enable() but per direction, so the bring-up sequence can
+ * attempt (and report) each GT independently instead of bailing on the first
+ * failure. Returns 0 when that transceiver reports ready, negative errno else.
+ */
+int axi_adxcvr_tx_enable(void);
+int axi_adxcvr_rx_enable(void);
+
 #endif /* AXI_ADXCVR_H_ */
