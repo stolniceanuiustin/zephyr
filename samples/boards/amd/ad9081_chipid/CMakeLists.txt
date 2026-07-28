@@ -14,6 +14,7 @@ target_sources(app PRIVATE
   src/axi_jesd.c
   src/axi_adxcvr.c
   src/axi_jesd204.c
+  src/axi_tpl.c
   ${ADI_API_SRCS}
 )
 
