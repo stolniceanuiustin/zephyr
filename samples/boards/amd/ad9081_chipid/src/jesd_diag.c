@@ -26,8 +26,16 @@
  * That leaves our samples failing somewhere in deframer -> fine DUC -> main DUC,
  * the only stretch the internal tone skips -- and failing *intermittently*: the
  * same verified frequency returned RMS 4567 on one boot and RMS 8 on the next.
- * An intermittent fault is not a wrong register value, so the last two checks
+ * An intermittent fault is not a wrong register value, so two of these checks
  * measure how often it works and which half of that stretch loses it.
+ *
+ * And then the board turned out to have IRQB0 lit red, which changes the shape of
+ * the search. Every register consulted so far reports state, not faults: "lanes
+ * locked" and "link in DATA" are both true of a datapath that is being blanked
+ * further downstream. The chip has had a fault asserted the entire time. Check
+ * [0] reads the latched interrupt status and therefore runs first, before anything
+ * else here perturbs the chip -- if it names a cause, most of the reasoning above
+ * becomes moot rather than merely incomplete.
  *
  * SPDX-License-Identifier: Apache-2.0
  */
@@ -81,6 +89,114 @@ static const uint32_t diag_sweep_mhz[] = { 100, 500, 1000, 1968 };
 #define DIAG_SIGNAL_RMS 16
 
 /*
+ * Read the chip's latched interrupt status.
+ *
+ * The IRQB0 pin on the board is lit red. That is the chip asserting a fault, and
+ * it reframes everything above: every check so far has read registers that report
+ * *state* (lanes locked, link in DATA, gain 1024), none of which report an error
+ * condition. The chip has had a complaint outstanding the whole time and nothing
+ * in this app has ever asked what it was.
+ *
+ * These bits are worth reading even though nothing here enabled them, because
+ * adi_ad9081_device_startup_tx() ends with adi_ad9081_dac_irqs_enable_set(device,
+ * 0x0030cccc00) -- bits 11/15/19/23 are PAERR0-3, the per-DAC PA-protection
+ * errors, and PA protection exists to *blank the DAC output*. A latched PAERR
+ * would explain the whole symptom set at once, including the parts that defeated
+ * every previous hypothesis: the output is muted downstream of the digital
+ * datapath, so gain still reads 1024 and the deframer still reports locked lanes;
+ * it is armed per bring-up, so it is intermittent across boots rather than tied to
+ * any setting; and it is a level-triggered blanking rather than a register value,
+ * so no configuration readback could ever have caught it.
+ *
+ * Read as six bytes rather than through adi_ad9081_dac_irqs_status_get(), whose
+ * 0x2800 multi-byte field descriptor writes 8 bytes into a uint64_t -- correct on
+ * a little-endian host but worth not depending on when the whole point is to see
+ * exactly which bits are set. Reported as raw bytes plus decoded names, so the
+ * evidence survives even if my decoding of a given bit is wrong.
+ */
+static void diag_irq_status(adi_ad9081_device_t *dev)
+{
+	static const char *const irq0[8] = {
+		"PRBS_I", "PRBS_Q", "SYSREF_JITTER", "BIST_DONE",
+		"CAPTURE_DONE", "LANE_FIFO", "DATA_READY", NULL,
+	};
+	static const char *const irq3[8] = {
+		"PLL_LOCK_FAST", "PLL_LOCK_SLOW", "PLL_LOST_FAST",
+		"PLL_LOST_SLOW", "DLL_LOCK01", "DLL_LOST01",
+		"DLL_LOCK23", "DLL_LOST23",
+	};
+	uint8_t st[6] = { 0 };
+
+	LOG_INF("[0/6] chip latched IRQ status (IRQB0 is lit on the board):");
+
+	for (uint8_t i = 0; i < 6; i++) {
+		int32_t err = adi_ad9081_hal_reg_get(dev, REG_IRQ_STATUS0_ADDR + i,
+						     &st[i]);
+
+		if (err != API_CMS_ERROR_OK) {
+			LOG_WRN("  IRQ_STATUS%u read failed (%d)", i, err);
+			return;
+		}
+	}
+
+	LOG_INF("  raw 0x%02x %02x %02x %02x %02x %02x (regs 0x26..0x2b)",
+		st[0], st[1], st[2], st[3], st[4], st[5]);
+
+	for (uint8_t b = 0; b < 8; b++) {
+		if ((st[0] & BIT(b)) && irq0[b] != NULL) {
+			LOG_WRN("  IRQ_STATUS0 bit%u: %s", b, irq0[b]);
+		}
+		if (st[3] & BIT(b)) {
+			LOG_INF("  IRQ_STATUS3 bit%u: %s", b, irq3[b]);
+		}
+	}
+
+	/*
+	 * PAERR is bit 3 of each DAC's nibble pair: DAC0/1 in status1, DAC2/3 in
+	 * status2, low nibble then high. If any of these is set the DAC output is
+	 * being blanked by PA protection and no amount of correct digital datapath
+	 * would produce a signal at the SMA.
+	 */
+	for (uint8_t d = 0; d < 4; d++) {
+		uint8_t reg = st[1 + (d / 2)];
+		uint8_t bit = (d & 1) ? 7 : 3;
+
+		if (reg & BIT(bit)) {
+			LOG_ERR("  PAERR%u LATCHED -- DAC%u output is blanked by PA protection",
+				d, d);
+		}
+	}
+
+	if (st[5] & 0x0f) {
+		LOG_ERR("  SRERR latched (0x%x) -- slew-rate/PA error per DAC",
+			st[5] & 0x0f);
+	}
+
+	if (st[0] & BIT(2)) {
+		LOG_ERR("  SYSREF_JITTER -- SYSREF is not clean, so deframer/LMFC");
+		LOG_ERR("  alignment is not trustworthy even with lanes locked");
+	}
+	if (st[0] & BIT(5)) {
+		LOG_ERR("  LANE_FIFO error -- the JRX lane FIFO over/underflowed,");
+		LOG_ERR("  which drops our samples while lanes still report locked");
+	}
+	if (st[3] & (BIT(5) | BIT(7))) {
+		LOG_ERR("  DLL_LOST -- the DAC clock DLL lost lock; the analog");
+		LOG_ERR("  output cannot be trusted regardless of the datapath");
+	}
+
+	if (st[0] == 0 && st[1] == 0 && st[2] == 0 && st[3] == 0 &&
+	    st[4] == 0 && st[5] == 0) {
+		LOG_WRN("  all six status bytes are zero, yet IRQB0 is asserted.");
+		LOG_WRN("  Either the pin is driven by something other than these");
+		LOG_WRN("  latches (check the board's own LED wiring -- IRQB is");
+		LOG_WRN("  open-drain active-low, so an unconfigured pin can read as");
+		LOG_WRN("  a lit LED), or the source is a JESD IRQ routed through");
+		LOG_WRN("  MUX_JESD_IRQ rather than one of these six registers.");
+	}
+}
+
+/*
  * Read back the TX fine-DUC channel gain. adi_ad9081_dac_duc_nco_gains_set()
  * wrote 1024 to channels 0-3 at datapath setup, but nothing has ever confirmed
  * the value landed, and a zero gain would produce exactly the symptom under
@@ -89,7 +205,7 @@ static const uint32_t diag_sweep_mhz[] = { 100, 500, 1000, 1968 };
  */
 static void diag_check_tx_gain(adi_ad9081_device_t *dev)
 {
-	LOG_INF("[1/5] TX fine-DUC channel gain readback (programmed 1024):");
+	LOG_INF("[1/6] TX fine-DUC channel gain readback (programmed 1024):");
 
 	for (uint8_t ch = 0; ch < 4; ch++) {
 		uint8_t raw[2] = { 0, 0 };
@@ -201,7 +317,7 @@ static bool diag_sweep(adi_ad9081_device_t *dev)
 {
 	bool found_any = false;
 
-	LOG_INF("[2/5] NCO frequency sweep (TX main + RX coarse together):");
+	LOG_INF("[2/6] NCO frequency sweep (TX main + RX coarse together):");
 	LOG_INF("  baseband tone stays at -%u MHz; only the RF carrier moves",
 		JESD_PB_TONE_HZ / 1000000U);
 
@@ -266,7 +382,7 @@ static bool diag_internal_tone(adi_ad9081_device_t *dev)
 	bool present = false;
 	int ret;
 
-	LOG_INF("[3/5] chip-internal DAC test tone (bypasses DMA + link + deframer):");
+	LOG_INF("[3/6] chip-internal DAC test tone (bypasses DMA + link + deframer):");
 
 	if (diag_retune(dev, DIAG_NCO_HZ_DEFAULT) != 0) {
 		LOG_WRN("  could not restore the NCO pair; skipping");
@@ -348,7 +464,7 @@ static void diag_repeatability(void)
 	uint32_t hits = 0;
 	uint64_t best_rms = 0;
 
-	LOG_INF("[4/5] repeatability of our own tone (%u captures at the same setting):",
+	LOG_INF("[4/6] repeatability of our own tone (%u captures at the same setting):",
 		DIAG_REPEATS);
 
 	for (uint32_t i = 0; i < DIAG_REPEATS; i++) {
@@ -403,7 +519,7 @@ static void diag_channel_tone(adi_ad9081_device_t *dev)
 	struct jesd_loopback_meas m;
 	int32_t err;
 
-	LOG_INF("[5/5] fine-DUC (channel) DC test tone -- one stage earlier than [3]:");
+	LOG_INF("[5/6] fine-DUC (channel) DC test tone -- one stage earlier than [3]:");
 
 	err = adi_ad9081_dac_dc_test_tone_offset_set(dev, AD9081_DAC_CH_0, 0x4000);
 	if (err != API_CMS_ERROR_OK) {
@@ -459,6 +575,10 @@ int jesd_diag_loopback(void)
 	LOG_INF("--- Rung 5 fault isolation ---");
 	LOG_INF("link reports healthy but the ADC sees only its noise floor;");
 	LOG_INF("splitting that into cases rather than guessing at settings.");
+
+	/* First, and before anything here perturbs the chip: ask what it is
+	 * already complaining about. IRQB0 is lit, so there is an answer. */
+	diag_irq_status(dev);
 
 	diag_check_tx_gain(dev);
 	swept_ok = diag_sweep(dev);
