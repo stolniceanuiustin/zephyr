@@ -106,6 +106,11 @@ static const uint32_t diag_sweep_mhz[] = { 100, 500, 1000, 1968 };
 /* AXI DMAC channel index, matching Rung 4 (single-channel core). */
 #define PB_DIAG_DMA_CHANNEL 0
 
+/* How much of the playback buffer to read back when checking DDR contents. The
+ * buffer is megabytes; a few KiB is plenty to tell a written buffer from an empty
+ * one, and keeps the cache invalidate proportionate. */
+#define PB_DIAG_INSPECT_BYTES 4096U
+
 /*
  * Read the chip's latched interrupt status.
  *
@@ -689,7 +694,17 @@ static void diag_dma_feed(void)
 		return;
 	}
 
-	/* Read what is actually in DDR, not what the CPU's cache remembers. */
+	/*
+	 * Read what is actually in DDR, not what the CPU's cache remembers. Only
+	 * the leading portion is inspected: the buffer is now megabytes, the
+	 * question is whether pb_fill()'s writes reached memory at all, and a
+	 * partial flush would show up in the first beats as readily as the last.
+	 * Invalidating only what is read also avoids discarding clean lines
+	 * needlessly.
+	 */
+	if (bytes > PB_DIAG_INSPECT_BYTES) {
+		bytes = PB_DIAG_INSPECT_BYTES;
+	}
 	sys_cache_data_invd_range((void *)buf, bytes);
 
 	for (size_t i = 0; i < bytes / sizeof(int16_t); i++) {

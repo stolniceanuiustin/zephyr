@@ -36,6 +36,12 @@
  *  - If the core was synthesized with cyclic support we re-arm the transfer in
  *    cyclic mode at the end so the tone stays present at the DAC output for as
  *    long as the board is powered, which is what makes a scope check possible.
+ *  - Buffer size is a *rate* decision, not a tone decision. This link consumes
+ *    4 GB/s (250 MSPS x 16-byte beats), so a small cyclic buffer has to be
+ *    re-armed millions of times a second and the transport core starves in the
+ *    gaps. See the PB_BEATS comment: an undersized buffer here presents as a
+ *    perfectly healthy link carrying almost no signal, which is a genuinely
+ *    difficult symptom to attribute.
  *
  * SPDX-License-Identifier: Apache-2.0
  */
@@ -75,12 +81,29 @@ LOG_MODULE_REGISTER(jesd_playback, LOG_LEVEL_INF);
 #define PB_SINE_LEN       JESD_PB_TABLE_LEN
 #define PB_LANES_PER_BEAT 8U  /* 16-byte bus / 2-byte sample */
 /*
- * Buffer length in beats. The table is stepped JESD_PB_STEP entries per beat, so
- * the tone repeats every TABLE_LEN/gcd(STEP,TABLE_LEN) beats; using TABLE_LEN
- * beats is a whole number of periods either way, so the cyclic transfer wraps
- * without a phase discontinuity (which would splatter the spectrum).
+ * Buffer length in beats.
+ *
+ * The tone repeats every TABLE_LEN/gcd(STEP,TABLE_LEN) = 8 beats, so any multiple
+ * of 8 wraps without a phase discontinuity (which would splatter the spectrum).
+ * That leaves the length free, and it has to be chosen against the feed rate
+ * rather than the tone: this link consumes a 16-byte beat every sample period at
+ * 250 MSPS, i.e. 4 GB/s. One table-length of 64 beats is 1 KiB -- 256 ns of
+ * signal, which a cyclic transfer must wrap 3.9 million times a second to sustain.
+ *
+ * The diagnostic measured what that costs. With the buffer verified present in DDR
+ * and the engine verified still busy, no tone reached the ADC, while a tone
+ * generated inside the FPGA at the transport core's input made the identical trip
+ * through the lanes, deframer, DAC, cable and ADC and arrived cleanly. The
+ * difference between those two cases is not the datapath -- it is who feeds it.
+ * Re-arming cannot keep up at that wrap rate, so the transport core starves between
+ * wraps and the DAC emits brief bursts separated by long gaps, which averages to
+ * the noise floor and varies per boot with bus contention.
+ *
+ * 256 Ki beats is 4 MiB, ~1.05 ms per wrap: 4096x fewer wraps per second, and long
+ * enough that a starved re-arm is a small gap in a mostly-continuous signal rather
+ * than the whole signal. DDR is 2 GB, so the cost is irrelevant.
  */
-#define PB_BEATS          JESD_PB_TABLE_LEN
+#define PB_BEATS          (256U * 1024U)
 #define PB_NUM_SAMPLES    (PB_BEATS * PB_LANES_PER_BEAT)
 #define PB_BUF_BYTES      (PB_NUM_SAMPLES * sizeof(uint16_t))
 #define PB_DMA_ALIGN      16U
@@ -121,8 +144,13 @@ static const int16_t pb_sin[PB_SINE_LEN] = {
 /* Playback buffer in DDR, sized/aligned to the DMAC data bus. */
 static int16_t pb_buf[PB_NUM_SAMPLES] __aligned(PB_DMA_ALIGN);
 
-/* Poll budget: 1 KiB of beats moves in far less than this. */
-#define PB_POLL_TIMEOUT_MS 200
+/*
+ * Poll budget for the one-shot transfer. At the full 4 GB/s a 4 MiB buffer moves in
+ * about a millisecond, but the entire reason for this buffer size is that the
+ * achieved rate is in question -- so allow generously and let the timeout catch a
+ * genuinely stalled path rather than a merely slow one.
+ */
+#define PB_POLL_TIMEOUT_MS 2000
 
 /*
  * Expand the tone across the buffer. Rung 2's capture established the beat
@@ -152,8 +180,11 @@ static void pb_fill(void)
 
 static void pb_describe(void)
 {
-	LOG_INF("tone table: %u beats, I=cos/Q=-sin, amplitude %d (0.75 FS)",
-		PB_BEATS, pb_cos[0]);
+	LOG_INF("tone table: %u beats (%zu KiB, %u us per wrap), I=cos/Q=-sin, amplitude %d (0.75 FS)",
+		PB_BEATS, sizeof(pb_buf) / 1024U,
+		(unsigned int)((uint64_t)PB_BEATS * 1000000U /
+			       JESD_PB_SAMPLE_RATE),
+		pb_cos[0]);
 	LOG_INF("  baseband -%u MHz at %u MSPS -> RF %u.%02u GHz (NCO +2 GHz, inside 2 GHz Nyquist)",
 		JESD_PB_TONE_HZ / 1000000U, JESD_PB_SAMPLE_RATE / 1000000U,
 		(2000U - JESD_PB_TONE_HZ / 1000000U) / 1000U,
