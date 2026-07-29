@@ -156,6 +156,37 @@ int jesd_loopback_verify(void)
 	beats = n / JESD_CAP_LANES_PER_BEAT;
 
 	/*
+	 * Survey every channel before judging one. A beat holds four (I,Q) pairs,
+	 * so lanes 0/1 are channel 0, 2/3 channel 1, and so on. Which SMA on the
+	 * FMC reaches which converter is board- and part-dependent (the connectors
+	 * are dual-labelled because the card serves both the 4-ADC AD9081 and the
+	 * 2-ADC AD9082 pinouts), so rather than assume the cable landed on channel
+	 * 0, report the RMS of all four. A signal on a channel other than 0 is
+	 * immediately visible here instead of looking like silence.
+	 */
+	LOG_INF("first 2 beats as captured (I Q per channel):");
+	for (uint32_t i = 0; i < 16; i += 8) {
+		LOG_INF("  [%02u] %6d %6d %6d %6d %6d %6d %6d %6d", i,
+			buf[i + 0], buf[i + 1], buf[i + 2], buf[i + 3],
+			buf[i + 4], buf[i + 5], buf[i + 6], buf[i + 7]);
+	}
+
+	LOG_INF("per-channel RMS (which converter is the cable actually on?):");
+	for (uint32_t ch = 0; ch < 4; ch++) {
+		uint64_t ch_energy = 0;
+
+		for (size_t b = 0; b < beats; b++) {
+			int32_t ci = buf[b * JESD_CAP_LANES_PER_BEAT + ch * 2 + 0];
+			int32_t cq = buf[b * JESD_CAP_LANES_PER_BEAT + ch * 2 + 1];
+
+			ch_energy += (uint64_t)((int64_t)ci * ci +
+						(int64_t)cq * cq);
+		}
+		LOG_INF("  ch%u: RMS %llu", ch,
+			(unsigned long long)lb_isqrt(ch_energy / beats));
+	}
+
+	/*
 	 * Correlate channel 0's (I,Q) pair against the transmitted tone, and sum
 	 * total energy alongside it. Lane 0 is I and lane 1 is Q within each beat
 	 * (established by the Rung 2 capture).
