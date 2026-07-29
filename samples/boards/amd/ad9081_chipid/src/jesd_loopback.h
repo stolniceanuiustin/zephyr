@@ -36,10 +36,22 @@ int jesd_loopback_verify(void);
  * diagnostic can call it repeatedly without duplicating either.
  */
 struct jesd_loopback_meas {
-	uint64_t rms;             /* per-sample RMS over channel 0's I/Q */
-	uint64_t ch_rms[4];       /* per-channel RMS, to spot a mis-cabled input */
-	uint32_t concentration;   /* permille of energy in the expected tone bin */
+	uint64_t rms;             /* per-sample RMS over the paired I/Q */
+	uint64_t lane_rms[8];     /* per-lane RMS -- layout-agnostic raw evidence */
+	uint64_t ch_rms[4];       /* interleaved reading: lanes (2n, 2n+1) */
+	uint32_t concentration;   /* permille of energy in the tone bin, interleaved */
 	uint64_t amplitude;       /* recovered tone amplitude, vs JESD_PB_AMPLITUDE */
+	/*
+	 * The same correlation under the other candidate beat layout. The
+	 * virtual-converter order the chip is programmed with is I,Q,I,Q, but the
+	 * order that reaches DDR after the FPGA transport core and lane mapping
+	 * need not match, and pairing an I with another channel's I scores exactly
+	 * the ~500 permille a real-valued signal gives -- indistinguishable from
+	 * genuine quadrature imbalance if only one pairing is measured. Measuring
+	 * both makes the layout an observation rather than an assumption.
+	 */
+	uint32_t concentration_split; /* pairing lane n with lane n+4 */
+	uint64_t amplitude_split;
 };
 
 /*

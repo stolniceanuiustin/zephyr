@@ -107,9 +107,27 @@ static void diag_check_tx_gain(adi_ad9081_device_t *dev)
 	}
 }
 
-/* Retune the TX main NCO and RX coarse DDC to a matched pair. */
+/*
+ * Retune the TX main NCO and RX coarse DDC to a matched pair, then read both
+ * frequency tuning words back.
+ *
+ * The readback is the point. A sweep that only writes cannot tell "this
+ * frequency does not get through the analog path" from "this frequency was
+ * never actually programmed" -- both look like silence, and the first reading
+ * of this sweep (three silent points and one working one, in no pattern any
+ * filter would produce) fits the second explanation at least as well as the
+ * first. Comparing the readback against the FTW the requested frequency implies
+ * settles it: a matching FTW means the tone really was on that carrier and the
+ * silence is physical, while a stale or clamped FTW means the sweep was
+ * measuring the same setting repeatedly.
+ *
+ * Expected FTW = 2^48 * f / f_clk, and for a negative shift the API stores the
+ * two's-complement form (2^48 - x), matching adi_ad9081_hal_calc_rx_nco_ftw.
+ */
 static int diag_retune(adi_ad9081_device_t *dev, int64_t hz)
 {
+	uint64_t tx_ftw = 0, rx_ftw = 0, mod_a = 0, mod_b = 0;
+	uint64_t want_tx, want_rx;
 	int32_t err;
 
 	err = adi_ad9081_dac_duc_nco_set(dev, AD9081_DAC_ALL,
@@ -129,6 +147,32 @@ static int diag_retune(adi_ad9081_device_t *dev, int64_t hz)
 
 	/* Let the retuned datapath settle before capturing through it. */
 	k_msleep(2);
+
+	/* What the FTWs should be if the writes landed, computed the same way the
+	 * API computes them so a mismatch means the hardware, not our arithmetic. */
+	(void)adi_ad9081_hal_calc_tx_nco_ftw(dev, dev->dev_info.dac_freq_hz, hz,
+					     &want_tx);
+	(void)adi_ad9081_hal_calc_rx_nco_ftw(dev, dev->dev_info.adc_freq_hz, hz,
+					     &want_rx);
+
+	err = adi_ad9081_dac_duc_main_nco_ftw_get(dev, AD9081_DAC_0, &tx_ftw,
+						  &mod_a, &mod_b);
+	if (err != API_CMS_ERROR_OK) {
+		LOG_WRN("  TX FTW readback failed (%d)", err);
+	}
+
+	err = adi_ad9081_adc_ddc_coarse_nco_ftw_get(dev, AD9081_ADC_CDDC_0,
+						    &rx_ftw, &mod_a, &mod_b);
+	if (err != API_CMS_ERROR_OK) {
+		LOG_WRN("  RX FTW readback failed (%d)", err);
+	}
+
+	LOG_INF("    FTW tx 0x%012llx (want 0x%012llx)%s, rx 0x%012llx (want 0x%012llx)%s",
+		(unsigned long long)tx_ftw, (unsigned long long)want_tx,
+		(tx_ftw == want_tx) ? "" : " MISMATCH",
+		(unsigned long long)rx_ftw, (unsigned long long)want_rx,
+		(rx_ftw == want_rx) ? "" : " MISMATCH");
+
 	return 0;
 }
 
@@ -162,16 +206,24 @@ static bool diag_sweep(adi_ad9081_device_t *dev)
 			continue;
 		}
 
-		LOG_INF("  %4u MHz: RMS %llu (ch %llu/%llu/%llu/%llu), tone %u/1000, amp %llu",
+		LOG_INF("  %4u MHz: RMS %llu, lanes %llu/%llu/%llu/%llu/%llu/%llu/%llu/%llu",
 			diag_sweep_mhz[i], (unsigned long long)m.rms,
-			(unsigned long long)m.ch_rms[0],
-			(unsigned long long)m.ch_rms[1],
-			(unsigned long long)m.ch_rms[2],
-			(unsigned long long)m.ch_rms[3],
-			m.concentration, (unsigned long long)m.amplitude);
+			(unsigned long long)m.lane_rms[0],
+			(unsigned long long)m.lane_rms[1],
+			(unsigned long long)m.lane_rms[2],
+			(unsigned long long)m.lane_rms[3],
+			(unsigned long long)m.lane_rms[4],
+			(unsigned long long)m.lane_rms[5],
+			(unsigned long long)m.lane_rms[6],
+			(unsigned long long)m.lane_rms[7]);
+		LOG_INF("            tone: interleaved %u/1000 (amp %llu), split %u/1000 (amp %llu)",
+			m.concentration, (unsigned long long)m.amplitude,
+			m.concentration_split,
+			(unsigned long long)m.amplitude_split);
 
-		if (m.concentration >= DIAG_TONE_FOUND_MIN &&
-		    m.rms >= DIAG_SIGNAL_RMS) {
+		uint32_t best = MAX(m.concentration, m.concentration_split);
+
+		if (best >= DIAG_TONE_FOUND_MIN && m.rms >= DIAG_SIGNAL_RMS) {
 			LOG_INF("         ^^ the tone came back at this frequency");
 			found_any = true;
 		}
@@ -223,13 +275,17 @@ static bool diag_internal_tone(adi_ad9081_device_t *dev)
 
 	ret = jesd_loopback_measure(&m);
 	if (ret == 0) {
-		LOG_INF("  internal tone at %lld MHz: RMS %llu (ch %llu/%llu/%llu/%llu)",
+		LOG_INF("  internal tone at %lld MHz: RMS %llu, lanes %llu/%llu/%llu/%llu/%llu/%llu/%llu/%llu",
 			(long long)(DIAG_NCO_HZ_DEFAULT / 1000000LL),
 			(unsigned long long)m.rms,
-			(unsigned long long)m.ch_rms[0],
-			(unsigned long long)m.ch_rms[1],
-			(unsigned long long)m.ch_rms[2],
-			(unsigned long long)m.ch_rms[3]);
+			(unsigned long long)m.lane_rms[0],
+			(unsigned long long)m.lane_rms[1],
+			(unsigned long long)m.lane_rms[2],
+			(unsigned long long)m.lane_rms[3],
+			(unsigned long long)m.lane_rms[4],
+			(unsigned long long)m.lane_rms[5],
+			(unsigned long long)m.lane_rms[6],
+			(unsigned long long)m.lane_rms[7]);
 
 		/*
 		 * Judge on RMS, not on the correlator. The internal tone is a
@@ -285,10 +341,12 @@ int jesd_diag_loopback(void)
 
 	LOG_INF("--- conclusion ---");
 	if (swept_ok) {
-		LOG_INF("the tone returns at some frequencies but not others:");
-		LOG_INF("  the datapath works and the fault is frequency-dependent");
-		LOG_INF("  (band limit or aliasing). Move the plan to a frequency");
-		LOG_INF("  that worked above and Rung 5 should pass.");
+		LOG_INF("the tone returns at one or more frequencies: the full chain");
+		LOG_INF("  works -- DDR -> DMA -> DAC -> cable -> ADC -> DMA -> DDR.");
+		LOG_INF("  Check the FTW readbacks above before reading the silent");
+		LOG_INF("  points as a band limit: a mismatch there means those");
+		LOG_INF("  frequencies were never programmed, so their silence says");
+		LOG_INF("  nothing about the analog path.");
 	} else if (internal_ok) {
 		LOG_INF("the chip's own tone reaches the ADC but ours never does:");
 		LOG_INF("  the DAC output and the whole analog path are fine, so the");

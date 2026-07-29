@@ -156,14 +156,26 @@ int jesd_loopback_measure(struct jesd_loopback_meas *m)
 	}
 
 	/*
-	 * Survey every channel, not just the one we judge. A beat holds four
-	 * (I,Q) pairs, so lanes 0/1 are channel 0, 2/3 channel 1, and so on.
-	 * Which SMA on the FMC reaches which converter is board- and
-	 * part-dependent (the connectors are dual-labelled because the card
-	 * serves both the 4-ADC AD9081 and the 2-ADC AD9082 pinouts), so a
-	 * signal arriving on a channel other than 0 shows up here instead of
-	 * looking like silence.
+	 * Per-lane RMS first, before interpreting anything. This is the raw
+	 * evidence: it says which of the eight sample slots in a beat carry
+	 * energy, without assuming how those slots pair into complex channels.
+	 * Which SMA on the FMC reaches which converter is also board-dependent
+	 * (the connectors are dual-labelled because the card serves both the
+	 * 4-ADC AD9081 and the 2-ADC AD9082 pinouts), so a signal arriving
+	 * somewhere unexpected shows up here rather than looking like silence.
 	 */
+	for (uint32_t l = 0; l < JESD_CAP_LANES_PER_BEAT; l++) {
+		uint64_t l_energy = 0;
+
+		for (size_t b = 0; b < beats; b++) {
+			int32_t v = buf[b * JESD_CAP_LANES_PER_BEAT + l];
+
+			l_energy += (uint64_t)((int64_t)v * v);
+		}
+		m->lane_rms[l] = lb_isqrt(l_energy / beats);
+	}
+
+	/* Interleaved reading of the same lanes: channel n = lanes (2n, 2n+1). */
 	for (uint32_t ch = 0; ch < 4; ch++) {
 		uint64_t ch_energy = 0;
 
@@ -178,28 +190,43 @@ int jesd_loopback_measure(struct jesd_loopback_meas *m)
 	}
 
 	/*
-	 * Correlate channel 0's (I,Q) pair against the transmitted tone, and sum
-	 * total energy alongside it. Lane 0 is I and lane 1 is Q within each beat
-	 * (established by the Rung 2 capture).
+	 * Correlate against the transmitted tone under both candidate pairings,
+	 * and sum total energy alongside. Whichever layout is real produces a high
+	 * concentration; the wrong one pairs an I component with an unrelated
+	 * channel's I, giving a real-valued signal that scores ~500 -- so the two
+	 * numbers together identify the layout instead of leaving ~500 ambiguous
+	 * between "wrong pairing" and "genuine quadrature imbalance".
 	 */
+	int64_t re2 = 0, im2 = 0;
+	uint64_t energy2 = 0;
+
 	for (size_t b = 0; b < beats; b++) {
-		int32_t i_s = buf[b * JESD_CAP_LANES_PER_BEAT + 0];
-		int32_t q_s = buf[b * JESD_CAP_LANES_PER_BEAT + 1];
+		const int16_t *beat = &buf[b * JESD_CAP_LANES_PER_BEAT];
 		size_t t = (b * JESD_PB_STEP) % JESD_PB_TABLE_LEN;
 		int32_t c = lb_cos[t];
 		int32_t s = lb_sin[t];
+		int32_t i_s, q_s;
 
 		/* Multiply by e^{+j.theta} to de-rotate the transmitted e^{-j.theta}.
 		 * The conjugate convention here must match pb_fill()'s negated Q --
 		 * getting it backwards correlates against the mirror image and scores
 		 * zero, which is exactly what an aliased return looks like. */
+		i_s = beat[0];
+		q_s = beat[1];
 		re += ((int64_t)i_s * c - (int64_t)q_s * s) >> LB_TWIDDLE_SCALE;
 		im += ((int64_t)q_s * c + (int64_t)i_s * s) >> LB_TWIDDLE_SCALE;
 		energy += (uint64_t)((int64_t)i_s * i_s + (int64_t)q_s * q_s);
+
+		i_s = beat[0];
+		q_s = beat[4];
+		re2 += ((int64_t)i_s * c - (int64_t)q_s * s) >> LB_TWIDDLE_SCALE;
+		im2 += ((int64_t)q_s * c + (int64_t)i_s * s) >> LB_TWIDDLE_SCALE;
+		energy2 += (uint64_t)((int64_t)i_s * i_s + (int64_t)q_s * q_s);
 	}
 
 	m->rms = lb_isqrt(energy / beats);
 	m->amplitude = lb_isqrt((uint64_t)(re * re + im * im)) / beats;
+	m->amplitude_split = lb_isqrt((uint64_t)(re2 * re2 + im2 * im2)) / beats;
 
 	/*
 	 * Energy in the tone bin vs total energy. |X|^2 / (N * total) is 1.0 for a
@@ -209,6 +236,11 @@ int jesd_loopback_measure(struct jesd_loopback_meas *m)
 		m->concentration =
 			(uint32_t)(((uint64_t)(re * re + im * im) * 1000U) /
 				   (energy * beats));
+	}
+	if (energy2 != 0) {
+		m->concentration_split =
+			(uint32_t)(((uint64_t)(re2 * re2 + im2 * im2) * 1000U) /
+				   (energy2 * beats));
 	}
 
 	return 0;
@@ -232,13 +264,33 @@ int jesd_loopback_verify(void)
 	}
 
 	rms = m.rms;
-	concentration = m.concentration;
 
-	LOG_INF("per-channel RMS (which converter is the cable actually on?):");
-	for (uint32_t ch = 0; ch < 4; ch++) {
-		LOG_INF("  ch%u: RMS %llu", ch,
-			(unsigned long long)m.ch_rms[ch]);
-	}
+	/*
+	 * Judge on whichever I/Q pairing actually describes the buffer. The chip's
+	 * virtual converters are ordered I,Q,I,Q, but what reaches DDR has been
+	 * through the FPGA transport core and two lane maps, so the pairing is
+	 * measured rather than assumed -- see jesd_loopback_meas. The wrong pairing
+	 * scores ~500 on a perfectly good signal, which would read as permanent
+	 * quadrature imbalance.
+	 */
+	bool split = m.concentration_split > m.concentration;
+
+	concentration = split ? m.concentration_split : m.concentration;
+
+	LOG_INF("per-lane RMS (which slots carry energy):");
+	LOG_INF("  %llu %llu %llu %llu %llu %llu %llu %llu",
+		(unsigned long long)m.lane_rms[0],
+		(unsigned long long)m.lane_rms[1],
+		(unsigned long long)m.lane_rms[2],
+		(unsigned long long)m.lane_rms[3],
+		(unsigned long long)m.lane_rms[4],
+		(unsigned long long)m.lane_rms[5],
+		(unsigned long long)m.lane_rms[6],
+		(unsigned long long)m.lane_rms[7]);
+
+	LOG_INF("I/Q pairing: interleaved (0,1) scores %u, split (0,4) scores %u -> %s",
+		m.concentration, m.concentration_split,
+		split ? "split" : "interleaved");
 
 	LOG_INF("capture: per-sample RMS %llu", (unsigned long long)rms);
 
@@ -254,8 +306,8 @@ int jesd_loopback_verify(void)
 	}
 
 	LOG_INF("tone bin: amplitude %llu (sent %d), %u/1000 of total energy",
-		(unsigned long long)m.amplitude, JESD_PB_AMPLITUDE,
-		concentration);
+		(unsigned long long)(split ? m.amplitude_split : m.amplitude),
+		JESD_PB_AMPLITUDE, concentration);
 
 	if (concentration < LB_TONE_CONCENTRATION_MIN) {
 		LOG_ERR("signal present but it is not the transmitted tone");
