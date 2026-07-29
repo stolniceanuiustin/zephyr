@@ -39,4 +39,29 @@ int jesd_capture_raw(const int16_t **buf, size_t *n);
 /* Beat width of the capture stream: 16-byte DMA bus / 2-byte sample. */
 #define JESD_CAP_LANES_PER_BEAT 8U
 
+/*
+ * Fast one-bit probe: capture a short block and report whether a signal is present
+ * (1) or only the noise floor (0), or a negative errno on failure.
+ *
+ * For sampling a signal that varies in time, where the probe's own cost sets the
+ * achievable resolution. A full jesd_loopback_measure() over the 1 MiB buffer takes
+ * ~13.7 ms wall-clock for ~262 us of ADC data -- 98% of it memset, cache maintenance
+ * and correlation -- so consecutive measurements are blind to anything that toggles
+ * faster than ~14 ms and alias badly against a periodic source. This probe drops both
+ * costs: a small block, and a mean-square instead of a correlation. It cannot say
+ * whether the signal is the *right* one, so it is strictly a timing instrument --
+ * use jesd_loopback_measure() to identify what arrived.
+ *
+ * Overwrites the shared capture buffer, like any other capture.
+ */
+int jesd_capture_probe(void);
+
+/*
+ * Probe block size, and the per-sample RMS above which the probe calls it signal.
+ * 8 KiB is ~2 us of ADC data; the tone reads ~4576 against a ~7 noise floor, so the
+ * threshold sits orders of magnitude clear of both and needs no tuning.
+ */
+#define JESD_CAP_PROBE_BYTES   8192U
+#define JESD_CAP_PROBE_RMS_MIN 64U
+
 #endif /* JESD_CAPTURE_H_ */

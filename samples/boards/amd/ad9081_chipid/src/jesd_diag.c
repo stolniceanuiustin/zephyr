@@ -728,86 +728,107 @@ static void diag_duty_cycle(void)
  * is not free), so the strip measures the period in units of captures and the
  * elapsed wall time converts it to microseconds.
  */
-#define DIAG_STRIP_SAMPLES 192U
+#define DIAG_STRIP_SAMPLES 1024U
 #define DIAG_STRIP_PER_ROW 64U
+#define DIAG_EDGES_MAX     64U
 
 static void diag_gate_period(void)
 {
-	uint8_t state[DIAG_STRIP_SAMPLES];
-	size_t on = 0, edges = 0;
-	size_t first_edge = SIZE_MAX, last_edge = 0;
+	static uint8_t state[DIAG_STRIP_SAMPLES];
+	static int64_t stamp[DIAG_STRIP_SAMPLES];
+	int64_t edge_us[DIAG_EDGES_MAX];
+	size_t on = 0, edges = 0, taken = 0;
 	int64_t t0, elapsed_us;
 
-	LOG_INF("[9/7] gate period across %u back-to-back captures:",
-		DIAG_STRIP_SAMPLES);
+	LOG_INF("[9/7] gate period from %u fast probes:", DIAG_STRIP_SAMPLES);
 
+	/*
+	 * Sample as fast as the probe allows, timestamping each one. The previous
+	 * version used the full measurement and aliased badly: at ~13.7 ms per
+	 * sample against a source toggling faster than that, the strip showed a
+	 * regular 4-sample beat that was pure artefact. Timestamps make the
+	 * aliasing visible rather than silent -- if the sample interval is not
+	 * comfortably shorter than the runs, the numbers below say so.
+	 */
 	t0 = k_uptime_ticks();
 	for (size_t i = 0; i < DIAG_STRIP_SAMPLES; i++) {
-		struct jesd_loopback_meas m;
+		int p = jesd_capture_probe();
 
-		state[i] = (jesd_loopback_measure(&m) == 0 &&
-			    m.rms >= DIAG_SIGNAL_RMS) ? 1 : 0;
+		if (p < 0) {
+			LOG_WRN("  probe failed at sample %zu (%d)", i, p);
+			break;
+		}
+		state[i] = (uint8_t)p;
+		stamp[i] = k_ticks_to_us_floor64(k_uptime_ticks() - t0);
+		taken++;
 	}
-	elapsed_us = k_ticks_to_us_floor64(k_uptime_ticks() - t0);
+	elapsed_us = taken ? stamp[taken - 1] : 0;
 
-	for (size_t i = 0; i < DIAG_STRIP_SAMPLES; i++) {
+	if (taken < 2) {
+		LOG_WRN("  too few samples to say anything");
+		return;
+	}
+
+	for (size_t i = 0; i < taken; i++) {
 		on += state[i];
 		if (i && state[i] != state[i - 1]) {
-			edges++;
-			if (first_edge == SIZE_MAX) {
-				first_edge = i;
+			if (edges < DIAG_EDGES_MAX) {
+				edge_us[edges] = stamp[i];
 			}
-			last_edge = i;
+			edges++;
 		}
 	}
 
-	for (size_t i = 0; i < DIAG_STRIP_SAMPLES; i += DIAG_STRIP_PER_ROW) {
+	for (size_t i = 0; i < taken; i += DIAG_STRIP_PER_ROW) {
 		char row[DIAG_STRIP_PER_ROW + 1];
 		size_t k = 0;
 
-		for (; k < DIAG_STRIP_PER_ROW && i + k < DIAG_STRIP_SAMPLES; k++) {
+		for (; k < DIAG_STRIP_PER_ROW && i + k < taken; k++) {
 			row[k] = state[i + k] ? '#' : '.';
 		}
 		row[k] = '\0';
 		LOG_INF("  %s", row);
 	}
 
-	LOG_INF("  %zu/%u captures saw the tone, %zu transitions, %lld us elapsed",
-		on, DIAG_STRIP_SAMPLES, edges, (long long)elapsed_us);
-	LOG_INF("  (%lld us per capture overall, including arming and cache work)",
-		(long long)(elapsed_us / DIAG_STRIP_SAMPLES));
+	LOG_INF("  %zu/%zu probes saw signal (%zu%% on), %zu transitions in %lld us",
+		on, taken, on * 100U / taken, edges, (long long)elapsed_us);
+	LOG_INF("  sample interval %lld us -- runs must be several of these to be real",
+		(long long)(elapsed_us / (int64_t)taken));
 
 	if (edges == 0) {
-		LOG_WRN("  no transition in %lld us -- the gate period is longer than this",
+		LOG_WRN("  no transition in %lld us: the gate is slower than this sweep.",
 			(long long)elapsed_us);
-		LOG_WRN("  whole sweep, so it is slower than a few milliseconds. Raise");
-		LOG_WRN("  DIAG_STRIP_SAMPLES to widen the observation window.");
 		return;
 	}
 
 	/*
-	 * Between the first and last edge lies a whole number of half-cycles, so
-	 * that span divided by the edge count is the mean half-period -- more robust
-	 * than any single run length, which quantisation can distort by a whole
-	 * capture at either end.
+	 * Report the interval between consecutive edges rather than a single mean.
+	 * A gate with unequal on and off times alternates between two values, and an
+	 * average of the two is a number that describes neither -- printing the
+	 * sequence shows the structure and makes a non-periodic source obvious
+	 * instead of averaging it into a plausible-looking figure.
 	 */
-	if (edges >= 2) {
-		int64_t span_us = elapsed_us * (int64_t)(last_edge - first_edge) /
-				  (int64_t)DIAG_STRIP_SAMPLES;
+	size_t shown = MIN(edges, DIAG_EDGES_MAX);
 
-		LOG_INF("  mean half-period %lld us -> full cycle ~%lld us (%zu%% on)",
-			(long long)(span_us / (int64_t)edges),
-			(long long)(2 * span_us / (int64_t)edges),
-			on * 100U / DIAG_STRIP_SAMPLES);
-		LOG_INF("  THIS IS THE NUMBER TO CHASE: whatever gates the tone has to");
-		LOG_INF("  run on that timescale. Compare it against SYSREF period, LMFC");
-		LOG_INF("  period, and the deframer's elastic-buffer depth -- those vary");
-		LOG_INF("  in time rather than in configuration, which is what is left");
-		LOG_INF("  after every register readback verified correct.");
+	if (shown >= 2) {
+		char row[DIAG_STRIP_PER_ROW + 1];
+		size_t len = 0;
+
+		LOG_INF("  intervals between transitions (us):");
+		for (size_t e = 1; e < shown; e++) {
+			len += snprintk(&row[len], sizeof(row) - len, "%lld ",
+					(long long)(edge_us[e] - edge_us[e - 1]));
+			if (len > sizeof(row) - 12 || e == shown - 1) {
+				LOG_INF("    %s", row);
+				len = 0;
+			}
+		}
+		LOG_INF("  alternating values here are the on and off times; a steady");
+		LOG_INF("  pair means a periodic gate, scattered values mean it is not");
+		LOG_INF("  periodic and the cause is event-driven rather than clocked.");
 	} else {
-		LOG_INF("  one transition only: the period is comparable to this %lld us",
+		LOG_INF("  only one transition -- period is comparable to the %lld us sweep",
 			(long long)elapsed_us);
-		LOG_INF("  window. Raise DIAG_STRIP_SAMPLES to resolve it.");
 	}
 }
 

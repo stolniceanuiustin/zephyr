@@ -93,7 +93,25 @@ static uint16_t cap_buf[CAP_NUM_SAMPLES] __aligned(CAP_DMA_ALIGN);
  * cache maintenance around it. Shared by Rung 2 (with a test mode enabled) and
  * Rung 5 (capturing whatever the ADC is really digitising).
  */
+static int cap_transfer_n(const struct device *rx_dma, size_t bytes);
+
 static int cap_transfer(const struct device *rx_dma)
+{
+	return cap_transfer_n(rx_dma, sizeof(cap_buf));
+}
+
+/*
+ * Capture `bytes` rather than the whole buffer.
+ *
+ * The cost of a capture is not dominated by the transfer. Every capture memsets the
+ * buffer, cleans it out of the D-cache, and invalidates it again afterwards -- all
+ * proportional to the length, and at 1 MiB that is milliseconds of CPU work around
+ * ~262 us of DMA. A caller that only needs a yes/no answer about the signal can ask
+ * for a short block and get a far higher sampling rate: at 8 KiB the whole thing
+ * costs tens of microseconds, which is what makes it possible to sample a periodic
+ * gate faster than it toggles.
+ */
+static int cap_transfer_n(const struct device *rx_dma, size_t bytes)
 {
 	struct dma_block_config block = {0};
 	struct dma_config cfg = {0};
@@ -101,13 +119,18 @@ static int cap_transfer(const struct device *rx_dma)
 	int64_t deadline;
 	int ret;
 
+	if (bytes == 0 || bytes > sizeof(cap_buf)) {
+		return -EINVAL;
+	}
+	bytes = ROUND_DOWN(bytes, CAP_DMA_ALIGN);
+
 	/* Drop any dirty lines so the DMA's writes can't be overwritten later. */
-	memset(cap_buf, 0, sizeof(cap_buf));
-	sys_cache_data_flush_and_invd_range(cap_buf, sizeof(cap_buf));
+	memset(cap_buf, 0, bytes);
+	sys_cache_data_flush_and_invd_range(cap_buf, bytes);
 
 	block.source_address = 0; /* device FIFO -- no memory address */
 	block.dest_address = (uintptr_t)cap_buf;
-	block.block_size = sizeof(cap_buf);
+	block.block_size = bytes;
 
 	cfg.channel_direction = PERIPHERAL_TO_MEMORY;
 	cfg.block_count = 1;
@@ -147,11 +170,51 @@ static int cap_transfer(const struct device *rx_dma)
 	} while (true);
 
 	/* CPU must invalidate before reading DMA-written DDR. */
-	sys_cache_data_invd_range(cap_buf, sizeof(cap_buf));
+	sys_cache_data_invd_range(cap_buf, bytes);
 	ret = 0;
 stop:
 	dma_stop(rx_dma, CAP_DMA_CHANNEL);
 	return ret;
+}
+
+/*
+ * Fast one-bit probe: is a signal present at the ADC right now?
+ *
+ * Built for sampling something that changes over time, where the cost of a probe
+ * sets the resolution. It captures JESD_CAP_PROBE_BYTES rather than the whole
+ * buffer, and computes only a mean-square over lane 0 instead of the full
+ * correlation -- enough to separate the ~4576 tone from the ~7 noise floor by three
+ * orders of magnitude, which needs no precision at all.
+ *
+ * Returns 1 if signal is present, 0 if not, or a negative errno if the capture
+ * failed. Overwrites the shared capture buffer like any other capture.
+ */
+int jesd_capture_probe(void)
+{
+	const struct device *rx_dma = DEVICE_DT_GET(DT_NODELABEL(rx_dmac));
+	const int16_t *s = (const int16_t *)cap_buf;
+	size_t n = JESD_CAP_PROBE_BYTES / sizeof(uint16_t);
+	uint64_t energy = 0;
+	int ret;
+
+	if (!device_is_ready(rx_dma)) {
+		return -ENODEV;
+	}
+
+	ret = cap_transfer_n(rx_dma, JESD_CAP_PROBE_BYTES);
+	if (ret) {
+		return ret;
+	}
+
+	for (size_t i = 0; i < n; i += JESD_CAP_LANES_PER_BEAT) {
+		int32_t v = s[i];
+
+		energy += (uint64_t)((int64_t)v * v);
+	}
+
+	/* Compare mean-square against the squared threshold to avoid a sqrt. */
+	energy /= (n / JESD_CAP_LANES_PER_BEAT);
+	return energy >= (uint64_t)JESD_CAP_PROBE_RMS_MIN * JESD_CAP_PROBE_RMS_MIN;
 }
 
 int jesd_capture_raw(const int16_t **buf, size_t *n)
