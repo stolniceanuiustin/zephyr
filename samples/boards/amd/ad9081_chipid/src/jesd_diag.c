@@ -172,7 +172,7 @@ static void diag_irq_status(adi_ad9081_device_t *dev)
 	};
 	uint8_t st[6] = { 0 };
 
-	LOG_INF("[0/7] chip latched IRQ status (IRQB0 is lit on the board):");
+	LOG_INF("[0/10] chip latched IRQ status (IRQB0 is lit on the board):");
 
 	for (uint8_t i = 0; i < 6; i++) {
 		int32_t err = adi_ad9081_hal_reg_get(dev, REG_IRQ_STATUS0_ADDR + i,
@@ -250,7 +250,7 @@ static void diag_irq_status(adi_ad9081_device_t *dev)
  */
 static void diag_check_tx_gain(adi_ad9081_device_t *dev)
 {
-	LOG_INF("[1/7] TX fine-DUC channel gain readback (programmed 1024):");
+	LOG_INF("[1/10] TX fine-DUC channel gain readback (programmed 1024):");
 
 	for (uint8_t ch = 0; ch < 4; ch++) {
 		uint8_t raw[2] = { 0, 0 };
@@ -362,7 +362,7 @@ static bool diag_sweep(adi_ad9081_device_t *dev)
 {
 	bool found_any = false;
 
-	LOG_INF("[2/7] NCO frequency sweep (TX main + RX coarse together):");
+	LOG_INF("[2/10] NCO frequency sweep (TX main + RX coarse together):");
 	LOG_INF("  baseband tone stays at -%u MHz; only the RF carrier moves",
 		JESD_PB_TONE_HZ / 1000000U);
 
@@ -427,7 +427,7 @@ static bool diag_internal_tone(adi_ad9081_device_t *dev)
 	bool present = false;
 	int ret;
 
-	LOG_INF("[3/7] chip-internal DAC test tone (bypasses DMA + link + deframer):");
+	LOG_INF("[3/10] chip-internal DAC test tone (bypasses DMA + link + deframer):");
 
 	if (diag_retune(dev, DIAG_NCO_HZ_DEFAULT) != 0) {
 		LOG_WRN("  could not restore the NCO pair; skipping");
@@ -509,7 +509,7 @@ static void diag_repeatability(void)
 	uint32_t hits = 0;
 	uint64_t best_rms = 0;
 
-	LOG_INF("[4/7] repeatability of our own tone (%u captures at the same setting):",
+	LOG_INF("[4/10] repeatability of our own tone (%u captures at the same setting):",
 		DIAG_REPEATS);
 
 	for (uint32_t i = 0; i < DIAG_REPEATS; i++) {
@@ -543,7 +543,7 @@ static void diag_repeatability(void)
 		LOG_WRN("  INTERMITTENT within a single boot -- the datapath is not");
 		LOG_WRN("  deterministically delivering samples to the DAC.");
 	} else {
-		LOG_WRN("  INTERMITTENT within a single boot -- see [8/7] for whether that");
+		LOG_WRN("  INTERMITTENT within a single boot -- see [8/10] for whether that");
 		LOG_WRN("  is really intermittence or just a too-short capture window.");
 	}
 }
@@ -551,7 +551,7 @@ static void diag_repeatability(void)
 /*
  * Duty cycle of the analog return, measured *within* one capture.
  *
- * [4/7] counts how many captures saw signal, and that count has been misleading:
+ * [4/10] counts how many captures saw signal, and that count has been misleading:
  * each capture is one short window, so "1 of 8" conflates "the signal is rarely
  * there" with "we rarely looked while it was there". Those demand different fixes
  * and the hit count cannot separate them.
@@ -607,7 +607,7 @@ static void diag_duty_cycle(void)
 	size_t n, beats, chunks, on = 0;
 	uint64_t rms[DIAG_CHUNKS_MAX];
 
-	LOG_INF("[8/7] duty cycle of the return within one capture:");
+	LOG_INF("[8/10] duty cycle of the return within one capture:");
 
 	if (jesd_capture_raw(&buf, &n) != 0) {
 		LOG_WRN("  capture failed");
@@ -667,7 +667,7 @@ static void diag_duty_cycle(void)
 			on ? "tone throughout" : "noise floor throughout");
 		LOG_INF("  which is the common case once the gating is known: a window");
 		LOG_INF("  shorter than the period usually misses the transition. It still");
-		LOG_INF("  bounds one half of the cycle at >= %u us. See [9/7] for the period.",
+		LOG_INF("  bounds one half of the cycle at >= %u us. See [9/10] for the period.",
 			(unsigned int)((uint64_t)chunks * DIAG_CHUNK_BEATS * 1000000U /
 				       JESD_PB_SAMPLE_RATE));
 	} else {
@@ -693,7 +693,7 @@ static void diag_duty_cycle(void)
 
 		LOG_WRN("  MIXED -- the return genuinely switches state, roughly %zu%% on,",
 			on * 100U / chunks);
-		LOG_WRN("  so the source is gating the tone. This also explains [4/7]:");
+		LOG_WRN("  so the source is gating the tone. This also explains [4/10]:");
 		LOG_WRN("  captures shorter than the gate period land wholly inside an on-");
 		LOG_WRN("  or off-period, which is why they read all-or-nothing.");
 		LOG_INF("  %zu transitions, longest on-run %zu chunks (%u us)", edges,
@@ -716,12 +716,12 @@ static void diag_duty_cycle(void)
 /*
  * Period of the gating, measured across many captures instead of within one.
  *
- * [8/7] established that the return is gated and bounded the two halves at on >=
+ * [8/10] established that the return is gated and bounded the two halves at on >=
  * 65 us and off >= 262 us, but it cannot do better: a single transfer caps at 1 MiB
  * (~262 us) on this core, so no one capture spans a full cycle.
  *
  * Run captures back to back instead and record only whether each saw the tone. That
- * turns [8/7]'s limitation into the instrument: because a capture shorter than the
+ * turns [8/10]'s limitation into the instrument: because a capture shorter than the
  * period reads all-or-nothing, each one is a clean one-bit sample of the gate state,
  * and the run lengths in the resulting strip are the on and off times. Sampling is
  * uneven (each capture costs its own arming and cache maintenance, and the log call
@@ -740,7 +740,7 @@ static void diag_gate_period(void)
 	size_t on = 0, edges = 0, taken = 0;
 	int64_t t0, elapsed_us;
 
-	LOG_INF("[9/7] gate period from %u fast probes:", DIAG_STRIP_SAMPLES);
+	LOG_INF("[9/10] gate period from %u fast probes:", DIAG_STRIP_SAMPLES);
 
 	/*
 	 * Sample as fast as the probe allows, timestamping each one. The previous
@@ -878,7 +878,7 @@ static void diag_jrx_buffer(void)
 	uint8_t pd_min = 0xFF, pd_max = 0;
 	int32_t err;
 
-	LOG_INF("[10/7] JRX TPL elastic-buffer state (0x4A1 / 0x4A5):");
+	LOG_INF("[10/10] JRX TPL elastic-buffer state (0x4A1 / 0x4A5):");
 
 	if (dev == NULL) {
 		return;
@@ -945,7 +945,7 @@ static void diag_channel_tone(adi_ad9081_device_t *dev)
 	struct jesd_loopback_meas m;
 	int32_t err;
 
-	LOG_INF("[5/7] fine-DUC (channel) DC test tone -- one stage earlier than [3]:");
+	LOG_INF("[5/10] fine-DUC (channel) DC test tone -- one stage earlier than [3]:");
 
 	err = adi_ad9081_dac_dc_test_tone_offset_set(dev, AD9081_DAC_CH_0, 0x4000);
 	if (err != API_CMS_ERROR_OK) {
@@ -1017,7 +1017,7 @@ static void diag_fpga_dds(void)
 	struct jesd_loopback_meas m;
 	int ret;
 
-	LOG_INF("[6/7] FPGA DDS tone at the TPL input (crosses lanes + deframer):");
+	LOG_INF("[6/10] FPGA DDS tone at the TPL input (crosses lanes + deframer):");
 
 	ret = axi_tpl_tx_dds(JESD_PB_TONE_HZ, JESD_PB_SAMPLE_RATE, true);
 	if (ret) {
@@ -1098,7 +1098,7 @@ static void diag_dma_feed(void)
 	size_t bytes, pb_bytes;
 	bool nonzero = false;
 
-	LOG_INF("[7/7] the DMA feed itself (everything from the TPL on is proven):");
+	LOG_INF("[7/10] the DMA feed itself (everything from the TPL on is proven):");
 
 	if (jesd_playback_buffer(&buf, &bytes) != 0) {
 		LOG_WRN("  playback buffer unavailable");

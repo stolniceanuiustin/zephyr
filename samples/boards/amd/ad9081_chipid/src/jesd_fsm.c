@@ -39,6 +39,8 @@ LOG_MODULE_REGISTER(jesd_fsm, LOG_LEVEL_INF);
 #include "axi_tpl.h"
 
 #include "adi_ad9081.h"
+#include "adi_ad9081_hal.h"
+#include "adi_ad9081_bf_ad9081.h"
 
 /* Chip-side link select: the deframer (JRX) link 0. */
 #define AD9081_JRX_LINK AD9081_LINK_0
@@ -125,6 +127,29 @@ int jesd204_bringup(void)
 	/* FPGA link cores: release the framer/deframer lane clocks. */
 	record(steps, &nsteps, "FPGA rx lane clk", axi_jesd204_rx_lane_clk_enable());
 	record(steps, &nsteps, "FPGA tx lane clk", axi_jesd204_tx_lane_clk_enable());
+
+	/*
+	 * Disable the JRX transport-layer elastic-buffer protection before enabling
+	 * the link.
+	 *
+	 * JRX_TPL_1 (0x4A1) bit6 BUF_PROTECT_EN withholds samples from the deframer
+	 * output when the elastic-buffer phase is judged marginal. It resets to 1 --
+	 * measured 0x4A1 = 0x41 on this board -- and nothing clears it on a 204B
+	 * link: the vendor API clears only bit7 BUF_PROTECTION, and no-OS clears
+	 * bit6 only for 204C on rev<3 silicon. A 204B port therefore inherits it
+	 * enabled, which is what gated the DAC output on and off at ~2.7 ms with
+	 * every status register reading healthy.
+	 *
+	 * It also explains the asymmetry that shaped the whole investigation: the
+	 * chip's internal DAC and fine-DUC test tones inject downstream of this
+	 * buffer and were always continuous, while DMA-sourced samples must cross
+	 * it. PHASE_DIFF (0x4A5) reads a stable 4 here, so the phase is not actually
+	 * drifting -- the protection is asserting on a margin this link does not
+	 * need, rather than reporting a real alignment problem.
+	 */
+	err = adi_ad9081_hal_bf_set(dev, REG_JRX_TPL_1_ADDR,
+				    BF_JRX_TPL_BUF_PROTECT_EN_INFO, 0);
+	record(steps, &nsteps, "chip JRX buf-protect off", err ? -EIO : 0);
 
 	/*
 	 * LINK_ENABLE. Enable the chip's JRX deframer; the JTX framer runs once
