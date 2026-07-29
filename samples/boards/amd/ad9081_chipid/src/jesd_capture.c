@@ -62,13 +62,19 @@ LOG_MODULE_REGISTER(jesd_capture, LOG_LEVEL_INF);
  * across all of it, never a mix -- so whatever varies has a period longer than a
  * capture, and a window that cannot contain a transition cannot time one.
  *
- * 4 MiB = 262144 beats = ~1.05 ms, 16x longer, chosen to bracket the flip rather
- * than sample around it: if the source gates the tone, a transition falls inside
- * this window and the per-chunk scan dates it. If a 1 ms capture is still uniform,
- * the signal is steady over that span and the variable is the capture itself.
- * DDR is 2 GB; the cost is irrelevant.
+ * 1 MiB = 65536 beats = ~262 us is the largest size that works. A 4 MiB request
+ * was tried and truncates: the ramp is perfect through beat 65535 and every beat
+ * after it reads zero, with no timeout and no error reported anywhere. The cause is
+ * not the burst-length register -- the driver probes max_length from the core and
+ * this one answers 16 MiB -- so something else caps a single receive transfer at
+ * 1 MiB, and that is not yet understood. Do not raise this without re-running
+ * Rung 2, which is what caught the truncation: it validates every beat it is given,
+ * so a silently short capture fails loudly there instead of quietly skewing an
+ * analog measurement.
+ *
+ * DDR is 2 GB, so the cost is irrelevant; the limit is the hardware's, not memory.
  */
-#define CAP_BUF_BYTES   (4U * 1024U * 1024U)
+#define CAP_BUF_BYTES   (1024U * 1024U)
 #define CAP_DMA_ALIGN   16U
 #define CAP_NUM_SAMPLES (CAP_BUF_BYTES / sizeof(uint16_t))
 

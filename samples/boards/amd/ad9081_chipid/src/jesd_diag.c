@@ -562,7 +562,8 @@ static void diag_repeatability(void)
  * microsecond scale and the "brief bursts averaging to the noise floor" theory is
  * false.
  *
- * At 1.05 ms the same scan separates what is left, and there are only two shapes:
+ * At 262 us -- 4x longer, and the most a single transfer will carry -- the same scan
+ * separates what is left, and there are only two shapes:
  *
  *   mixed high/low  -> the source really does gate the tone, on a period longer
  *                      than 65 us; a transition falls inside this window, so the
@@ -664,14 +665,14 @@ static void diag_duty_cycle(void)
 	if (on == chunks || on == 0) {
 		LOG_WRN("  UNIFORM across the whole capture (%s) -- the return does not",
 			on ? "tone throughout" : "noise floor throughout");
-		LOG_WRN("  change state within a millisecond. Combined with [4/7] showing");
+		LOG_WRN("  change state within a capture. Combined with [4/7] showing");
 		LOG_WRN("  both outcomes at the same settings, the thing that varies is not");
 		LOG_WRN("  the signal but the capture: each one re-arms the RX DMAC, and");
 		LOG_WRN("  that arming is now the only untested variable left.");
 	} else {
 		LOG_WRN("  MIXED -- the return genuinely switches state, roughly %zu%% on,",
 			on * 100U / chunks);
-		LOG_WRN("  with a transition inside this 1 ms window. The source is gating");
+		LOG_WRN("  with a transition inside this capture. The source is gating");
 		LOG_WRN("  the tone; the chunk list above dates the transition and gives");
 		LOG_WRN("  the period to check upstream stages against.");
 	}
