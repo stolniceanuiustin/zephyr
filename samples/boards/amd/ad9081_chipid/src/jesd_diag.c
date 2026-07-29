@@ -663,12 +663,13 @@ static void diag_duty_cycle(void)
 			       JESD_PB_SAMPLE_RATE));
 
 	if (on == chunks || on == 0) {
-		LOG_WRN("  UNIFORM across the whole capture (%s) -- the return does not",
+		LOG_INF("  UNIFORM (%s) -- this capture fell entirely inside one state,",
 			on ? "tone throughout" : "noise floor throughout");
-		LOG_WRN("  change state within a capture. Combined with [4/7] showing");
-		LOG_WRN("  both outcomes at the same settings, the thing that varies is not");
-		LOG_WRN("  the signal but the capture: each one re-arms the RX DMAC, and");
-		LOG_WRN("  that arming is now the only untested variable left.");
+		LOG_INF("  which is the common case once the gating is known: a window");
+		LOG_INF("  shorter than the period usually misses the transition. It still");
+		LOG_INF("  bounds one half of the cycle at >= %u us. See [9/7] for the period.",
+			(unsigned int)((uint64_t)chunks * DIAG_CHUNK_BEATS * 1000000U /
+				       JESD_PB_SAMPLE_RATE));
 	} else {
 		size_t edges = 0, longest_on = 0, run = 0;
 
@@ -709,6 +710,104 @@ static void diag_duty_cycle(void)
 				(unsigned int)((uint64_t)chunks * DIAG_CHUNK_BEATS *
 					       1000000U / JESD_PB_SAMPLE_RATE));
 		}
+	}
+}
+
+/*
+ * Period of the gating, measured across many captures instead of within one.
+ *
+ * [8/7] established that the return is gated and bounded the two halves at on >=
+ * 65 us and off >= 262 us, but it cannot do better: a single transfer caps at 1 MiB
+ * (~262 us) on this core, so no one capture spans a full cycle.
+ *
+ * Run captures back to back instead and record only whether each saw the tone. That
+ * turns [8/7]'s limitation into the instrument: because a capture shorter than the
+ * period reads all-or-nothing, each one is a clean one-bit sample of the gate state,
+ * and the run lengths in the resulting strip are the on and off times. Sampling is
+ * uneven (each capture costs its own arming and cache maintenance, and the log call
+ * is not free), so the strip measures the period in units of captures and the
+ * elapsed wall time converts it to microseconds.
+ */
+#define DIAG_STRIP_SAMPLES 192U
+#define DIAG_STRIP_PER_ROW 64U
+
+static void diag_gate_period(void)
+{
+	uint8_t state[DIAG_STRIP_SAMPLES];
+	size_t on = 0, edges = 0;
+	size_t first_edge = SIZE_MAX, last_edge = 0;
+	int64_t t0, elapsed_us;
+
+	LOG_INF("[9/7] gate period across %u back-to-back captures:",
+		DIAG_STRIP_SAMPLES);
+
+	t0 = k_uptime_ticks();
+	for (size_t i = 0; i < DIAG_STRIP_SAMPLES; i++) {
+		struct jesd_loopback_meas m;
+
+		state[i] = (jesd_loopback_measure(&m) == 0 &&
+			    m.rms >= DIAG_SIGNAL_RMS) ? 1 : 0;
+	}
+	elapsed_us = k_ticks_to_us_floor64(k_uptime_ticks() - t0);
+
+	for (size_t i = 0; i < DIAG_STRIP_SAMPLES; i++) {
+		on += state[i];
+		if (i && state[i] != state[i - 1]) {
+			edges++;
+			if (first_edge == SIZE_MAX) {
+				first_edge = i;
+			}
+			last_edge = i;
+		}
+	}
+
+	for (size_t i = 0; i < DIAG_STRIP_SAMPLES; i += DIAG_STRIP_PER_ROW) {
+		char row[DIAG_STRIP_PER_ROW + 1];
+		size_t k = 0;
+
+		for (; k < DIAG_STRIP_PER_ROW && i + k < DIAG_STRIP_SAMPLES; k++) {
+			row[k] = state[i + k] ? '#' : '.';
+		}
+		row[k] = '\0';
+		LOG_INF("  %s", row);
+	}
+
+	LOG_INF("  %zu/%u captures saw the tone, %zu transitions, %lld us elapsed",
+		on, DIAG_STRIP_SAMPLES, edges, (long long)elapsed_us);
+	LOG_INF("  (%lld us per capture overall, including arming and cache work)",
+		(long long)(elapsed_us / DIAG_STRIP_SAMPLES));
+
+	if (edges == 0) {
+		LOG_WRN("  no transition in %lld us -- the gate period is longer than this",
+			(long long)elapsed_us);
+		LOG_WRN("  whole sweep, so it is slower than a few milliseconds. Raise");
+		LOG_WRN("  DIAG_STRIP_SAMPLES to widen the observation window.");
+		return;
+	}
+
+	/*
+	 * Between the first and last edge lies a whole number of half-cycles, so
+	 * that span divided by the edge count is the mean half-period -- more robust
+	 * than any single run length, which quantisation can distort by a whole
+	 * capture at either end.
+	 */
+	if (edges >= 2) {
+		int64_t span_us = elapsed_us * (int64_t)(last_edge - first_edge) /
+				  (int64_t)DIAG_STRIP_SAMPLES;
+
+		LOG_INF("  mean half-period %lld us -> full cycle ~%lld us (%zu%% on)",
+			(long long)(span_us / (int64_t)edges),
+			(long long)(2 * span_us / (int64_t)edges),
+			on * 100U / DIAG_STRIP_SAMPLES);
+		LOG_INF("  THIS IS THE NUMBER TO CHASE: whatever gates the tone has to");
+		LOG_INF("  run on that timescale. Compare it against SYSREF period, LMFC");
+		LOG_INF("  period, and the deframer's elastic-buffer depth -- those vary");
+		LOG_INF("  in time rather than in configuration, which is what is left");
+		LOG_INF("  after every register readback verified correct.");
+	} else {
+		LOG_INF("  one transition only: the period is comparable to this %lld us",
+			(long long)elapsed_us);
+		LOG_INF("  window. Raise DIAG_STRIP_SAMPLES to resolve it.");
 	}
 }
 
@@ -1118,6 +1217,10 @@ int jesd_diag_loopback(void)
 	 * capture scanned in chunks separates a real duty cycle from a window
 	 * too short to land on a continuous signal. */
 	diag_duty_cycle();
+
+	/* One capture cannot span a full gate cycle (1 MiB transfer ceiling), so
+	 * measure the period across many captures instead. */
+	diag_gate_period();
 
 	/* Restore the configured frequency plan whatever happened, so the board
 	 * is left in the state the rest of the app documents. */
