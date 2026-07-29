@@ -7,6 +7,7 @@
 #ifndef AXI_TPL_H_
 #define AXI_TPL_H_
 
+#include <stdbool.h>
 #include <stdint.h>
 
 /*
@@ -37,6 +38,23 @@ int axi_tpl_configure(void);
  * bring-up sequence -- not called standalone.
  */
 int axi_tpl_enable(void);
+
+/*
+ * Drive the TX transport core's converters from their internal FPGA DDS tone
+ * generators (enable=true) or from the DMA stream (enable=false).
+ *
+ * A diagnostic aid for isolating where transmit samples are lost. The DDS sits at
+ * the TPL input inside the FPGA, so its samples traverse the transport core, the
+ * serial lanes and the chip's deframer -- everything the DMA path crosses except
+ * DDR and the DMA engine. Comparing it against the chip's own test tone (which
+ * enters downstream of the deframer) splits the transmit path in two.
+ *
+ * freq_hz is quantised to freq * 0xFFFF / sample_rate_hz by the 16-bit phase
+ * accumulator, so the achieved frequency only equals the request when it divides
+ * the sample rate evenly. Returns 0, or -EINVAL if the tone is below the DDS
+ * resolution at that sample rate.
+ */
+int axi_tpl_tx_dds(uint32_t freq_hz, uint32_t sample_rate_hz, bool enable);
 
 /*
  * Run a PN link-integrity test on the receive path. The caller first puts the

@@ -76,6 +76,19 @@ LOG_MODULE_REGISTER(axi_tpl, LOG_LEVEL_INF);
 #define DAC_DATA_SEL_DDS 0 /* internal tone generator */
 #define DAC_DATA_SEL_DMA 2 /* converter samples from the DMA/JESD datapath */
 
+/*
+ * DDS tone generator, one pair of registers per DDS (two DDSs per converter, so
+ * the indexing is (dds >> 1) * 0x40 + (dds & 1) * 8). Same layout as no-OS
+ * axi_dac_core.c. SCALE is a 1.14 fixed-point amplitude; INIT/INCR hold the phase
+ * offset in the high half and the per-sample phase increment in the low half,
+ * where a full 0xFFFF increment is one cycle per sample.
+ */
+#define DAC_REG_DDS_SCALE(d)     (0x0400 + ((d) >> 1) * 0x40 + ((d) & 1) * 0x8)
+#define DAC_REG_DDS_INIT_INCR(d) (0x0404 + ((d) >> 1) * 0x40 + ((d) & 1) * 0x8)
+#define DAC_DDS_SCALE_1_0        0x4000 /* 1.14 format: 0x4000 == 1.0 */
+#define DAC_DDS_INIT(x)          (((uint32_t)(x) & 0xFFFFU) << 16)
+#define DAC_DDS_INCR(x)          ((uint32_t)(x) & 0xFFFFU)
+
 /* PCORE version helper (ADC core requires major >= 9). */
 #define TPL_PCORE_VER_MAJOR(x) (((x) >> 16) & 0xffff)
 
@@ -291,4 +304,90 @@ int axi_tpl_adc_pn_mon(uint32_t pn_sel, uint32_t delay_ms)
 		}
 	}
 	return ret;
+}
+
+/*
+ * Point the TX transport core's converters at their internal DDS tone generators
+ * instead of the DMA stream, or back again.
+ *
+ * This is the bisect that the fine-DUC test tone left open. That tone proved the
+ * chip's DAC datapath and the entire analog return path work; it enters the chip
+ * downstream of the deframer, so it says nothing about whether the deframer hands
+ * anything on. The DDS sits at the *other* end of the suspect stretch: inside the
+ * FPGA, at the TPL input, so its samples cross the TPL, the serial lanes and the
+ * chip's deframer -- everything our DMA samples cross except DDR and the DMA
+ * engine itself.
+ *
+ *   DDS tone returns  -> the link and deframer deliver samples correctly, so the
+ *                        fault is upstream: DDR contents, the TX DMA, or how the
+ *                        DMA feeds the TPL
+ *   DDS tone silent   -> the deframer is not passing samples into the DAC
+ *                        datapath, despite reporting all four lanes locked
+ *
+ * freq_hz is quantised by the 16-bit phase increment (freq * 0xFFFF / clock), so
+ * the achieved tone is only exactly freq_hz when it divides the sample rate
+ * evenly. The caller logs what it asked for; a correlator should not assume the
+ * result landed on a convenient bin.
+ */
+int axi_tpl_tx_dds(uint32_t freq_hz, uint32_t sample_rate_hz, bool enable)
+{
+	struct axi_tpl *t = &tpl_tx;
+	uint32_t incr;
+
+	if (!enable) {
+		for (uint32_t c = 0; c < TPL_NUM_CHANNELS; c++) {
+			tpl_write(t, DAC_REG_DATA_SELECT(c),
+				  DAC_DATA_SEL(DAC_DATA_SEL_DMA));
+		}
+		tpl_write(t, DAC_REG_SYNC_CONTROL, DAC_SYNC);
+		LOG_INF("%s: converters back on the DMA source", t->name);
+		return 0;
+	}
+
+	if (sample_rate_hz == 0) {
+		return -EINVAL;
+	}
+
+	incr = (uint32_t)(((uint64_t)freq_hz * 0xFFFFULL) / sample_rate_hz);
+	if (incr == 0) {
+		LOG_WRN("%s: %u Hz is below the DDS resolution at %u SPS",
+			t->name, freq_hz, sample_rate_hz);
+		return -EINVAL;
+	}
+
+	/*
+	 * Hold SYNC low while reprogramming so every converter's DDS starts from
+	 * the same phase when it is released -- the two DDSs feeding a converter's
+	 * I and Q must stay in a fixed relationship or the result is not a single
+	 * complex tone.
+	 */
+	tpl_write(t, DAC_REG_SYNC_CONTROL, 0);
+
+	for (uint32_t c = 0; c < TPL_NUM_CHANNELS; c++) {
+		uint32_t dds_i = c * 2;
+		uint32_t dds_q = c * 2 + 1;
+
+		tpl_write(t, DAC_REG_DDS_SCALE(dds_i), DAC_DDS_SCALE_1_0);
+		tpl_write(t, DAC_REG_DDS_SCALE(dds_q), DAC_DDS_SCALE_1_0);
+
+		/*
+		 * Q lags I by 90 degrees (0x4000 of the 16-bit phase word), which
+		 * makes the pair a quadrature tone rather than two copies of the
+		 * same real signal. The low bit of INCR is set to match no-OS,
+		 * which ORs in 1 to enable the DDS.
+		 */
+		tpl_write(t, DAC_REG_DDS_INIT_INCR(dds_i),
+			  DAC_DDS_INIT(0) | DAC_DDS_INCR(incr) | 1U);
+		tpl_write(t, DAC_REG_DDS_INIT_INCR(dds_q),
+			  DAC_DDS_INIT(0x4000) | DAC_DDS_INCR(incr) | 1U);
+
+		tpl_write(t, DAC_REG_DATA_SELECT(c),
+			  DAC_DATA_SEL(DAC_DATA_SEL_DDS));
+	}
+
+	tpl_write(t, DAC_REG_SYNC_CONTROL, DAC_SYNC);
+
+	LOG_INF("%s: DDS tone armed, %u Hz at %u SPS (incr 0x%04x), full scale",
+		t->name, freq_hz, sample_rate_hz, incr);
+	return 0;
 }

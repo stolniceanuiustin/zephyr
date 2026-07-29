@@ -29,13 +29,24 @@
  * An intermittent fault is not a wrong register value, so two of these checks
  * measure how often it works and which half of that stretch loses it.
  *
- * And then the board turned out to have IRQB0 lit red, which changes the shape of
- * the search. Every register consulted so far reports state, not faults: "lanes
- * locked" and "link in DATA" are both true of a datapath that is being blanked
- * further downstream. The chip has had a fault asserted the entire time. Check
- * [0] reads the latched interrupt status and therefore runs first, before anything
- * else here perturbs the chip -- if it names a cause, most of the reasoning above
- * becomes moot rather than merely incomplete.
+ * The board's IRQB0 LED being lit turned out to be a red herring: the latched
+ * status reads 0x40 00 00 43 f0 00, which is DATA_READY plus PLL and DLL *lock*
+ * indications and DLL_VTH_PASS on all four datapaths. No PAERR, no SYSREF_JITTER,
+ * no LANE_FIFO overflow, no DLL_LOST -- the chip is not reporting a fault, and
+ * DATA_READY alone is enough to hold that open-drain pin low. Check [0] is kept
+ * because ruling those out cheaply is worth a few SPI reads, and it runs first so
+ * it reports what the chip was already complaining about rather than anything
+ * provoked here.
+ *
+ * What did narrow it: the fine-DUC test tone in [5] returns at full amplitude,
+ * matching the main-DUC tone in [3]. So fine DUC -> main DUC -> DAC -> balun ->
+ * cable -> ADC -> framer -> RX link -> RX DMA -> DDR is proven end to end, and
+ * the suspect stretch collapses to a single interface: the deframer handing
+ * samples into the fine DUC. Both those tones are injected inside the chip,
+ * downstream of the deframer, so neither can see across it. Check [6] approaches
+ * that interface from the other side with a tone generated in the FPGA at the TPL
+ * input, which crosses the lanes and the deframer but skips DDR and the DMA --
+ * bracketing the fault between the two.
  *
  * SPDX-License-Identifier: Apache-2.0
  */
@@ -46,6 +57,7 @@
 LOG_MODULE_REGISTER(jesd_diag, LOG_LEVEL_INF);
 
 #include "ad9081.h"
+#include "axi_tpl.h"
 #include "jesd_diag.h"
 #include "jesd_loopback.h"
 #include "jesd_playback.h"
@@ -562,6 +574,79 @@ static void diag_channel_tone(adi_ad9081_device_t *dev)
 	}
 }
 
+/*
+ * Drive the DAC from the FPGA's own DDS tone generator instead of from DDR.
+ *
+ * This is the other half of the split that check [5] opened. [5] showed the chip's
+ * fine-DUC test tone reaching the ADC at full amplitude, which exonerates
+ * everything from the fine DUC onward -- but that tone is injected inside the chip,
+ * downstream of the deframer, so it proves nothing about whether the deframer hands
+ * our samples on. The DDS enters at the opposite end: inside the FPGA, at the TPL
+ * input, upstream of the transport core, the serial lanes and the deframer.
+ *
+ * Between them the two tones bracket the one remaining suspect stretch:
+ *
+ *   DDS returns  -> the TPL, lanes and deframer all deliver samples into the DAC
+ *                   datapath. Nothing between DDR and the DAC is broken, so the
+ *                   fault is our DMA feed: the buffer contents, the descriptor, the
+ *                   cache maintenance, or the cyclic transfer not actually
+ *                   presenting data on the TPL's input.
+ *   DDS silent   -> the deframer is not passing samples on despite reporting four
+ *                   locked lanes, which is the LMFC/elastic-buffer alignment
+ *                   suspicion and is consistent with the per-boot intermittency.
+ *
+ * Judged on RMS rather than the correlator: the DDS frequency is quantised by a
+ * 16-bit phase accumulator and does not land on the bin the correlator watches.
+ */
+static void diag_fpga_dds(void)
+{
+	struct jesd_loopback_meas m;
+	int ret;
+
+	LOG_INF("[6/6] FPGA DDS tone at the TPL input (crosses lanes + deframer):");
+
+	ret = axi_tpl_tx_dds(JESD_PB_TONE_HZ, JESD_PB_SAMPLE_RATE, true);
+	if (ret) {
+		LOG_WRN("  could not arm the FPGA DDS (%d)", ret);
+		return;
+	}
+
+	/* The TPL SYNC and the chip's deframer need a moment to settle on the new
+	 * data source before the capture means anything. */
+	k_msleep(5);
+
+	if (jesd_loopback_measure(&m) == 0) {
+		LOG_INF("  RMS %llu, lanes %llu/%llu/%llu/%llu/%llu/%llu/%llu/%llu",
+			(unsigned long long)m.rms,
+			(unsigned long long)m.lane_rms[0],
+			(unsigned long long)m.lane_rms[1],
+			(unsigned long long)m.lane_rms[2],
+			(unsigned long long)m.lane_rms[3],
+			(unsigned long long)m.lane_rms[4],
+			(unsigned long long)m.lane_rms[5],
+			(unsigned long long)m.lane_rms[6],
+			(unsigned long long)m.lane_rms[7]);
+
+		if (m.rms >= DIAG_SIGNAL_RMS) {
+			LOG_ERR("  THE LINK AND DEFRAMER ARE FINE -- an FPGA-generated");
+			LOG_ERR("  tone crosses the lanes and deframer and reaches the");
+			LOG_ERR("  ADC. The fault is upstream of the TPL: the DDR buffer,");
+			LOG_ERR("  the TX DMA descriptor, cache maintenance, or the cyclic");
+			LOG_ERR("  transfer not presenting data at the TPL input.");
+		} else {
+			LOG_ERR("  silent -- the deframer is not passing samples into the");
+			LOG_ERR("  DAC datapath despite reporting four locked lanes. That");
+			LOG_ERR("  is an alignment problem (LMFC / elastic buffer / SYSREF),");
+			LOG_ERR("  matching the per-boot intermittency: lane lock does not");
+			LOG_ERR("  imply the deframer found a valid frame boundary.");
+		}
+	}
+
+	/* Put the converters back on the DMA source whatever happened, so the board
+	 * is left as the rest of the app expects. */
+	(void)axi_tpl_tx_dds(0, 0, false);
+}
+
 int jesd_diag_loopback(void)
 {
 	adi_ad9081_device_t *dev = ad9081_get_device();
@@ -584,6 +669,7 @@ int jesd_diag_loopback(void)
 	swept_ok = diag_sweep(dev);
 	internal_ok = diag_internal_tone(dev);
 	diag_channel_tone(dev);
+	diag_fpga_dds();
 
 	/* Back to the configured plan before judging repeatability, so the repeats
 	 * measure the frequency the rest of the app actually runs at. */
@@ -610,9 +696,11 @@ int jesd_diag_loopback(void)
 		LOG_INF("  the DAC output stage, balun, cable, ADC, RX DDC, framer,");
 		LOG_INF("  RX link and RX DMA all work -- and so does the TX main NCO,");
 		LOG_INF("  since it is what upconverts that DC offset into a tone.");
-		LOG_INF("  With every FTW verified correct, the fault is confined to");
-		LOG_INF("  the stretch our samples take and the internal tone skips:");
-		LOG_INF("  deframer -> fine DUC -> main DUC. See [5] for which half.");
+		LOG_INF("  With every FTW verified correct, and [5] showing the fine");
+		LOG_INF("  DUC reaching the DAC too, the fault is confined to a single");
+		LOG_INF("  interface: the deframer handing samples into the fine DUC.");
+		LOG_INF("  [6] decides which side of it -- an FPGA tone that crosses");
+		LOG_INF("  the deframer but skips DDR and the DMA.");
 	} else {
 		LOG_INF("nothing reaches the ADC at any frequency, not even a tone");
 		LOG_INF("  generated inside the chip downstream of our entire");
