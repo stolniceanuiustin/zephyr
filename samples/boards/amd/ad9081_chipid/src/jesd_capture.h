@@ -25,4 +25,18 @@ int jesd_capture_ramp(void);
  */
 int jesd_capture_analyze(const uint16_t *buf, size_t n);
 
+/*
+ * Capture a block of live samples through the RX AXI DMAC into the shared DDR
+ * buffer, with no test mode involved -- whatever the ADC is actually digitising.
+ * Handles the cache maintenance and polls the (IRQ-less) transfer to completion.
+ *
+ * On success returns 0 and points *buf at the captured samples, storing the count
+ * in *n. The buffer stays valid until the next capture. Used by Rung 5's analog
+ * loopback; Rung 2 drives the same machinery with the ramp test mode enabled.
+ */
+int jesd_capture_raw(const int16_t **buf, size_t *n);
+
+/* Beat width of the capture stream: 16-byte DMA bus / 2-byte sample. */
+#define JESD_CAP_LANES_PER_BEAT 8U
+
 #endif /* JESD_CAPTURE_H_ */

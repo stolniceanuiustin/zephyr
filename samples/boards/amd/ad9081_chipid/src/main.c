@@ -46,6 +46,7 @@ LOG_MODULE_REGISTER(main, LOG_LEVEL_INF);
 #include "jesd_test.h"
 #include "jesd_capture.h"
 #include "jesd_playback.h"
+#include "jesd_loopback.h"
 
 int main(void)
 {
@@ -198,5 +199,24 @@ int main(void)
 		return ret;
 	}
 	LOG_INF("SUCCESS: sine played out DDR -> DMA -> DAC");
+
+	/*
+	 * Rung 5: with the Rung 4 tone still playing (cyclic), capture the ADC and
+	 * look for that tone coming back through an external DAC->ADC cable. The
+	 * top of the ladder -- the only rung that proves the analog path, and the
+	 * only software check on the transmit direction. Without the cable there is
+	 * nothing at the ADC, which is reported as SKIPPED (-ENODATA) rather than
+	 * a failure, so an un-jumpered board still boots to a clean end.
+	 */
+	ret = jesd_loopback_verify();
+	if (ret == -ENODATA) {
+		LOG_INF("Rung 5 skipped: no analog loopback cable installed");
+		return 0;
+	}
+	if (ret) {
+		LOG_WRN("Rung 5 analog loopback failed (%d)", ret);
+		return ret;
+	}
+	LOG_INF("SUCCESS: full analog signal chain verified end to end");
 	return 0;
 }

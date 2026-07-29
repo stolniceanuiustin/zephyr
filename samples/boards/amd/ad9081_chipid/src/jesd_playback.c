@@ -72,18 +72,35 @@ LOG_MODULE_REGISTER(jesd_playback, LOG_LEVEL_INF);
  * 16-bit full scale, backed off from the rails so a little digital gain or
  * interpolation overshoot in the chip's datapath can't clip.
  */
-#define PB_SINE_LEN       64U /* beats per period */
+#define PB_SINE_LEN       JESD_PB_PERIOD_BEATS
 #define PB_LANES_PER_BEAT 8U  /* 16-byte bus / 2-byte sample */
 #define PB_NUM_SAMPLES    (PB_SINE_LEN * PB_LANES_PER_BEAT)
 #define PB_BUF_BYTES      (PB_NUM_SAMPLES * sizeof(uint16_t))
 #define PB_DMA_ALIGN      16U
 
 /*
- * One period of sine, 64 points, amplitude 24576, as signed 16-bit. Generated
- * offline (round(24576 * sin(2*pi*n/64))) rather than computed at runtime so the
- * table is exact, deterministic and needs no floating point at boot.
+ * One period of a complex exponential, 64 points, amplitude 24576, signed 16-bit.
+ * Generated offline (round(24576 * cos|sin(2*pi*n/64))) rather than computed at
+ * runtime so the tables are exact, deterministic and need no floating point.
+ *
+ * I and Q must be in quadrature, not identical: the chip's DUC mixes the complex
+ * baseband signal up by the main NCO (+2 GHz here). A real-valued input (I == Q
+ * is not quadrature) would upconvert to *two* tones, one either side of the NCO
+ * frequency. Feeding cos on I and sin on Q gives a single clean tone at
+ * NCO + f_baseband, which is what Rung 5's loopback expects to find.
  */
-static const int16_t pb_sine[PB_SINE_LEN] = {
+static const int16_t pb_cos[PB_SINE_LEN] = {
+	 24576,  24458,  24104,  23518,  22705,  21674,  20434,  18998,
+	 17378,  15591,  13654,  11585,   9405,   7134,   4795,   2409,
+	     0,  -2409,  -4795,  -7134,  -9405, -11585, -13654, -15591,
+	-17378, -18998, -20434, -21674, -22705, -23518, -24104, -24458,
+	-24576, -24458, -24104, -23518, -22705, -21674, -20434, -18998,
+	-17378, -15591, -13654, -11585,  -9405,  -7134,  -4795,  -2409,
+	     0,   2409,   4795,   7134,   9405,  11585,  13654,  15591,
+	 17378,  18998,  20434,  21674,  22705,  23518,  24104,  24458,
+};
+
+static const int16_t pb_sin[PB_SINE_LEN] = {
 	     0,   2409,   4795,   7134,   9405,  11585,  13654,  15591,
 	 17378,  18998,  20434,  21674,  22705,  23518,  24104,  24458,
 	 24576,  24458,  24104,  23518,  22705,  21674,  20434,  18998,
@@ -100,12 +117,18 @@ static int16_t pb_buf[PB_NUM_SAMPLES] __aligned(PB_DMA_ALIGN);
 /* Poll budget: 1 KiB of beats moves in far less than this. */
 #define PB_POLL_TIMEOUT_MS 200
 
-/* Expand one sine period across the buffer, same sample on all 8 converters. */
+/*
+ * Expand one period across the buffer. Rung 2's capture established the beat
+ * layout: even sample slots are the I components, odd slots the Q, so a beat
+ * holds an (I,Q) pair for each of the 4 complex channels. Every channel gets the
+ * same tone, so any DAC output can be probed.
+ */
 static void pb_fill(void)
 {
 	for (uint32_t b = 0; b < PB_SINE_LEN; b++) {
 		for (uint32_t l = 0; l < PB_LANES_PER_BEAT; l++) {
-			pb_buf[b * PB_LANES_PER_BEAT + l] = pb_sine[b];
+			pb_buf[b * PB_LANES_PER_BEAT + l] =
+				(l & 1) ? pb_sin[b] : pb_cos[b];
 		}
 	}
 
@@ -116,9 +139,12 @@ static void pb_fill(void)
 
 static void pb_describe(void)
 {
-	LOG_INF("sine table: %u beats x %u converters, amplitude %d (0.75 FS)",
-		PB_SINE_LEN, PB_LANES_PER_BEAT, pb_sine[PB_SINE_LEN / 4]);
-	LOG_INF("first 2 beats:");
+	LOG_INF("tone table: %u beats, I=cos/Q=sin, amplitude %d (0.75 FS)",
+		PB_SINE_LEN, pb_cos[0]);
+	LOG_INF("  baseband %u.%03u MHz at 250 MSPS (one period per %u beats)",
+		JESD_PB_TONE_HZ / 1000000U,
+		(JESD_PB_TONE_HZ % 1000000U) / 1000U, PB_SINE_LEN);
+	LOG_INF("first 2 beats (I Q I Q ...):");
 	for (uint32_t i = 0; i < 16; i += 8) {
 		LOG_INF("  [%02u] %6d %6d %6d %6d %6d %6d %6d %6d", i,
 			pb_buf[i + 0], pb_buf[i + 1], pb_buf[i + 2],

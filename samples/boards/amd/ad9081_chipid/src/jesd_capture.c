@@ -59,14 +59,96 @@ static uint16_t cap_buf[CAP_NUM_SAMPLES] __aligned(CAP_DMA_ALIGN);
 /* Poll budget: the whole 8 KiB block should move in well under this. */
 #define CAP_POLL_TIMEOUT_MS 200
 
-int jesd_capture_ramp(void)
+/*
+ * Run one capture into cap_buf: arm the DMAC, poll it to completion, and do the
+ * cache maintenance around it. Shared by Rung 2 (with a test mode enabled) and
+ * Rung 5 (capturing whatever the ADC is really digitising).
+ */
+static int cap_transfer(const struct device *rx_dma)
 {
-	const struct device *rx_dma = DEVICE_DT_GET(DT_NODELABEL(rx_dmac));
-	adi_ad9081_device_t *dev = ad9081_get_device();
 	struct dma_block_config block = {0};
 	struct dma_config cfg = {0};
 	struct dma_status status;
 	int64_t deadline;
+	int ret;
+
+	/* Drop any dirty lines so the DMA's writes can't be overwritten later. */
+	memset(cap_buf, 0, sizeof(cap_buf));
+	sys_cache_data_flush_and_invd_range(cap_buf, sizeof(cap_buf));
+
+	block.source_address = 0; /* device FIFO -- no memory address */
+	block.dest_address = (uintptr_t)cap_buf;
+	block.block_size = sizeof(cap_buf);
+
+	cfg.channel_direction = PERIPHERAL_TO_MEMORY;
+	cfg.block_count = 1;
+	cfg.head_block = &block;
+	cfg.source_data_size = 2; /* NP16: 16-bit samples */
+	cfg.dest_data_size = 2;
+
+	ret = dma_config(rx_dma, CAP_DMA_CHANNEL, &cfg);
+	if (ret) {
+		LOG_ERR("dma_config failed (%d)", ret);
+		return ret;
+	}
+
+	ret = dma_start(rx_dma, CAP_DMA_CHANNEL);
+	if (ret) {
+		LOG_ERR("dma_start failed (%d)", ret);
+		return ret;
+	}
+
+	/* Poll to completion -- get_status() also pumps the (IRQ-less) transfer. */
+	deadline = k_uptime_get() + CAP_POLL_TIMEOUT_MS;
+	do {
+		ret = dma_get_status(rx_dma, CAP_DMA_CHANNEL, &status);
+		if (ret) {
+			LOG_ERR("dma_get_status failed (%d)", ret);
+			goto stop;
+		}
+		if (!status.busy) {
+			break;
+		}
+		if (k_uptime_get() > deadline) {
+			LOG_ERR("capture timed out (pending=%u bytes)",
+				status.pending_length);
+			ret = -ETIMEDOUT;
+			goto stop;
+		}
+	} while (true);
+
+	/* CPU must invalidate before reading DMA-written DDR. */
+	sys_cache_data_invd_range(cap_buf, sizeof(cap_buf));
+	ret = 0;
+stop:
+	dma_stop(rx_dma, CAP_DMA_CHANNEL);
+	return ret;
+}
+
+int jesd_capture_raw(const int16_t **buf, size_t *n)
+{
+	const struct device *rx_dma = DEVICE_DT_GET(DT_NODELABEL(rx_dmac));
+	int ret;
+
+	if (!device_is_ready(rx_dma)) {
+		LOG_ERR("RX DMAC not ready");
+		return -ENODEV;
+	}
+
+	ret = cap_transfer(rx_dma);
+	if (ret) {
+		return ret;
+	}
+
+	*buf = (const int16_t *)cap_buf;
+	*n = CAP_NUM_SAMPLES;
+	return 0;
+}
+
+int jesd_capture_ramp(void)
+{
+	const struct device *rx_dma = DEVICE_DT_GET(DT_NODELABEL(rx_dmac));
+	adi_ad9081_device_t *dev = ad9081_get_device();
 	int32_t err;
 	int ret;
 
@@ -91,59 +173,11 @@ int jesd_capture_ramp(void)
 	}
 	k_msleep(2); /* let the pattern propagate through the link */
 
-	/* Prepare the buffer + descriptor. */
-	memset(cap_buf, 0, sizeof(cap_buf));
-	sys_cache_data_flush_and_invd_range(cap_buf, sizeof(cap_buf));
-
-	block.source_address = 0; /* device FIFO -- no memory address */
-	block.dest_address = (uintptr_t)cap_buf;
-	block.block_size = sizeof(cap_buf);
-
-	cfg.channel_direction = PERIPHERAL_TO_MEMORY;
-	cfg.block_count = 1;
-	cfg.head_block = &block;
-	cfg.source_data_size = 2; /* NP16: 16-bit samples */
-	cfg.dest_data_size = 2;
-
-	ret = dma_config(rx_dma, CAP_DMA_CHANNEL, &cfg);
-	if (ret) {
-		LOG_ERR("dma_config failed (%d)", ret);
-		goto restore;
+	ret = cap_transfer(rx_dma);
+	if (ret == 0) {
+		ret = jesd_capture_analyze(cap_buf, CAP_NUM_SAMPLES);
 	}
 
-	ret = dma_start(rx_dma, CAP_DMA_CHANNEL);
-	if (ret) {
-		LOG_ERR("dma_start failed (%d)", ret);
-		goto restore;
-	}
-
-	/* Poll to completion -- get_status() also pumps the (IRQ-less) transfer. */
-	deadline = k_uptime_get() + CAP_POLL_TIMEOUT_MS;
-	do {
-		ret = dma_get_status(rx_dma, CAP_DMA_CHANNEL, &status);
-		if (ret) {
-			LOG_ERR("dma_get_status failed (%d)", ret);
-			goto stop;
-		}
-		if (!status.busy) {
-			break;
-		}
-		if (k_uptime_get() > deadline) {
-			LOG_ERR("capture timed out (pending=%u bytes)",
-				status.pending_length);
-			ret = -ETIMEDOUT;
-			goto stop;
-		}
-	} while (true);
-
-	/* CPU must invalidate before reading DMA-written DDR. */
-	sys_cache_data_invd_range(cap_buf, sizeof(cap_buf));
-
-	ret = jesd_capture_analyze(cap_buf, CAP_NUM_SAMPLES);
-
-stop:
-	dma_stop(rx_dma, CAP_DMA_CHANNEL);
-restore:
 	err = adi_ad9081_adc_test_mode_config_set(dev, AD9081_TMODE_OFF,
 						  AD9081_TMODE_OFF,
 						  AD9081_JTX_LINK);
@@ -166,7 +200,7 @@ restore:
  * start values from beat 0 (they're just wherever the counters happened to be
  * when capture began) rather than hard-coding them.
  */
-#define CAP_LANES_PER_BEAT 8 /* 16-byte bus / 2-byte sample */
+#define CAP_LANES_PER_BEAT JESD_CAP_LANES_PER_BEAT
 #define CAP_MISMATCH_DUMP  8 /* cap the per-mismatch log spam */
 
 int jesd_capture_analyze(const uint16_t *buf, size_t n)
