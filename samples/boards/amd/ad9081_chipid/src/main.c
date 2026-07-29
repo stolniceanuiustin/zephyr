@@ -44,6 +44,7 @@ LOG_MODULE_REGISTER(main, LOG_LEVEL_INF);
 #include "axi_tpl.h"
 #include "jesd_fsm.h"
 #include "jesd_test.h"
+#include "jesd_capture.h"
 
 int main(void)
 {
@@ -171,5 +172,17 @@ int main(void)
 		return ret;
 	}
 	LOG_INF("SUCCESS: receive datapath verified bit-error-free (PN)");
+
+	/*
+	 * Rung 2 datapath validation: capture a deterministic ADC ramp through
+	 * the RX AXI DMAC into a DDR buffer and confirm live samples land in
+	 * memory. First rung that exercises the DMA + actually moves data to RAM.
+	 */
+	ret = jesd_capture_ramp();
+	if (ret) {
+		LOG_WRN("Rung 2 DMA ramp capture failed (%d)", ret);
+		return ret;
+	}
+	LOG_INF("SUCCESS: ADC samples captured to DDR via DMA");
 	return 0;
 }

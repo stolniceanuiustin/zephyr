@@ -17,6 +17,7 @@ target_sources(app PRIVATE
   src/axi_tpl.c
   src/jesd_fsm.c
   src/jesd_test.c
+  src/jesd_capture.c
   src/xilinx_transceiver.c
   ${ADI_API_SRCS}
 )
