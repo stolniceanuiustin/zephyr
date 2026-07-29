@@ -137,8 +137,7 @@ static int do_set_bypass(uintptr_t base, const char *tag, bool enable)
 	sys_write32(ctrl, base + DO_REG_CONTROL);
 
 	/* Read back: a mode bit that silently fails to take would leave the caller
-	 * believing the datapath is continuous when it is still gated -- the exact
-	 * confusion this whole investigation was. */
+	 * believing the datapath is continuous when it is still gated. */
 	rb = sys_read32(base + DO_REG_CONTROL);
 	if (((rb & DO_CTRL_BYPASS) != 0) != enable) {
 		LOG_ERR("%s: bypass write did not take (control reads 0x%08x)", tag, rb);
@@ -149,28 +148,33 @@ static int do_set_bypass(uintptr_t base, const char *tag, bool enable)
 
 int axi_data_offload_bypass(bool enable)
 {
-	int rc_tx, rc_rx;
+	int rc;
 
 	/*
-	 * Both directions, and both attempted even if the first fails: knowing that
-	 * one core took the mode and the other did not is more useful than stopping
-	 * at the first error, because the two paths fail for different reasons (the
-	 * RX core is one-shot by default, the TX core cyclic).
+	 * TX only. See the header for why the RX core is deliberately left in its
+	 * reset (one-shot store-and-replay) mode: bypassing it breaks Rung 2.
 	 */
-	rc_tx = do_set_bypass(DO_TX_BASE, "TX offload", enable);
-	rc_rx = do_set_bypass(DO_RX_BASE, "RX offload", enable);
-
-	if (rc_tx || rc_rx) {
-		return rc_tx ? rc_tx : rc_rx;
+	rc = do_set_bypass(DO_TX_BASE, "TX offload", enable);
+	if (rc) {
+		return rc;
 	}
 
-	if (enable) {
-		LOG_INF("both offload cores in bypass: the datapath streams continuously");
-		LOG_INF("  instead of replaying a 1 MiB buffer (which gated TX to ~9%% and");
-		LOG_INF("  truncated RX captures at 65536 beats)");
-	} else {
-		LOG_INF("both offload cores in store-and-replay mode");
+	LOG_INF("TX core in %s mode, RX core left store-and-replay",
+		enable ? "bypass" : "store-and-replay");
+	return 0;
+}
+
+int axi_data_offload_tx_size(uint64_t *bytes)
+{
+	if (bytes == NULL) {
+		return -EINVAL;
 	}
+	if (!do_present(DO_TX_BASE, "TX offload")) {
+		return -ENODEV;
+	}
+
+	*bytes = ((uint64_t)(sys_read32(DO_TX_BASE + DO_REG_SIZE_MSB) & 0x3U) << 32) |
+		 sys_read32(DO_TX_BASE + DO_REG_SIZE_LSB);
 	return 0;
 }
 
@@ -193,44 +197,38 @@ static void do_dump(uintptr_t base, const char *tag)
 	size = ((uint64_t)(sys_read32(base + DO_REG_SIZE_MSB) & 0x3U) << 32) |
 	       sys_read32(base + DO_REG_SIZE_LSB);
 
-	LOG_INF("%s @ 0x%08lx:", tag, (unsigned long)base);
-	LOG_INF("  size %llu B = %llu beats = %llu us at %u MSPS",
+	LOG_INF("  %s @ 0x%08lx: %s path, %s, size %llu B (%llu beats, %llu us)", tag,
+		(unsigned long)base, (cfg & DO_CONFIG_TX_PATH) ? "TX" : "RX",
+		(cfg & DO_CONFIG_MEM_TYPE) ? "external mem" : "FPGA RAM",
 		(unsigned long long)size,
 		(unsigned long long)(size / DO_BEAT_BYTES),
-		(unsigned long long)(size / DO_BEAT_BYTES * 1000000ULL / DO_SAMPLE_RATE),
-		DO_SAMPLE_RATE / 1000000U);
-	LOG_INF("  path %s, mem %s, bypass %s",
-		(cfg & DO_CONFIG_TX_PATH) ? "TX" : "RX",
-		(cfg & DO_CONFIG_MEM_TYPE) ? "external" : "FPGA RAM",
-		(cfg & DO_CONFIG_HAS_BYPASS) ? "supported" : "NOT SUPPORTED");
-	LOG_INF("  resetn %u (%s), bypass %u, oneshot %u, xfer_len 0x%08x",
+		(unsigned long long)(size / DO_BEAT_BYTES * 1000000ULL / DO_SAMPLE_RATE));
+	LOG_INF("    resetn=%u bypass=%u oneshot=%u has_bypass=%u xfer_len=0x%08x",
 		(unsigned int)(resetn & BIT(0)),
-		(resetn & BIT(0)) ? "running" : "HELD IN RESET",
 		(unsigned int)((ctrl & DO_CTRL_BYPASS) != 0),
-		(unsigned int)((ctrl & DO_CTRL_ONESHOT) != 0), xfer);
-	LOG_INF("  FSM wr 0x%02x rd 0x%01x, sync_cfg 0x%08x",
+		(unsigned int)((ctrl & DO_CTRL_ONESHOT) != 0),
+		(unsigned int)((cfg & DO_CONFIG_HAS_BYPASS) != 0), xfer);
+	LOG_INF("    FSM wr=0x%02x rd=0x%01x sync_cfg=0x%08x",
 		(unsigned int)FIELD_GET(DO_FSM_WR_MASK, fsm),
 		(unsigned int)FIELD_GET(DO_FSM_RD_MASK, fsm),
 		sys_read32(base + DO_REG_SYNC_CONFIG));
 
 	if (!(resetn & BIT(0))) {
-		LOG_ERR("  held in reset -- this core passes nothing");
+		LOG_ERR("    FAIL: held in reset (passes no data)");
 	}
 	if (status & DO_STATUS_SRC_OVF) {
-		LOG_WRN("  SRC_OVERFLOW latched: the producer outran this buffer");
+		LOG_WRN("    SRC_OVERFLOW latched (producer outran the buffer)");
 	}
 	if (status & DO_STATUS_DST_UNF) {
-		LOG_WRN("  DST_UNDERFLOW latched: the consumer asked for samples this");
-		LOG_WRN("  buffer did not have -- on TX that means the DAC ran dry");
+		LOG_WRN("    DST_UNDERFLOW latched (consumer starved; on TX the DAC ran dry)");
 	}
 	if ((cfg & DO_CONFIG_MEM_TYPE) && !(status & DO_STATUS_CALIB_DONE)) {
-		LOG_ERR("  external memory but calibration not done -- storage unusable");
+		LOG_ERR("    FAIL: external memory calibration not done");
 	}
 }
 
 int axi_data_offload_status(void)
 {
-	LOG_INF("--- AXI data-offload cores ---");
 	do_dump(DO_TX_BASE, "TX offload");
 	do_dump(DO_RX_BASE, "RX offload");
 	return 0;
