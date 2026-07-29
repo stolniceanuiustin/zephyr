@@ -61,7 +61,7 @@ int jesd_capture_probe(void);
  * 8 KiB is ~2 us of ADC data; the tone reads ~4576 against a ~7 noise floor, so the
  * threshold sits orders of magnitude clear of both and needs no tuning.
  */
-#define JESD_CAP_PROBE_BYTES   8192U
+#define JESD_CAP_PROBE_BYTES   1024U
 #define JESD_CAP_PROBE_RMS_MIN 64U
 
 #endif /* JESD_CAPTURE_H_ */

@@ -795,6 +795,21 @@ static void diag_gate_period(void)
 	LOG_INF("  sample interval %lld us -- runs must be several of these to be real",
 		(long long)(elapsed_us / (int64_t)taken));
 
+	/*
+	 * Say so when the sampling is too coarse for the runs it is reporting. The
+	 * first version of this check did not, and its 38870 us "period" was pure
+	 * aliasing; the second sampled at 340 us against a ~300 us on-time, which
+	 * misses whole pulses and shows up as intervals at exact multiples of the
+	 * true period. An instrument that cannot detect its own aliasing will report
+	 * a plausible number instead of an honest failure.
+	 */
+	if (on && (elapsed_us / (int64_t)taken) * (int64_t)on * 4 >= elapsed_us) {
+		LOG_WRN("  UNDERSAMPLED: the on-time is comparable to the sample interval,");
+		LOG_WRN("  so pulses are being missed and intervals below are multiples of");
+		LOG_WRN("  the true period, not the period itself. Treat the on-time as an");
+		LOG_WRN("  upper bound only.");
+	}
+
 	if (edges == 0) {
 		LOG_WRN("  no transition in %lld us: the gate is slower than this sweep.",
 			(long long)elapsed_us);
@@ -829,6 +844,87 @@ static void diag_gate_period(void)
 	} else {
 		LOG_INF("  only one transition -- period is comparable to the %lld us sweep",
 			(long long)elapsed_us);
+	}
+}
+
+/*
+ * JRX transport-layer elastic buffer state, sampled repeatedly.
+ *
+ * Found by reading the reference code rather than by measuring. The JRX TPL has a
+ * buffer-protection mechanism that withholds data when the LMFC/elastic-buffer phase
+ * is marginal, controlled by two bits in JRX_TPL_1 (0x4A1):
+ *
+ *   bit7 BUF_PROTECTION   - the ADI API clears this on the 204B path
+ *   bit6 BUF_PROTECT_EN   - cleared only for 204C on rev<3, in no-OS. On 204B, which
+ *                           is what this link runs, NEITHER no-OS nor the vendor API
+ *                           ever writes it, so it sits at its reset default
+ *
+ * That is a mechanism which gates sample delivery, on the exact interface the fault
+ * has been narrowed to, that nothing in the port ever configures. It also explains
+ * why the chip's internal test tones are continuous while DMA samples gate: those
+ * tones inject downstream of the JRX TPL and never pass through this buffer.
+ *
+ * JRX_TPL_5 (0x4A5) holds PHASE_DIFF, the measured phase between the arriving link
+ * frame and the local LMFC. If protection is asserting, that value is drifting
+ * rather than parked, so sampling it repeatedly distinguishes "phase is marginal and
+ * wandering" from "phase is stable and something else gates the data".
+ */
+#define DIAG_JRX_TPL_SAMPLES 16U
+
+static void diag_jrx_buffer(void)
+{
+	adi_ad9081_device_t *dev = ad9081_get_device();
+	uint8_t tpl1 = 0, tpl5 = 0;
+	uint8_t pd_min = 0xFF, pd_max = 0;
+	int32_t err;
+
+	LOG_INF("[10/7] JRX TPL elastic-buffer state (0x4A1 / 0x4A5):");
+
+	if (dev == NULL) {
+		return;
+	}
+
+	err = adi_ad9081_hal_reg_get(dev, REG_JRX_TPL_1_ADDR, &tpl1);
+	if (err != API_CMS_ERROR_OK) {
+		LOG_WRN("  could not read 0x4A1 (%d)", err);
+		return;
+	}
+
+	LOG_INF("  0x4A1 = 0x%02x: BUF_PROTECTION(b7)=%u BUF_PROTECT_EN(b6)=%u SYSREF_IGNORE_WHEN_LINKED(b2)=%u",
+		tpl1, (tpl1 >> 7) & 1U, (tpl1 >> 6) & 1U, (tpl1 >> 2) & 1U);
+
+	for (uint32_t i = 0; i < DIAG_JRX_TPL_SAMPLES; i++) {
+		if (adi_ad9081_hal_reg_get(dev, REG_JRX_TPL_5_ADDR, &tpl5) !=
+		    API_CMS_ERROR_OK) {
+			break;
+		}
+		pd_min = MIN(pd_min, tpl5);
+		pd_max = MAX(pd_max, tpl5);
+		k_msleep(1);
+	}
+
+	LOG_INF("  PHASE_DIFF over %u samples: min %u, max %u (spread %u)",
+		DIAG_JRX_TPL_SAMPLES, pd_min, pd_max,
+		(unsigned int)(pd_max - pd_min));
+
+	if ((tpl1 >> 6) & 1U) {
+		LOG_WRN("  BUF_PROTECT_EN is SET, and nothing in this port or in no-OS's");
+		LOG_WRN("  204B path ever writes it -- it is at its reset default. This");
+		LOG_WRN("  withholds JRX samples when the elastic-buffer phase is marginal,");
+		LOG_WRN("  which gates exactly the stage the fault is confined to, and");
+		LOG_WRN("  spares the chip's internal tones because they inject downstream.");
+	} else {
+		LOG_INF("  buffer protection is disabled, so it is not withholding samples.");
+	}
+
+	if (pd_max != pd_min) {
+		LOG_WRN("  PHASE_DIFF is moving: the link frame is drifting against the");
+		LOG_WRN("  local LMFC rather than sitting at a fixed offset. A drifting");
+		LOG_WRN("  phase crossing the protection threshold periodically is the");
+		LOG_WRN("  shape that produces a periodic gate.");
+	} else {
+		LOG_INF("  PHASE_DIFF is stable at %u -- the link/LMFC phase is not drifting.",
+			pd_min);
 	}
 }
 
@@ -1242,6 +1338,10 @@ int jesd_diag_loopback(void)
 	/* One capture cannot span a full gate cycle (1 MiB transfer ceiling), so
 	 * measure the period across many captures instead. */
 	diag_gate_period();
+
+	/* The mechanism the reference code points at: a JRX elastic-buffer protection
+	 * that gates sample delivery and that the 204B path never configures. */
+	diag_jrx_buffer();
 
 	/* Restore the configured frequency plan whatever happened, so the board
 	 * is left in the state the rest of the app documents. */
