@@ -112,6 +112,25 @@ static const uint32_t diag_sweep_mhz[] = { 100, 500, 1000, 1968 };
 #define PB_DIAG_INSPECT_BYTES 4096U
 
 /*
+ * TX DMAC registers, read directly rather than through the DMA API.
+ *
+ * The driver probes hardware cyclic support and the maximum burst length at init
+ * and keeps both in its private data, where a consumer cannot see them -- yet they
+ * decide whether buffer size can possibly matter here. Re-probing the two
+ * registers is a couple of reads and keeps the diagnostic's claims answerable from
+ * the core instead of from an assumption about the bitstream. FLAGS bit0 reads back
+ * set only if the core was synthesized with cyclic support; writing 0xFFFFFFFF to
+ * X_LENGTH and reading it back gives the largest burst it can hold, but the value
+ * is only read here (the transfer is live, so it must not be disturbed).
+ */
+#define PB_DIAG_DMAC_BASE       0x9C430000UL
+#define PB_DIAG_DMAC_REG_FLAGS  0x040C
+#define PB_DIAG_DMAC_REG_X_LENGTH 0x0418
+
+/* Bytes the JESD link consumes per sample period: 8 converters x NP16. */
+#define PB_DIAG_BEAT_BYTES 16U
+
+/*
  * Read the chip's latched interrupt status.
  *
  * The IRQB0 pin on the board is lit red, and no check here had ever asked the chip
@@ -671,20 +690,26 @@ static void diag_fpga_dds(void)
  *
  * The second half is the rate question, which nothing has yet asked. The transfer
  * "completing" says the engine emptied its descriptor; it says nothing about
- * whether it sustained 250 MSPS x 16 bytes = 4 GB/s. At that rate our 1 KiB buffer
- * is 256 ns long and a cyclic transfer wraps it 3.9 million times a second. If the
- * engine cannot re-arm that fast the TPL is starved between wraps and the DAC
- * outputs mostly nothing -- which would look exactly like the observed silence
- * while every status bit stayed healthy, and would vary per boot with bus
- * contention. Sampling the byte counter across a known interval measures the
- * achieved rate instead of assuming it.
+ * whether it sustained 250 MSPS x 16 bytes = 4 GB/s. A cyclic buffer shorter than
+ * the CPU's re-arm latency would starve the TPL between wraps, and the DAC would
+ * emit brief bursts separated by long gaps -- indistinguishable from noise once
+ * averaged over a capture, with every status bit healthy throughout.
+ *
+ * But that only bites if the CPU is in the re-arm path at all, so this reads the
+ * core's cyclic capability rather than assuming it: with hardware cyclic the loop
+ * runs unattended and wrap rate is free, which rules buffer size out entirely
+ * instead of leaving it as a plausible-sounding suspect. The numbers are printed
+ * from the actual buffer and the actual registers, because a diagnostic that
+ * hardcodes the figures it is arguing from will keep asserting them after the code
+ * has changed underneath it -- which is exactly what happened here on the first
+ * pass.
  */
 static void diag_dma_feed(void)
 {
 	const struct device *tx_dma = DEVICE_DT_GET(DT_NODELABEL(tx_dmac));
 	const int16_t *buf;
 	struct dma_status s0, s1;
-	size_t bytes;
+	size_t bytes, pb_bytes;
 	bool nonzero = false;
 
 	LOG_INF("[7/7] the DMA feed itself (everything from the TPL on is proven):");
@@ -702,6 +727,7 @@ static void diag_dma_feed(void)
 	 * Invalidating only what is read also avoids discarding clean lines
 	 * needlessly.
 	 */
+	pb_bytes = bytes; /* keep the real size; the read-back below is clamped */
 	if (bytes > PB_DIAG_INSPECT_BYTES) {
 		bytes = PB_DIAG_INSPECT_BYTES;
 	}
@@ -760,13 +786,65 @@ static void diag_dma_feed(void)
 	 * the DAC emits brief bursts separated by long gaps. Averaged over a
 	 * capture that is indistinguishable from noise, and it would vary per boot.
 	 */
+	/*
+	 * Still busy. The rate question comes next, but it only has teeth if the
+	 * CPU is the one re-arming, so read that out of the core rather than
+	 * asserting it. AXI_DMAC_REG_FLAGS bit0 reads back set only when the core
+	 * was synthesized with cyclic support, in which case the hardware loops the
+	 * buffer unaided and the wrap rate costs nothing -- no amount of wrapping
+	 * can starve a transfer nobody has to service. If it reads back clear, every
+	 * wrap needs a dma_get_status() poll to re-submit, and at these rates that
+	 * is hopeless.
+	 *
+	 * X_LENGTH matters for the same reason and is easy to miss: the driver
+	 * chunks a transfer into max_length-sized bursts, and hardware cyclic loops
+	 * only the burst it last submitted. A buffer larger than one burst therefore
+	 * plays its tail repeatedly, not the whole buffer -- harmless for a periodic
+	 * tone, but it means "I made the buffer bigger" is not the same statement as
+	 * "the loop got longer".
+	 */
+	uintptr_t dmac = PB_DIAG_DMAC_BASE;
+	uint32_t saved = sys_read32(dmac + PB_DIAG_DMAC_REG_FLAGS);
+	uint32_t hw_cyclic, max_len;
+
+	sys_write32(BIT(0), dmac + PB_DIAG_DMAC_REG_FLAGS);
+	hw_cyclic = sys_read32(dmac + PB_DIAG_DMAC_REG_FLAGS) & BIT(0);
+	sys_write32(saved, dmac + PB_DIAG_DMAC_REG_FLAGS);
+	max_len = sys_read32(dmac + PB_DIAG_DMAC_REG_X_LENGTH) + 1U;
+
 	LOG_WRN("  engine is alive and the buffer is correct, yet no tone arrives.");
-	LOG_WRN("  Remaining suspect is sustained rate: this link needs 4 GB/s");
-	LOG_WRN("  (250 MSPS x 16 B/beat) and the 1 KiB buffer is only 256 ns long,");
-	LOG_WRN("  so it must wrap ~3.9 M times/s. If re-arming cannot keep up the");
-	LOG_WRN("  TPL starves between wraps and the DAC emits bursts with long");
-	LOG_WRN("  gaps -- which averages to the noise floor Rung 5 reports.");
-	LOG_WRN("  Next step: enlarge the playback buffer by ~1000x and retest.");
+	LOG_INF("  buffer %zu KiB (%u us per wrap at %u MSPS x %u B/beat)",
+		pb_bytes / 1024U,
+		(unsigned int)((uint64_t)(pb_bytes / PB_DIAG_BEAT_BYTES) *
+			       1000000U / JESD_PB_SAMPLE_RATE),
+		JESD_PB_SAMPLE_RATE / 1000000U, PB_DIAG_BEAT_BYTES);
+	LOG_INF("  DMAC cyclic=%s, current burst length %u bytes",
+		hw_cyclic ? "hw" : "sw-only", max_len);
+
+	if (!hw_cyclic) {
+		LOG_ERR("  the core has NO hardware cyclic support, so every wrap needs a");
+		LOG_ERR("  dma_get_status() poll to re-submit. At %u MSPS x %u B/beat this",
+			JESD_PB_SAMPLE_RATE / 1000000U, PB_DIAG_BEAT_BYTES);
+		LOG_ERR("  link drains the buffer far faster than the CPU can re-arm it, so");
+		LOG_ERR("  the TPL starves between wraps and the DAC emits brief bursts with");
+		LOG_ERR("  long gaps -- which averages to the noise floor Rung 5 reports.");
+		LOG_ERR("  Fix is a longer buffer (fewer wraps/s), not a different setting.");
+		return;
+	}
+
+	LOG_WRN("  but the hardware loops the buffer itself, so the CPU is not in the");
+	LOG_WRN("  re-arm path and wrap rate cannot starve it. Buffer size is NOT the");
+	LOG_WRN("  fault. What remains is what the loop actually contains: hardware");
+	LOG_WRN("  cyclic repeats only the last submitted burst, so if the burst length");
+	LOG_WRN("  above is smaller than the buffer, the DAC is replaying the tail.");
+	if (max_len < pb_bytes) {
+		LOG_WRN("  -- and it IS smaller here (%u < %zu). Size the buffer to one burst.",
+			max_len, pb_bytes);
+	} else {
+		LOG_WRN("  -- the whole buffer fits one burst, so the loop content is right");
+		LOG_WRN("  too, and the remaining suspects are the TPL's sample-to-beat");
+		LOG_WRN("  mapping and the DMA-to-TPL stream handshake, not the buffer.");
+	}
 }
 
 int jesd_diag_loopback(void)
