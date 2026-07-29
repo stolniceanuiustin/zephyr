@@ -59,7 +59,7 @@ LOG_MODULE_REGISTER(jesd_loopback, LOG_LEVEL_INF);
 #define LB_TWIDDLE_SCALE 14
 #define LB_TWIDDLE_ONE   (1 << LB_TWIDDLE_SCALE)
 
-static const int16_t lb_cos[JESD_PB_PERIOD_BEATS] = {
+static const int16_t lb_cos[JESD_PB_TABLE_LEN] = {
 	 16384,  16305,  16069,  15679,  15137,  14449,  13623,  12665,
 	 11585,  10394,   9102,   7723,   6270,   4756,   3196,   1606,
 	     0,  -1606,  -3196,  -4756,  -6270,  -7723,  -9102, -10394,
@@ -70,7 +70,7 @@ static const int16_t lb_cos[JESD_PB_PERIOD_BEATS] = {
 	 11585,  12665,  13623,  14449,  15137,  15679,  16069,  16305,
 };
 
-static const int16_t lb_sin[JESD_PB_PERIOD_BEATS] = {
+static const int16_t lb_sin[JESD_PB_TABLE_LEN] = {
 	     0,   1606,   3196,   4756,   6270,   7723,   9102,  10394,
 	 11585,  12665,  13623,  14449,  15137,  15679,  16069,  16305,
 	 16384,  16305,  16069,  15679,  15137,  14449,  13623,  12665,
@@ -85,8 +85,14 @@ static const int16_t lb_sin[JESD_PB_PERIOD_BEATS] = {
  * Signal-present floor. An unconnected ADC input still digitises thermal noise
  * and its own quantisation, typically a handful of LSBs RMS. Anything below this
  * per-sample RMS is treated as "nothing is connected" rather than a bad tone.
+ *
+ * Kept deliberately low: this gate exists only to distinguish an absent cable
+ * from a real fault, and a too-high floor would mask a weak-but-present tone as
+ * "no cable" -- the concentration test below is what actually judges the signal,
+ * and it works fine at low amplitude (verified at -20 dB). The RMS is logged
+ * either way so a marginal level is visible rather than inferred.
  */
-#define LB_SILENCE_RMS 64
+#define LB_SILENCE_RMS 16
 
 /*
  * Bin-concentration threshold, in permille of total energy. Verified against
@@ -137,9 +143,9 @@ int jesd_loopback_verify(void)
 	int ret;
 
 	LOG_INF("--- Rung 5: analog DAC -> ADC loopback ---");
-	LOG_INF("expecting the Rung 4 tone back at %u.%03u MHz",
+	LOG_INF("expecting the Rung 4 tone back at baseband -%u MHz (RF %u MHz)",
 		JESD_PB_TONE_HZ / 1000000U,
-		(JESD_PB_TONE_HZ % 1000000U) / 1000U);
+		2000U - JESD_PB_TONE_HZ / 1000000U);
 
 	ret = jesd_capture_raw(&buf, &n);
 	if (ret) {
@@ -157,12 +163,16 @@ int jesd_loopback_verify(void)
 	for (size_t b = 0; b < beats; b++) {
 		int32_t i_s = buf[b * JESD_CAP_LANES_PER_BEAT + 0];
 		int32_t q_s = buf[b * JESD_CAP_LANES_PER_BEAT + 1];
-		size_t t = b % JESD_PB_PERIOD_BEATS;
+		size_t t = (b * JESD_PB_STEP) % JESD_PB_TABLE_LEN;
 		int32_t c = lb_cos[t];
 		int32_t s = lb_sin[t];
 
-		re += ((int64_t)i_s * c + (int64_t)q_s * s) >> LB_TWIDDLE_SCALE;
-		im += ((int64_t)q_s * c - (int64_t)i_s * s) >> LB_TWIDDLE_SCALE;
+		/* Multiply by e^{+j.theta} to de-rotate the transmitted e^{-j.theta}.
+		 * The conjugate convention here must match pb_fill()'s negated Q --
+		 * getting it backwards correlates against the mirror image and scores
+		 * zero, which is exactly what an aliased return looks like. */
+		re += ((int64_t)i_s * c - (int64_t)q_s * s) >> LB_TWIDDLE_SCALE;
+		im += ((int64_t)q_s * c + (int64_t)i_s * s) >> LB_TWIDDLE_SCALE;
 		energy += (uint64_t)((int64_t)i_s * i_s + (int64_t)q_s * q_s);
 	}
 
@@ -175,8 +185,10 @@ int jesd_loopback_verify(void)
 		LOG_WRN("ADC input is silent (RMS %llu < %u)",
 			(unsigned long long)rms, LB_SILENCE_RMS);
 		LOG_WRN("=== Rung 5 SKIPPED: no signal at the ADC ===");
-		LOG_WRN("    connect an SMA cable from a DAC output to an ADC input on the FMC,");
+		LOG_WRN("    connect an SMA cable from any DAC output to ADC0 on the FMC,");
 		LOG_WRN("    then reboot -- Rung 4 leaves the tone playing continuously.");
+		LOG_WRN("    If a cable IS installed: check it is rated for ~2 GHz, and that");
+		LOG_WRN("    the ADC SMA carries ADC0 (the converter this check reads).");
 		return -ENODATA;
 	}
 

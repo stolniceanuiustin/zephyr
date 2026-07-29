@@ -72,9 +72,16 @@ LOG_MODULE_REGISTER(jesd_playback, LOG_LEVEL_INF);
  * 16-bit full scale, backed off from the rails so a little digital gain or
  * interpolation overshoot in the chip's datapath can't clip.
  */
-#define PB_SINE_LEN       JESD_PB_PERIOD_BEATS
+#define PB_SINE_LEN       JESD_PB_TABLE_LEN
 #define PB_LANES_PER_BEAT 8U  /* 16-byte bus / 2-byte sample */
-#define PB_NUM_SAMPLES    (PB_SINE_LEN * PB_LANES_PER_BEAT)
+/*
+ * Buffer length in beats. The table is stepped JESD_PB_STEP entries per beat, so
+ * the tone repeats every TABLE_LEN/gcd(STEP,TABLE_LEN) beats; using TABLE_LEN
+ * beats is a whole number of periods either way, so the cyclic transfer wraps
+ * without a phase discontinuity (which would splatter the spectrum).
+ */
+#define PB_BEATS          JESD_PB_TABLE_LEN
+#define PB_NUM_SAMPLES    (PB_BEATS * PB_LANES_PER_BEAT)
 #define PB_BUF_BYTES      (PB_NUM_SAMPLES * sizeof(uint16_t))
 #define PB_DMA_ALIGN      16U
 
@@ -118,17 +125,23 @@ static int16_t pb_buf[PB_NUM_SAMPLES] __aligned(PB_DMA_ALIGN);
 #define PB_POLL_TIMEOUT_MS 200
 
 /*
- * Expand one period across the buffer. Rung 2's capture established the beat
+ * Expand the tone across the buffer. Rung 2's capture established the beat
  * layout: even sample slots are the I components, odd slots the Q, so a beat
  * holds an (I,Q) pair for each of the 4 complex channels. Every channel gets the
  * same tone, so any DAC output can be probed.
+ *
+ * Q is negated to make this a negative-frequency exponential (I = cos, Q = -sin),
+ * which places the RF tone below the +2 GHz NCO and so inside the ADC's first
+ * Nyquist zone -- see the frequency notes in jesd_playback.h.
  */
 static void pb_fill(void)
 {
-	for (uint32_t b = 0; b < PB_SINE_LEN; b++) {
+	for (uint32_t b = 0; b < PB_BEATS; b++) {
+		uint32_t t = (b * JESD_PB_STEP) % PB_SINE_LEN;
+
 		for (uint32_t l = 0; l < PB_LANES_PER_BEAT; l++) {
 			pb_buf[b * PB_LANES_PER_BEAT + l] =
-				(l & 1) ? pb_sin[b] : pb_cos[b];
+				(l & 1) ? (int16_t)-pb_sin[t] : pb_cos[t];
 		}
 	}
 
@@ -139,11 +152,12 @@ static void pb_fill(void)
 
 static void pb_describe(void)
 {
-	LOG_INF("tone table: %u beats, I=cos/Q=sin, amplitude %d (0.75 FS)",
-		PB_SINE_LEN, pb_cos[0]);
-	LOG_INF("  baseband %u.%03u MHz at 250 MSPS (one period per %u beats)",
-		JESD_PB_TONE_HZ / 1000000U,
-		(JESD_PB_TONE_HZ % 1000000U) / 1000U, PB_SINE_LEN);
+	LOG_INF("tone table: %u beats, I=cos/Q=-sin, amplitude %d (0.75 FS)",
+		PB_BEATS, pb_cos[0]);
+	LOG_INF("  baseband -%u MHz at %u MSPS -> RF %u.%02u GHz (NCO +2 GHz, inside 2 GHz Nyquist)",
+		JESD_PB_TONE_HZ / 1000000U, JESD_PB_SAMPLE_RATE / 1000000U,
+		(2000U - JESD_PB_TONE_HZ / 1000000U) / 1000U,
+		((2000U - JESD_PB_TONE_HZ / 1000000U) % 1000U) / 10U);
 	LOG_INF("first 2 beats (I Q I Q ...):");
 	for (uint32_t i = 0; i < 16; i += 8) {
 		LOG_INF("  [%02u] %6d %6d %6d %6d %6d %6d %6d %6d", i,
