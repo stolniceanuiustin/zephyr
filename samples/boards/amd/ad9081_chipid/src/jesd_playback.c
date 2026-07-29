@@ -36,12 +36,10 @@
  *  - If the core was synthesized with cyclic support we re-arm the transfer in
  *    cyclic mode at the end so the tone stays present at the DAC output for as
  *    long as the board is powered, which is what makes a scope check possible.
- *  - Buffer size is a *rate* decision, not a tone decision. This link consumes
- *    4 GB/s (250 MSPS x 16-byte beats), so a small cyclic buffer has to be
- *    re-armed millions of times a second and the transport core starves in the
- *    gaps. See the PB_BEATS comment: an undersized buffer here presents as a
- *    perfectly healthy link carrying almost no signal, which is a genuinely
- *    difficult symptom to attribute.
+ *  - Buffer size does not affect whether the tone sustains: this core has hardware
+ *    cyclic support, so it replays the buffer unaided at any length. See the
+ *    PB_BEATS comment -- the plausible-sounding "small buffer starves the link"
+ *    theory was tested and is false.
  *
  * SPDX-License-Identifier: Apache-2.0
  */
@@ -85,23 +83,19 @@ LOG_MODULE_REGISTER(jesd_playback, LOG_LEVEL_INF);
  *
  * The tone repeats every TABLE_LEN/gcd(STEP,TABLE_LEN) = 8 beats, so any multiple
  * of 8 wraps without a phase discontinuity (which would splatter the spectrum).
- * That leaves the length free, and it has to be chosen against the feed rate
- * rather than the tone: this link consumes a 16-byte beat every sample period at
- * 250 MSPS, i.e. 4 GB/s. One table-length of 64 beats is 1 KiB -- 256 ns of
- * signal, which a cyclic transfer must wrap 3.9 million times a second to sustain.
+ * That leaves the length essentially free.
  *
- * The diagnostic measured what that costs. With the buffer verified present in DDR
- * and the engine verified still busy, no tone reached the ADC, while a tone
- * generated inside the FPGA at the transport core's input made the identical trip
- * through the lanes, deframer, DAC, cable and ADC and arrived cleanly. The
- * difference between those two cases is not the datapath -- it is who feeds it.
- * Re-arming cannot keep up at that wrap rate, so the transport core starves between
- * wraps and the DAC emits brief bursts separated by long gaps, which averages to
- * the noise floor and varies per boot with bus contention.
+ * It does *not* need to be chosen against the feed rate. The natural worry is that
+ * this link consumes a 16-byte beat per sample period at 250 MSPS (4 GB/s), so a
+ * short cyclic buffer would have to be re-armed millions of times a second and the
+ * transport core would starve in the gaps. That worry does not apply here: the TX
+ * core reports cyclic=hw, so the hardware replays the buffer with no software
+ * involvement at all and there is nothing to keep up. Measured directly -- 64 beats
+ * (1 KiB) and 256 Ki beats (4 MiB) behave identically at the ADC.
  *
- * 256 Ki beats is 4 MiB, ~1.05 ms per wrap: 4096x fewer wraps per second, and long
- * enough that a starved re-arm is a small gap in a mostly-continuous signal rather
- * than the whole signal. DDR is 2 GB, so the cost is irrelevant.
+ * The larger size is kept only because it makes the transfer long enough to observe
+ * on the DMAC's own counters, which is useful while the analog return is still
+ * under investigation. DDR is 2 GB, so the cost is irrelevant either way.
  */
 #define PB_BEATS          (256U * 1024U)
 #define PB_NUM_SAMPLES    (PB_BEATS * PB_LANES_PER_BEAT)
@@ -146,9 +140,8 @@ static int16_t pb_buf[PB_NUM_SAMPLES] __aligned(PB_DMA_ALIGN);
 
 /*
  * Poll budget for the one-shot transfer. At the full 4 GB/s a 4 MiB buffer moves in
- * about a millisecond, but the entire reason for this buffer size is that the
- * achieved rate is in question -- so allow generously and let the timeout catch a
- * genuinely stalled path rather than a merely slow one.
+ * about a millisecond; allow generously so the timeout catches a genuinely stalled
+ * path rather than a merely slow one.
  */
 #define PB_POLL_TIMEOUT_MS 2000
 

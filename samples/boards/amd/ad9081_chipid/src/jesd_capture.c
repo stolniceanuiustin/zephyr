@@ -47,10 +47,21 @@ LOG_MODULE_REGISTER(jesd_capture, LOG_LEVEL_INF);
 
 /*
  * Capture buffer. The DMAC data bus is 16 bytes wide, so align and size to that.
- * 8 KiB = 4096 x 16-bit samples -- enough to see the ramp wrap several times
- * while staying tiny. Placed in DDR (the only RAM here); DMA-visible.
+ * Placed in DDR (the only RAM here); DMA-visible.
+ *
+ * Size is a *time window* decision. One beat is consumed per sample period, so at
+ * 250 MSPS the buffer duration is beats/250e6: the original 8 KiB (512 beats) is a
+ * 2 us snapshot. That is ample for Rung 2's ramp, which is deterministic and
+ * identical everywhere, but far too short to characterise an intermittent analog
+ * return -- eight such captures sample 16 us out of a multi-second run, so a
+ * "1 in 8 captures saw signal" result says nothing about how often the signal is
+ * actually there.
+ *
+ * 256 KiB = 16384 beats = ~65 us, long enough to hold many on/off periods of a
+ * bursty output and let a per-chunk RMS scan read the duty cycle directly instead
+ * of inferring it from hit counts. DDR is 2 GB; the cost is irrelevant.
  */
-#define CAP_BUF_BYTES   8192U
+#define CAP_BUF_BYTES   (256U * 1024U)
 #define CAP_DMA_ALIGN   16U
 #define CAP_NUM_SAMPLES (CAP_BUF_BYTES / sizeof(uint16_t))
 

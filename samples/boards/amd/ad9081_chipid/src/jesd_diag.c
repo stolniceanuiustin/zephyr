@@ -61,6 +61,7 @@ LOG_MODULE_REGISTER(jesd_diag, LOG_LEVEL_INF);
 
 #include "ad9081.h"
 #include "axi_tpl.h"
+#include "jesd_capture.h"
 #include "jesd_diag.h"
 #include "jesd_loopback.h"
 #include "jesd_playback.h"
@@ -542,7 +543,130 @@ static void diag_repeatability(void)
 		LOG_WRN("  INTERMITTENT within a single boot -- the datapath is not");
 		LOG_WRN("  deterministically delivering samples to the DAC.");
 	} else {
-		LOG_INF("  consistently present this boot.");
+		LOG_WRN("  INTERMITTENT within a single boot -- see [8/7] for whether that");
+		LOG_WRN("  is really intermittence or just a too-short capture window.");
+	}
+}
+
+/*
+ * Duty cycle of the analog return, measured *within* one capture.
+ *
+ * [4/7] counts how many captures saw signal, and that count has been misleading:
+ * each capture is one short window, so "1 of 8" conflates "the signal is rarely
+ * there" with "we rarely looked while it was there". Those demand different fixes
+ * and the hit count cannot separate them.
+ *
+ * This scans a single capture in fixed-size chunks and reports each chunk's RMS.
+ * The shape of that list is the answer, and there are only two possible shapes:
+ *
+ *   uniformly high   -> the tone is continuous; the old 2 us window was simply too
+ *                       short to land on it reliably, and there is no intermittence
+ *                       to explain
+ *   high/low bursts  -> the DAC output really is gated; the on:off ratio and the
+ *                       period are readable straight off the list, which is the
+ *                       first hard number anything upstream can be checked against
+ *
+ * Chunks are one tone period's worth of beats times a power of two, so a chunk
+ * boundary never splits the tone in a way that depresses its RMS.
+ */
+/* Integer square root (Newton), matching jesd_loopback.c's lb_isqrt(). */
+static uint64_t diag_isqrt(uint64_t v)
+{
+	uint64_t x, prev;
+
+	if (v == 0) {
+		return 0;
+	}
+
+	x = v;
+	prev = 0;
+	while (x != prev) {
+		prev = x;
+		x = (x + v / x) / 2;
+		if (x > prev) {
+			break;
+		}
+	}
+	return x;
+}
+
+#define DIAG_CHUNK_BEATS   512U
+#define DIAG_CHUNKS_MAX    64U
+#define DIAG_CHUNKS_PER_ROW 16U
+
+static void diag_duty_cycle(void)
+{
+	const int16_t *buf;
+	size_t n, beats, chunks, on = 0;
+	uint64_t rms[DIAG_CHUNKS_MAX];
+
+	LOG_INF("[8/7] duty cycle of the return within one capture:");
+
+	if (jesd_capture_raw(&buf, &n) != 0) {
+		LOG_WRN("  capture failed");
+		return;
+	}
+
+	beats = n / JESD_CAP_LANES_PER_BEAT;
+	chunks = beats / DIAG_CHUNK_BEATS;
+	if (chunks == 0) {
+		LOG_WRN("  capture is shorter than one chunk (%zu beats)", beats);
+		return;
+	}
+	if (chunks > DIAG_CHUNKS_MAX) {
+		chunks = DIAG_CHUNKS_MAX;
+		LOG_INF("  (reporting the first %u chunks of %zu)", DIAG_CHUNKS_MAX,
+			beats / DIAG_CHUNK_BEATS);
+	}
+
+	for (size_t c = 0; c < chunks; c++) {
+		uint64_t energy = 0;
+		size_t base = c * DIAG_CHUNK_BEATS * JESD_CAP_LANES_PER_BEAT;
+
+		for (size_t s = 0; s < DIAG_CHUNK_BEATS * JESD_CAP_LANES_PER_BEAT;
+		     s++) {
+			int32_t v = buf[base + s];
+
+			energy += (uint64_t)((int64_t)v * v);
+		}
+		rms[c] = diag_isqrt(energy /
+				    (DIAG_CHUNK_BEATS * JESD_CAP_LANES_PER_BEAT));
+		if (rms[c] >= DIAG_SIGNAL_RMS) {
+			on++;
+		}
+	}
+
+	LOG_INF("  per-chunk RMS (%u beats = %u ns each):", DIAG_CHUNK_BEATS,
+		(unsigned int)((uint64_t)DIAG_CHUNK_BEATS * 1000000000U /
+			       JESD_PB_SAMPLE_RATE));
+	for (size_t c = 0; c < chunks; c += DIAG_CHUNKS_PER_ROW) {
+		char row[DIAG_CHUNKS_PER_ROW * 8 + 1];
+		size_t len = 0;
+
+		for (size_t k = 0; k < DIAG_CHUNKS_PER_ROW && c + k < chunks; k++) {
+			len += snprintk(&row[len], sizeof(row) - len, "%6llu ",
+					(unsigned long long)rms[c + k]);
+		}
+		LOG_INF("  [%02zu] %s", c, row);
+	}
+
+	LOG_INF("  %zu/%zu chunks carry signal (%zu%% duty cycle over %u us)", on,
+		chunks, on * 100U / chunks,
+		(unsigned int)((uint64_t)chunks * DIAG_CHUNK_BEATS * 1000000U /
+			       JESD_PB_SAMPLE_RATE));
+
+	if (on == chunks) {
+		LOG_INF("  CONTINUOUS -- the tone is always present. The [4/7] misses were");
+		LOG_INF("  a measurement artefact of the old 2 us window, not intermittence:");
+		LOG_INF("  there is no on/off behaviour left to explain.");
+	} else if (on == 0) {
+		LOG_WRN("  nothing at all in this capture -- [4/7]'s hit, if any, was in a");
+		LOG_WRN("  different window; re-run to catch one.");
+	} else {
+		LOG_WRN("  BURSTY -- the DAC output is genuinely gated, roughly %zu%% on.",
+			on * 100U / chunks);
+		LOG_WRN("  This is a real duty cycle, not a sampling artefact: whatever");
+		LOG_WRN("  gates it must account for that ratio and period.");
 	}
 }
 
@@ -947,6 +1071,11 @@ int jesd_diag_loopback(void)
 	 * measure the frequency the rest of the app actually runs at. */
 	(void)diag_retune(dev, DIAG_NCO_HZ_DEFAULT);
 	diag_repeatability();
+
+	/* Whatever the hit count came out as, resolve what it means: one long
+	 * capture scanned in chunks separates a real duty cycle from a window
+	 * too short to land on a continuous signal. */
+	diag_duty_cycle();
 
 	/* Restore the configured frequency plan whatever happened, so the board
 	 * is left in the state the rest of the app documents. */
