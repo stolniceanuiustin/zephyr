@@ -210,21 +210,22 @@ int main(void)
 	 * a failure, so an un-jumpered board still boots to a clean end.
 	 */
 	ret = jesd_loopback_verify();
-	if (ret == -ENODATA) {
+	if (ret) {
 		/*
-		 * Nothing at the ADC. With no cable that is the expected result
-		 * and not a failure -- but a cable IS installed on this board and
-		 * it still reads as silence, while every status register reports
-		 * healthy. Run the fault isolation to narrow that down instead of
-		 * ending on an unexplained skip.
+		 * Isolate on any negative result, not just -ENODATA. Silence
+		 * (-ENODATA) and a low-concentration signal (-EIO) turn out to be
+		 * the same fault sampled at different moments: the return is gated,
+		 * so a capture landing wholly inside an off-period reads as silence
+		 * and one straddling a transition reads as the wrong signal. Sending
+		 * only the first case to the diagnostic skipped it in exactly the
+		 * boots that carried the most information.
+		 *
+		 * Still not fatal: the isolation output is the useful artefact of
+		 * such a boot, so return 0 and let the board come up cleanly.
 		 */
-		LOG_INF("Rung 5 found no signal -- running fault isolation");
+		LOG_INF("Rung 5 did not pass (%d) -- running fault isolation", ret);
 		jesd_diag_loopback();
 		return 0;
-	}
-	if (ret) {
-		LOG_WRN("Rung 5 analog loopback failed (%d)", ret);
-		return ret;
 	}
 	LOG_INF("SUCCESS: full analog signal chain verified end to end");
 	return 0;

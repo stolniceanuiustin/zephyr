@@ -670,11 +670,45 @@ static void diag_duty_cycle(void)
 		LOG_WRN("  the signal but the capture: each one re-arms the RX DMAC, and");
 		LOG_WRN("  that arming is now the only untested variable left.");
 	} else {
+		size_t edges = 0, longest_on = 0, run = 0;
+
+		/*
+		 * Count state changes and the longest unbroken on-run. Two edges in a
+		 * window mean a full on-period is contained in it, so its length is
+		 * measured rather than merely bounded below -- that is the number an
+		 * upstream stage has to be able to account for.
+		 */
+		for (size_t c = 0; c < chunks; c++) {
+			bool hi = rms[c] >= DIAG_SIGNAL_RMS;
+
+			if (c && hi != (rms[c - 1] >= DIAG_SIGNAL_RMS)) {
+				edges++;
+			}
+			run = hi ? run + 1 : 0;
+			if (run > longest_on) {
+				longest_on = run;
+			}
+		}
+
 		LOG_WRN("  MIXED -- the return genuinely switches state, roughly %zu%% on,",
 			on * 100U / chunks);
-		LOG_WRN("  with a transition inside this capture. The source is gating");
-		LOG_WRN("  the tone; the chunk list above dates the transition and gives");
-		LOG_WRN("  the period to check upstream stages against.");
+		LOG_WRN("  so the source is gating the tone. This also explains [4/7]:");
+		LOG_WRN("  captures shorter than the gate period land wholly inside an on-");
+		LOG_WRN("  or off-period, which is why they read all-or-nothing.");
+		LOG_INF("  %zu transitions, longest on-run %zu chunks (%u us)", edges,
+			longest_on,
+			(unsigned int)((uint64_t)longest_on * DIAG_CHUNK_BEATS *
+				       1000000U / JESD_PB_SAMPLE_RATE));
+		if (edges >= 2) {
+			LOG_INF("  a complete on-period fits this window, so that on-time is");
+			LOG_INF("  measured, not just a lower bound.");
+		} else {
+			LOG_INF("  only %zu transition seen, so the on-time is a lower bound --",
+				edges);
+			LOG_INF("  the period is longer than this %u us window.",
+				(unsigned int)((uint64_t)chunks * DIAG_CHUNK_BEATS *
+					       1000000U / JESD_PB_SAMPLE_RATE));
+		}
 	}
 }
 
