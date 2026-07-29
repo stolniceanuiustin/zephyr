@@ -60,4 +60,42 @@ int jesd_playback_sine(void);
  */
 int jesd_playback_buffer(const int16_t **buf, size_t *bytes);
 
+/*
+ * Time one bounded (non-cyclic) transfer of `bytes` from the playback buffer and
+ * return how long it took in microseconds.
+ *
+ * This is the only way to get a throughput number out of this core. The wrap
+ * counting the diagnostic used to attempt cannot work: under cyclic=hw the
+ * hardware replays one transfer forever, so no fresh EOT ever latches and the
+ * wrap count is permanently zero. A *bounded* transfer, by contrast, has a
+ * defined beginning and end, and the DMA API reports exactly when it finishes --
+ * so bytes/elapsed is a real measurement rather than an inference.
+ *
+ * What the number means depends on what is downstream, which is the point of
+ * being able to call this twice:
+ *
+ *  - with the TX offload in bypass the sink is the TPL itself, backpressuring at
+ *    the link's 250 MSPS x 16 B = 4000 MB/s, so the result is
+ *    min(DMA rate, line rate) -- what the DAC actually receives.
+ *  - with the offload in store-and-replay the sink is its storage buffer, which
+ *    is wider and faster than the link, so the result is much closer to the DMA's
+ *    own DDR read throughput.
+ *
+ * Two sizes give a third useful thing: the difference between them divides out
+ * the fixed per-transfer overhead (config, cache flush, arming, the poll loop's
+ * latency in noticing completion), which at these durations is not negligible.
+ *
+ * Leaves the channel stopped -- call jesd_playback_rearm() to put the continuous
+ * tone back. Returns 0 on success, -EINVAL for a size outside the buffer,
+ * -ETIMEDOUT if the transfer never completed, or another negative errno from the
+ * DMA API.
+ */
+int jesd_playback_timed(size_t bytes, uint32_t *elapsed_us);
+
+/*
+ * Re-arm the cyclic whole-buffer playback, restoring the continuous tone after
+ * jesd_playback_timed() has borrowed the channel. Returns 0 on success.
+ */
+int jesd_playback_rearm(void);
+
 #endif /* JESD_PLAYBACK_H_ */

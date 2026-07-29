@@ -75,12 +75,18 @@ LOG_MODULE_REGISTER(jesd_capture, LOG_LEVEL_INF);
  * irrelevant -- the limit was one block upstream, in an IP this sample did not
  * know existed.
  *
- * With the offload in bypass (main.c does this at startup) the store-and-replay
- * cycle is gone, so this ceiling should no longer apply. It has not been retested
- * at a larger size; if you raise it, re-run Rung 2, which is what caught the
- * truncation in the first place. It validates every beat it is given, so a
- * silently short capture fails loudly there instead of quietly skewing an analog
- * measurement.
+ * This ceiling is permanent, because the RX core is deliberately left in that
+ * one-shot mode. Bypassing it to lift the limit was tried and reverted: in bypass
+ * the storage buffer becomes a 16-entry FIFO and m_axis_last is tied to 0, so an
+ * arming capture DMA lands mid-stream with no beat alignment and the ramp check
+ * fails on ~all 524288 samples (odd lanes 0x0000, even lanes +/-1). A bounded
+ * capture that is correct beats an unbounded one that is misaligned; see
+ * axi_data_offload.h. Only the TX core is bypassed.
+ *
+ * So do not raise this above 1 MiB expecting the offload change to have helped.
+ * If you do raise it, re-run Rung 2 -- it validates every beat it is given, so a
+ * silently short or misaligned capture fails loudly there instead of quietly
+ * skewing an analog measurement. It is what caught both of these.
  *
  * DDR is 2 GB, so the cost is irrelevant; the limit is the hardware's, not memory.
  */
@@ -225,6 +231,84 @@ int jesd_capture_probe(void)
 	/* Compare mean-square against the squared threshold to avoid a sqrt. */
 	energy /= (n / JESD_CAP_LANES_PER_BEAT);
 	return energy >= (uint64_t)JESD_CAP_PROBE_RMS_MIN * JESD_CAP_PROBE_RMS_MIN;
+}
+
+/*
+ * Time one capture. See jesd_capture.h for why this exists and what the number
+ * means; the short version is that it is the receive-side counterpart to
+ * jesd_playback_timed(), for deciding whether the transmit path's measured
+ * 403 MB/s is TX-specific or a shared DDR-side limit.
+ *
+ * Deliberately does not reuse cap_transfer_n(): that function memsets and
+ * flushes the buffer around the transfer, which at 1 MiB is milliseconds of A53
+ * work either side of a few hundred microseconds of DMA. Timing it would measure
+ * the CPU. Here the cache is cleaned *before* the clock starts, and the
+ * post-transfer invalidate is skipped entirely because nothing reads the data --
+ * only the duration is wanted.
+ */
+int jesd_capture_timed(size_t bytes, uint32_t *elapsed_us)
+{
+	const struct device *rx_dma = DEVICE_DT_GET(DT_NODELABEL(rx_dmac));
+	struct dma_block_config block = {0};
+	struct dma_config cfg = {0};
+	struct dma_status status;
+	int64_t deadline;
+	uint64_t t0;
+	int ret;
+
+	if (elapsed_us == NULL || bytes == 0 || bytes > sizeof(cap_buf)) {
+		return -EINVAL;
+	}
+	bytes = ROUND_DOWN(bytes, CAP_DMA_ALIGN);
+	if (!device_is_ready(rx_dma)) {
+		return -ENODEV;
+	}
+
+	/* Outside the timed region on purpose -- see the comment above. */
+	sys_cache_data_flush_and_invd_range(cap_buf, bytes);
+
+	block.source_address = 0; /* device FIFO -- no memory address */
+	block.dest_address = (uintptr_t)cap_buf;
+	block.block_size = bytes;
+
+	cfg.channel_direction = PERIPHERAL_TO_MEMORY;
+	cfg.block_count = 1;
+	cfg.head_block = &block;
+	cfg.source_data_size = 2;
+	cfg.dest_data_size = 2;
+
+	ret = dma_config(rx_dma, CAP_DMA_CHANNEL, &cfg);
+	if (ret) {
+		return ret;
+	}
+
+	/* Cycles, not ticks: the tick is 100 us and the transfer is a few hundred. */
+	t0 = k_cycle_get_64();
+	ret = dma_start(rx_dma, CAP_DMA_CHANNEL);
+	if (ret) {
+		return ret;
+	}
+
+	deadline = k_uptime_get() + CAP_POLL_TIMEOUT_MS;
+	do {
+		ret = dma_get_status(rx_dma, CAP_DMA_CHANNEL, &status);
+		if (ret) {
+			goto stop;
+		}
+		if (!status.busy) {
+			break;
+		}
+		if (k_uptime_get() > deadline) {
+			ret = -ETIMEDOUT;
+			goto stop;
+		}
+	} while (true);
+
+	*elapsed_us = (uint32_t)k_cyc_to_us_floor64(k_cycle_get_64() - t0);
+	ret = 0;
+stop:
+	dma_stop(rx_dma, CAP_DMA_CHANNEL);
+	return ret;
 }
 
 int jesd_capture_raw(const int16_t **buf, size_t *n)

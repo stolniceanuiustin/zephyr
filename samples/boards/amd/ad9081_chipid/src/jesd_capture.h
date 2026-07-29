@@ -64,4 +64,29 @@ int jesd_capture_probe(void);
 #define JESD_CAP_PROBE_BYTES   1024U
 #define JESD_CAP_PROBE_RMS_MIN 64U
 
+/*
+ * Time one capture of `bytes` and report how long the DMA itself took, in
+ * microseconds.
+ *
+ * The mirror of jesd_playback_timed(), and it exists to localise the 403 MB/s
+ * measured on the transmit side. Both DMACs read and write DDR through their own
+ * AXI master into the PS memory interconnect. If receive lands near the same
+ * figure the limit is shared -- the PS-side port, the PL clock feeding it, or the
+ * coherency routing -- and nothing about the transmit path in particular. If
+ * receive is fast, the cause is TX-specific and the search narrows to one core.
+ *
+ * Only the transfer is timed. The buffer memset and the cache maintenance around
+ * it are milliseconds of CPU work at these sizes -- far larger than the transfer
+ * -- so including them would measure the A53, not the DMA. The clock brackets
+ * dma_start() to the poll loop seeing !busy, exactly as the playback timing does,
+ * so the two numbers are directly comparable.
+ *
+ * Note the RX ceiling: the receive offload core is one-shot, so a request above
+ * its 1 MiB buffer truncates (see jesd_capture.c). Keep `bytes` at or under that.
+ *
+ * Returns 0 on success, -EINVAL for a size outside the buffer, or a negative
+ * errno from the DMA layer.
+ */
+int jesd_capture_timed(size_t bytes, uint32_t *elapsed_us);
+
 #endif /* JESD_CAPTURE_H_ */

@@ -191,8 +191,8 @@ static void pb_describe(void)
 	}
 }
 
-/* Arm one transfer of the whole buffer. cyclic=true re-arms it forever. */
-static int pb_submit(const struct device *tx_dma, bool cyclic)
+/* Arm one transfer of `bytes` from the buffer. cyclic=true re-arms it forever. */
+static int pb_submit_n(const struct device *tx_dma, bool cyclic, size_t bytes)
 {
 	struct dma_block_config block = {0};
 	struct dma_config cfg = {0};
@@ -200,7 +200,7 @@ static int pb_submit(const struct device *tx_dma, bool cyclic)
 
 	block.source_address = (uintptr_t)pb_buf;
 	block.dest_address = 0; /* device FIFO -- no memory address */
-	block.block_size = sizeof(pb_buf);
+	block.block_size = bytes;
 
 	cfg.channel_direction = MEMORY_TO_PERIPHERAL;
 	cfg.block_count = 1;
@@ -221,6 +221,84 @@ static int pb_submit(const struct device *tx_dma, bool cyclic)
 		return ret;
 	}
 	return 0;
+}
+
+static int pb_submit(const struct device *tx_dma, bool cyclic)
+{
+	return pb_submit_n(tx_dma, cyclic, sizeof(pb_buf));
+}
+
+/*
+ * Time one bounded transfer. See jesd_playback.h for why a bounded transfer is
+ * the only measurable one on this core.
+ *
+ * The buffer is deliberately NOT refilled or flushed here: pb_fill() already
+ * cleaned it out to DDR and nothing has written it since, so a flush would only
+ * add milliseconds of cache work to the thing being timed. The clock is started
+ * immediately before dma_start() and stopped the moment the poll loop sees
+ * !busy, so it brackets the transfer and the polling latency and nothing else.
+ */
+int jesd_playback_timed(size_t bytes, uint32_t *elapsed_us)
+{
+	const struct device *tx_dma = DEVICE_DT_GET(DT_NODELABEL(tx_dmac));
+	struct dma_status status;
+	int64_t t0, deadline;
+	int ret;
+
+	if (elapsed_us == NULL || bytes == 0 || bytes > sizeof(pb_buf)) {
+		return -EINVAL;
+	}
+	bytes = ROUND_DOWN(bytes, PB_DMA_ALIGN);
+	if (!device_is_ready(tx_dma)) {
+		return -ENODEV;
+	}
+
+	/* Drop whatever was running (the cyclic tone) so this transfer is alone. */
+	dma_stop(tx_dma, PB_DMA_CHANNEL);
+
+	/*
+	 * Cycles, not ticks. The tick rate here is 10 kHz (100 us per tick) and a
+	 * full-buffer transfer at line rate is about 1 ms, so a tick-based timer
+	 * would quantise the answer to ~10%. k_cycle_get_64() is the ARM
+	 * architected counter -- CNTFRQ is 100 MHz on this part, so 10 ns.
+	 */
+	t0 = (int64_t)k_cycle_get_64();
+	ret = pb_submit_n(tx_dma, false, bytes);
+	if (ret) {
+		return ret;
+	}
+
+	deadline = k_uptime_get() + PB_POLL_TIMEOUT_MS;
+	do {
+		ret = dma_get_status(tx_dma, PB_DMA_CHANNEL, &status);
+		if (ret) {
+			goto stop;
+		}
+		if (!status.busy) {
+			break;
+		}
+		if (k_uptime_get() > deadline) {
+			ret = -ETIMEDOUT;
+			goto stop;
+		}
+	} while (true);
+
+	*elapsed_us = (uint32_t)k_cyc_to_us_floor64(k_cycle_get_64() - (uint64_t)t0);
+	ret = 0;
+stop:
+	dma_stop(tx_dma, PB_DMA_CHANNEL);
+	return ret;
+}
+
+int jesd_playback_rearm(void)
+{
+	const struct device *tx_dma = DEVICE_DT_GET(DT_NODELABEL(tx_dmac));
+
+	if (!device_is_ready(tx_dma)) {
+		return -ENODEV;
+	}
+	dma_stop(tx_dma, PB_DMA_CHANNEL);
+	return pb_submit(tx_dma, true);
 }
 
 int jesd_playback_buffer(const int16_t **buf, size_t *bytes)
