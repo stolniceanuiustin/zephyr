@@ -126,6 +126,10 @@ static const uint32_t diag_sweep_mhz[] = { 100, 500, 1000, 1968 };
 #define PB_DIAG_DMAC_BASE       0x9C430000UL
 #define PB_DIAG_DMAC_REG_FLAGS  0x040C
 #define PB_DIAG_DMAC_REG_X_LENGTH 0x0418
+#define PB_DIAG_DMAC_REG_CTRL          0x0400
+#define PB_DIAG_DMAC_REG_TRANSFER_ID   0x0404
+#define PB_DIAG_DMAC_REG_TRANSFER_DONE 0x0428
+#define PB_DIAG_DMAC_REG_IRQ_PENDING   0x0084
 
 /* Bytes the JESD link consumes per sample period: 8 converters x NP16. */
 #define PB_DIAG_BEAT_BYTES 16U
@@ -752,33 +756,24 @@ static void diag_dma_feed(void)
 	LOG_INF("  buffer holds the tone in DDR, so the DMA is reading real samples");
 
 	/*
-	 * Measure the achieved feed rate. Two status reads a known interval apart;
-	 * pending_length is the bytes left in the current buffer, so its movement
-	 * (accounting for wraps) is throughput. Even a coarse figure settles the
-	 * question, because the requirement is 4 GB/s and anything the CPU can
-	 * observe stepping slowly is orders of magnitude short.
+	 * Report the driver's view for contrast, but do not branch on it. busy is
+	 * (remaining_size > 0 || pending_bursts > 0) -- pure software state that a
+	 * one-burst hardware-cyclic transfer pins at 1 permanently. It is logged
+	 * beside the hardware counters below precisely so the discrepancy is visible
+	 * rather than mistaken for corroboration.
 	 */
-	if (dma_get_status(tx_dma, PB_DIAG_DMA_CHANNEL, &s0) != 0) {
-		LOG_WRN("  could not read DMA status");
-		return;
-	}
-	k_msleep(50);
-	if (dma_get_status(tx_dma, PB_DIAG_DMA_CHANNEL, &s1) != 0) {
-		LOG_WRN("  could not read DMA status");
-		return;
-	}
-
-	LOG_INF("  DMA busy=%u then %u, pending %u then %u over 50 ms",
-		s0.busy, s1.busy, s0.pending_length, s1.pending_length);
-
-	if (!s1.busy) {
-		LOG_ERR("  the cyclic transfer has STOPPED -- the DAC is being fed");
-		LOG_ERR("  nothing at all, which is the silence Rung 5 sees.");
-		return;
+	if (dma_get_status(tx_dma, PB_DIAG_DMA_CHANNEL, &s0) == 0) {
+		k_msleep(50);
+		if (dma_get_status(tx_dma, PB_DIAG_DMA_CHANNEL, &s1) == 0) {
+			LOG_INF("  driver view (software counters, not evidence):"
+				" busy=%u/%u pending=%u/%u",
+				s0.busy, s1.busy, s0.pending_length,
+				s1.pending_length);
+		}
 	}
 
 	/*
-	 * Still busy. Then the open question is sustained rate: this datapath wants
+	 * The open question was sustained rate: this datapath wants
 	 * 4 GB/s (250 MSPS x 16 B/beat), and a 1 KiB cyclic buffer is only 256 ns
 	 * long, so it must wrap 3.9 million times per second. That is the one
 	 * remaining explanation consistent with every observation: the engine is
@@ -812,7 +807,7 @@ static void diag_dma_feed(void)
 	sys_write32(saved, dmac + PB_DIAG_DMAC_REG_FLAGS);
 	max_len = sys_read32(dmac + PB_DIAG_DMAC_REG_X_LENGTH) + 1U;
 
-	LOG_WRN("  engine is alive and the buffer is correct, yet no tone arrives.");
+	LOG_WRN("  the buffer is correct in DDR, yet no tone arrives.");
 	LOG_INF("  buffer %zu KiB (%u us per wrap at %u MSPS x %u B/beat)",
 		pb_bytes / 1024U,
 		(unsigned int)((uint64_t)(pb_bytes / PB_DIAG_BEAT_BYTES) *
@@ -820,6 +815,61 @@ static void diag_dma_feed(void)
 		JESD_PB_SAMPLE_RATE / 1000000U, PB_DIAG_BEAT_BYTES);
 	LOG_INF("  DMAC cyclic=%s, current burst length %u bytes",
 		hw_cyclic ? "hw" : "sw-only", max_len);
+
+	/*
+	 * Ask the hardware whether it is moving data, which nothing has yet done.
+	 *
+	 * dma_status.busy is not evidence: the driver computes it as
+	 * (remaining_size > 0 || pending_bursts > 0), both software counters. For a
+	 * buffer that fits one burst, submitting leaves remaining_size at 0 and
+	 * pending_bursts at 1, and with no IRQ line and hardware cyclic active
+	 * dmac_service() never decrements either -- so busy reads 1 forever whether
+	 * or not a single byte has left DDR. Every "the DMA is running" claim in this
+	 * ladder traced back to that variable.
+	 *
+	 * TRANSFER_ID and TRANSFER_DONE are counters in the core itself, and SOT/EOT
+	 * latch in IRQ_PENDING. Sampling them across a known interval distinguishes
+	 * the two cases the software flag cannot: a core cycling through transfers,
+	 * versus a core sitting on a submitted descriptor it never started.
+	 */
+	uint32_t id0 = sys_read32(dmac + PB_DIAG_DMAC_REG_TRANSFER_ID);
+	uint32_t done0 = sys_read32(dmac + PB_DIAG_DMAC_REG_TRANSFER_DONE);
+	uint32_t pend0 = sys_read32(dmac + PB_DIAG_DMAC_REG_IRQ_PENDING);
+	uint32_t ctrl = sys_read32(dmac + PB_DIAG_DMAC_REG_CTRL);
+
+	k_msleep(50);
+
+	uint32_t id1 = sys_read32(dmac + PB_DIAG_DMAC_REG_TRANSFER_ID);
+	uint32_t done1 = sys_read32(dmac + PB_DIAG_DMAC_REG_TRANSFER_DONE);
+	uint32_t pend1 = sys_read32(dmac + PB_DIAG_DMAC_REG_IRQ_PENDING);
+
+	LOG_INF("  core: CTRL=0x%08x (enable=%u), X_LENGTH=%u", ctrl,
+		!!(ctrl & BIT(0)), max_len);
+	LOG_INF("  core: TRANSFER_ID %u -> %u, TRANSFER_DONE 0x%08x -> 0x%08x",
+		id0, id1, done0, done1);
+	LOG_INF("  core: IRQ_PENDING 0x%02x -> 0x%02x (SOT=%u/%u EOT=%u/%u)",
+		pend0, pend1, !!(pend0 & BIT(0)), !!(pend1 & BIT(0)),
+		!!(pend0 & BIT(1)), !!(pend1 & BIT(1)));
+
+	if (!(ctrl & BIT(0))) {
+		LOG_ERR("  the core is DISABLED -- CTRL enable bit is clear, so it is not");
+		LOG_ERR("  fetching anything. THIS is the fault.");
+		return;
+	}
+
+	if (id0 == id1 && done0 == done1 && !(pend1 & (BIT(0) | BIT(1)))) {
+		LOG_ERR("  the core's own counters did not move in 50 ms and neither SOT nor");
+		LOG_ERR("  EOT latched: the descriptor was submitted but the transfer never");
+		LOG_ERR("  ran. dma_status.busy said otherwise, but that is a software flag");
+		LOG_ERR("  (remaining_size/pending_bursts), not a hardware observation.");
+		LOG_ERR("  Suspect the DMA-to-TPL stream handshake: with no consumer asserting");
+		LOG_ERR("  ready on the destination stream the core stalls before the first");
+		LOG_ERR("  beat, which is silence at the DAC with every status bit healthy.");
+		return;
+	}
+
+	LOG_INF("  the core's counters ARE moving, so it is genuinely fetching from DDR");
+	LOG_INF("  and streaming to the TPL -- the feed is real and the buffer is right.");
 
 	if (!hw_cyclic) {
 		LOG_ERR("  the core has NO hardware cyclic support, so every wrap needs a");
