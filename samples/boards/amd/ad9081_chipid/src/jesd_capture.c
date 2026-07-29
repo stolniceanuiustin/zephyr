@@ -62,15 +62,25 @@ LOG_MODULE_REGISTER(jesd_capture, LOG_LEVEL_INF);
  * across all of it, never a mix -- so whatever varies has a period longer than a
  * capture, and a window that cannot contain a transition cannot time one.
  *
- * 1 MiB = 65536 beats = ~262 us is the largest size that works. A 4 MiB request
- * was tried and truncates: the ramp is perfect through beat 65535 and every beat
- * after it reads zero, with no timeout and no error reported anywhere. The cause is
- * not the burst-length register -- the driver probes max_length from the core and
- * this one answers 16 MiB -- so something else caps a single receive transfer at
- * 1 MiB, and that is not yet understood. Do not raise this without re-running
- * Rung 2, which is what caught the truncation: it validates every beat it is given,
- * so a silently short capture fails loudly there instead of quietly skewing an
- * analog measurement.
+ * 1 MiB = 65536 beats = ~262 us is the largest size that works, and the reason is
+ * now known: it is the size of the RX axi_data_offload core sitting between the
+ * DMAC and the TPL (see axi_data_offload.h). A 4 MiB request truncates -- the ramp
+ * is perfect through beat 65535 and every beat after it reads zero, with no timeout
+ * and no error anywhere -- because that core is one-shot by construction (its
+ * oneshot bit resets to ~TX_OR_RXN_PATH, and RX has TX_OR_RXN_PATH=0): it hands
+ * over exactly one bufferful and goes idle.
+ *
+ * This is why probing the burst-length register never explained it. The driver
+ * reads max_length from the core and this one answers 16 MiB, which is true and
+ * irrelevant -- the limit was one block upstream, in an IP this sample did not
+ * know existed.
+ *
+ * With the offload in bypass (main.c does this at startup) the store-and-replay
+ * cycle is gone, so this ceiling should no longer apply. It has not been retested
+ * at a larger size; if you raise it, re-run Rung 2, which is what caught the
+ * truncation in the first place. It validates every beat it is given, so a
+ * silently short capture fails loudly there instead of quietly skewing an analog
+ * measurement.
  *
  * DDR is 2 GB, so the cost is irrelevant; the limit is the hardware's, not memory.
  */

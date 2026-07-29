@@ -41,6 +41,7 @@ LOG_MODULE_REGISTER(main, LOG_LEVEL_INF);
 #include "axi_jesd.h"
 #include "axi_adxcvr.h"
 #include "axi_jesd204.h"
+#include "axi_data_offload.h"
 #include "axi_tpl.h"
 #include "jesd_fsm.h"
 #include "jesd_test.h"
@@ -148,6 +149,30 @@ int main(void)
 		LOG_INF("SUCCESS: AXI DMAC engines ready (%s, %s)",
 			rx_dma->name, tx_dma->name);
 	}
+
+	/*
+	 * Data-offload cores. These sit between each DMAC and its TPL and gate the
+	 * DMA's transfer-request line, so leaving them at their reset defaults is not
+	 * a neutral choice -- it is what made the DAC output present only ~9% of the
+	 * time and capped RX captures at 65536 beats. Bypass makes each a plain
+	 * streaming FIFO, which is the mode a continuous transceiver wants. Measured:
+	 * TX duty 9% -> 100% the moment this is set.
+	 *
+	 * Configured before the link comes up, so the datapath is already in its final
+	 * mode when the deframer starts synchronising to it.
+	 *
+	 * Not fatal: a bitstream built without bypass support cannot do this, and the
+	 * rest of the bring-up is still worth running (and still passes) with the
+	 * cores in store-and-replay mode.
+	 */
+	ret = axi_data_offload_bypass(true);
+	if (ret) {
+		LOG_WRN("data-offload bypass not available (%d) -- the datapath will be", ret);
+		LOG_WRN("  gated by the offload's fill/drain cycle; see axi_data_offload.h");
+	} else {
+		LOG_INF("SUCCESS: data-offload cores bypassed (continuous streaming)");
+	}
+	axi_data_offload_status();
 
 	LOG_INF("=== all blocks configured, running JESD204 bring-up ===");
 
