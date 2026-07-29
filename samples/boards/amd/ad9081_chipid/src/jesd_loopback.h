@@ -7,6 +7,8 @@
 #ifndef JESD_LOOPBACK_H_
 #define JESD_LOOPBACK_H_
 
+#include <stdint.h>
+
 /*
  * Rung 5: with Rung 4's tone playing continuously out of the DAC and an external
  * cable from a DAC output to an ADC input, capture the returning signal and
@@ -23,5 +25,28 @@
  * expected outcome on a board nobody has jumpered.
  */
 int jesd_loopback_verify(void);
+
+/*
+ * A single loopback measurement, with no verdict attached.
+ *
+ * Rung 5 answers "is the tone there?" in one shot, which is the right shape for a
+ * pass/fail rung but the wrong shape for hunting a fault: a sweep needs the raw
+ * numbers at each point so the *shape* of the response across frequency is
+ * visible. This exposes the same capture and correlator behind that verdict so a
+ * diagnostic can call it repeatedly without duplicating either.
+ */
+struct jesd_loopback_meas {
+	uint64_t rms;             /* per-sample RMS over channel 0's I/Q */
+	uint64_t ch_rms[4];       /* per-channel RMS, to spot a mis-cabled input */
+	uint32_t concentration;   /* permille of energy in the expected tone bin */
+	uint64_t amplitude;       /* recovered tone amplitude, vs JESD_PB_AMPLITUDE */
+};
+
+/*
+ * Capture once and measure, filling *m. Returns 0 on a successful capture (even
+ * if the input is silent -- silence is a measurement, not an error here), or
+ * negative errno if the capture itself failed.
+ */
+int jesd_loopback_measure(struct jesd_loopback_meas *m);
 
 #endif /* JESD_LOOPBACK_H_ */

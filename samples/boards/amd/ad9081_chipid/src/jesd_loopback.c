@@ -42,6 +42,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+#include <string.h>
+
 #include <zephyr/kernel.h>
 
 #include <zephyr/logging/log.h>
@@ -132,20 +134,15 @@ static uint64_t lb_isqrt(uint64_t v)
 	return x;
 }
 
-int jesd_loopback_verify(void)
+int jesd_loopback_measure(struct jesd_loopback_meas *m)
 {
 	const int16_t *buf;
 	size_t n, beats;
 	int64_t re = 0, im = 0;
 	uint64_t energy = 0;
-	uint64_t bin_mag, rms, amplitude;
-	uint32_t concentration;
 	int ret;
 
-	LOG_INF("--- Rung 5: analog DAC -> ADC loopback ---");
-	LOG_INF("expecting the Rung 4 tone back at baseband -%u MHz (RF %u MHz)",
-		JESD_PB_TONE_HZ / 1000000U,
-		2000U - JESD_PB_TONE_HZ / 1000000U);
+	memset(m, 0, sizeof(*m));
 
 	ret = jesd_capture_raw(&buf, &n);
 	if (ret) {
@@ -154,24 +151,19 @@ int jesd_loopback_verify(void)
 	}
 
 	beats = n / JESD_CAP_LANES_PER_BEAT;
-
-	/*
-	 * Survey every channel before judging one. A beat holds four (I,Q) pairs,
-	 * so lanes 0/1 are channel 0, 2/3 channel 1, and so on. Which SMA on the
-	 * FMC reaches which converter is board- and part-dependent (the connectors
-	 * are dual-labelled because the card serves both the 4-ADC AD9081 and the
-	 * 2-ADC AD9082 pinouts), so rather than assume the cable landed on channel
-	 * 0, report the RMS of all four. A signal on a channel other than 0 is
-	 * immediately visible here instead of looking like silence.
-	 */
-	LOG_INF("first 2 beats as captured (I Q per channel):");
-	for (uint32_t i = 0; i < 16; i += 8) {
-		LOG_INF("  [%02u] %6d %6d %6d %6d %6d %6d %6d %6d", i,
-			buf[i + 0], buf[i + 1], buf[i + 2], buf[i + 3],
-			buf[i + 4], buf[i + 5], buf[i + 6], buf[i + 7]);
+	if (beats == 0) {
+		return -EINVAL;
 	}
 
-	LOG_INF("per-channel RMS (which converter is the cable actually on?):");
+	/*
+	 * Survey every channel, not just the one we judge. A beat holds four
+	 * (I,Q) pairs, so lanes 0/1 are channel 0, 2/3 channel 1, and so on.
+	 * Which SMA on the FMC reaches which converter is board- and
+	 * part-dependent (the connectors are dual-labelled because the card
+	 * serves both the 4-ADC AD9081 and the 2-ADC AD9082 pinouts), so a
+	 * signal arriving on a channel other than 0 shows up here instead of
+	 * looking like silence.
+	 */
 	for (uint32_t ch = 0; ch < 4; ch++) {
 		uint64_t ch_energy = 0;
 
@@ -182,8 +174,7 @@ int jesd_loopback_verify(void)
 			ch_energy += (uint64_t)((int64_t)ci * ci +
 						(int64_t)cq * cq);
 		}
-		LOG_INF("  ch%u: RMS %llu", ch,
-			(unsigned long long)lb_isqrt(ch_energy / beats));
+		m->ch_rms[ch] = lb_isqrt(ch_energy / beats);
 	}
 
 	/*
@@ -207,10 +198,49 @@ int jesd_loopback_verify(void)
 		energy += (uint64_t)((int64_t)i_s * i_s + (int64_t)q_s * q_s);
 	}
 
-	rms = lb_isqrt(energy / beats);
+	m->rms = lb_isqrt(energy / beats);
+	m->amplitude = lb_isqrt((uint64_t)(re * re + im * im)) / beats;
 
-	LOG_INF("capture: %zu beats, per-sample RMS %llu", beats,
-		(unsigned long long)rms);
+	/*
+	 * Energy in the tone bin vs total energy. |X|^2 / (N * total) is 1.0 for a
+	 * pure tone and ~1/N for noise, independent of signal level.
+	 */
+	if (energy != 0) {
+		m->concentration =
+			(uint32_t)(((uint64_t)(re * re + im * im) * 1000U) /
+				   (energy * beats));
+	}
+
+	return 0;
+}
+
+int jesd_loopback_verify(void)
+{
+	struct jesd_loopback_meas m;
+	uint64_t rms;
+	uint32_t concentration;
+	int ret;
+
+	LOG_INF("--- Rung 5: analog DAC -> ADC loopback ---");
+	LOG_INF("expecting the Rung 4 tone back at baseband -%u MHz (RF %u MHz)",
+		JESD_PB_TONE_HZ / 1000000U,
+		2000U - JESD_PB_TONE_HZ / 1000000U);
+
+	ret = jesd_loopback_measure(&m);
+	if (ret) {
+		return ret;
+	}
+
+	rms = m.rms;
+	concentration = m.concentration;
+
+	LOG_INF("per-channel RMS (which converter is the cable actually on?):");
+	for (uint32_t ch = 0; ch < 4; ch++) {
+		LOG_INF("  ch%u: RMS %llu", ch,
+			(unsigned long long)m.ch_rms[ch]);
+	}
+
+	LOG_INF("capture: per-sample RMS %llu", (unsigned long long)rms);
 
 	if (rms < LB_SILENCE_RMS) {
 		LOG_WRN("ADC input is silent (RMS %llu < %u)",
@@ -223,22 +253,9 @@ int jesd_loopback_verify(void)
 		return -ENODATA;
 	}
 
-	/*
-	 * Energy in the tone bin vs total energy. |X|^2 / (N * total) is 1.0 for a
-	 * pure tone and ~1/N for noise, independent of signal level.
-	 */
-	bin_mag = lb_isqrt((uint64_t)(re * re + im * im));
-	amplitude = bin_mag / beats;
-
-	if (energy == 0) {
-		concentration = 0;
-	} else {
-		concentration = (uint32_t)(((uint64_t)(re * re + im * im) * 1000U) /
-					   (energy * beats));
-	}
-
 	LOG_INF("tone bin: amplitude %llu (sent %d), %u/1000 of total energy",
-		(unsigned long long)amplitude, JESD_PB_AMPLITUDE, concentration);
+		(unsigned long long)m.amplitude, JESD_PB_AMPLITUDE,
+		concentration);
 
 	if (concentration < LB_TONE_CONCENTRATION_MIN) {
 		LOG_ERR("signal present but it is not the transmitted tone");

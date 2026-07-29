@@ -20,6 +20,7 @@ target_sources(app PRIVATE
   src/jesd_capture.c
   src/jesd_playback.c
   src/jesd_loopback.c
+  src/jesd_diag.c
   src/xilinx_transceiver.c
   ${ADI_API_SRCS}
 )

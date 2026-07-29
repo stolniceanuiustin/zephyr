@@ -47,6 +47,7 @@ LOG_MODULE_REGISTER(main, LOG_LEVEL_INF);
 #include "jesd_capture.h"
 #include "jesd_playback.h"
 #include "jesd_loopback.h"
+#include "jesd_diag.h"
 
 int main(void)
 {
@@ -210,7 +211,15 @@ int main(void)
 	 */
 	ret = jesd_loopback_verify();
 	if (ret == -ENODATA) {
-		LOG_INF("Rung 5 skipped: no analog loopback cable installed");
+		/*
+		 * Nothing at the ADC. With no cable that is the expected result
+		 * and not a failure -- but a cable IS installed on this board and
+		 * it still reads as silence, while every status register reports
+		 * healthy. Run the fault isolation to narrow that down instead of
+		 * ending on an unexplained skip.
+		 */
+		LOG_INF("Rung 5 found no signal -- running fault isolation");
+		jesd_diag_loopback();
 		return 0;
 	}
 	if (ret) {
