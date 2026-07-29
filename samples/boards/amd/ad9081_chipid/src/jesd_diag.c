@@ -756,21 +756,15 @@ static void diag_dma_feed(void)
 	LOG_INF("  buffer holds the tone in DDR, so the DMA is reading real samples");
 
 	/*
-	 * Report the driver's view for contrast, but do not branch on it. busy is
-	 * (remaining_size > 0 || pending_bursts > 0) -- pure software state that a
-	 * one-burst hardware-cyclic transfer pins at 1 permanently. It is logged
-	 * beside the hardware counters below precisely so the discrepancy is visible
-	 * rather than mistaken for corroboration.
+	 * The driver's view is reported at the very end, after the hardware has been
+	 * sampled -- NOT here. dma_get_status() on an IRQ-less core pumps
+	 * dmac_service(), which reads IRQ_PENDING and writes it straight back, and
+	 * that register is write-1-to-clear: calling it first wipes the latched
+	 * SOT/EOT bits and any subsequent read of them returns 0 no matter what the
+	 * core did. Doing exactly that is what made this check report "the transfer
+	 * never ran" while capture #5 of [4] was recovering the tone at full
+	 * amplitude. Read the hardware before touching the DMA API.
 	 */
-	if (dma_get_status(tx_dma, PB_DIAG_DMA_CHANNEL, &s0) == 0) {
-		k_msleep(50);
-		if (dma_get_status(tx_dma, PB_DIAG_DMA_CHANNEL, &s1) == 0) {
-			LOG_INF("  driver view (software counters, not evidence):"
-				" busy=%u/%u pending=%u/%u",
-				s0.busy, s1.busy, s0.pending_length,
-				s1.pending_length);
-		}
-	}
 
 	/*
 	 * The open question was sustained rate: this datapath wants
@@ -857,19 +851,46 @@ static void diag_dma_feed(void)
 		return;
 	}
 
-	if (id0 == id1 && done0 == done1 && !(pend1 & (BIT(0) | BIT(1)))) {
-		LOG_ERR("  the core's own counters did not move in 50 ms and neither SOT nor");
-		LOG_ERR("  EOT latched: the descriptor was submitted but the transfer never");
-		LOG_ERR("  ran. dma_status.busy said otherwise, but that is a software flag");
-		LOG_ERR("  (remaining_size/pending_bursts), not a hardware observation.");
-		LOG_ERR("  Suspect the DMA-to-TPL stream handshake: with no consumer asserting");
-		LOG_ERR("  ready on the destination stream the core stalls before the first");
-		LOG_ERR("  beat, which is silence at the DAC with every status bit healthy.");
-		return;
+	/*
+	 * Interpreting this needs care, because under hardware cyclic a *healthy*
+	 * core also leaves TRANSFER_ID still: it replays the one submitted transfer
+	 * rather than issuing new IDs, so a frozen ID is not a stall. SOT is the
+	 * meaningful bit -- it latches when a transfer actually starts moving beats,
+	 * and nothing but a genuinely unstarted transfer leaves it clear.
+	 */
+	if (!(pend0 & (BIT(0) | BIT(1))) && id0 == id1 && done0 == done1) {
+		LOG_WRN("  no SOT/EOT latched and no counter movement. Under hardware cyclic a");
+		LOG_WRN("  static TRANSFER_ID is normal (one transfer is replayed), so this is");
+		LOG_WRN("  only suggestive -- but a never-latched SOT would mean the transfer");
+		LOG_WRN("  never started, pointing at the DMA-to-TPL stream handshake: the one");
+		LOG_WRN("  interface [6] cannot exercise, since the TPL's internal DDS bypasses");
+		LOG_WRN("  the stream input entirely.");
+	} else {
+		LOG_INF("  the core has started transfers (SOT/EOT latched or counters moved),");
+		LOG_INF("  so it is genuinely fetching from DDR and streaming to the TPL.");
 	}
 
-	LOG_INF("  the core's counters ARE moving, so it is genuinely fetching from DDR");
-	LOG_INF("  and streaming to the TPL -- the feed is real and the buffer is right.");
+	/*
+	 * Whatever the registers say, [4] is the stronger evidence and it overrides
+	 * any conclusion drawn here: if even one capture in that run recovered the
+	 * tone at amplitude, samples demonstrably complete the whole trip and no
+	 * "the transfer never ran" story can be true. The fault is then not a broken
+	 * datapath but an unreliable one, which is a different search.
+	 */
+	LOG_INF("  NOTE: if [4] shows any capture recovering the tone, the feed provably");
+	LOG_INF("  works and the fault is intermittency, not a dead stage.");
+
+	/*
+	 * Logged last, and only for contrast: busy is (remaining_size > 0 ||
+	 * pending_bursts > 0), pure software state that a one-burst hardware-cyclic
+	 * transfer pins at 1 forever. Reading it earlier would have destroyed the
+	 * SOT/EOT evidence above.
+	 */
+	if (dma_get_status(tx_dma, PB_DIAG_DMA_CHANNEL, &s0) == 0) {
+		LOG_INF("  driver view (software counters, not evidence): busy=%u pending=%u",
+			s0.busy, s0.pending_length);
+	}
+	(void)s1;
 
 	if (!hw_cyclic) {
 		LOG_ERR("  the core has NO hardware cyclic support, so every wrap needs a");
