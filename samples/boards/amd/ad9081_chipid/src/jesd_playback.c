@@ -279,11 +279,38 @@ int jesd_playback_sine(void)
 	 * above already carries the verdict.
 	 */
 	dma_stop(tx_dma, PB_DMA_CHANNEL);
-	if (pb_submit(tx_dma, true) == 0) {
-		LOG_INF("cyclic playback armed -- tone is now continuous at the DAC output");
-	} else {
-		LOG_WRN("cyclic playback not available; DAC output was driven for one buffer only");
+	ret = pb_submit(tx_dma, true);
+	if (ret) {
+		LOG_ERR("could not arm cyclic playback (%d)", ret);
+		goto stop;
 	}
+
+	/*
+	 * Confirm it is genuinely still running rather than assuming it. A cyclic
+	 * transfer that is only emulated in software stops after one buffer on
+	 * these IRQ-less cores, leaving the DAC idle -- and an idle DAC looks
+	 * exactly like a missing cable to Rung 5, which is a miserable thing to
+	 * debug. Sleep well past the buffer duration (64 beats at 250 MSPS is
+	 * ~256 ns, so 5 ms is ~20000 buffers) and require the engine to still
+	 * report busy.
+	 */
+	k_msleep(5);
+	ret = dma_get_status(tx_dma, PB_DMA_CHANNEL, &status);
+	if (ret) {
+		LOG_ERR("dma_get_status failed (%d)", ret);
+		goto stop;
+	}
+
+	if (!status.busy) {
+		LOG_ERR("cyclic playback stopped after one buffer -- the DAC is idle");
+		LOG_ERR("  the core reports no hardware cyclic support, and software");
+		LOG_ERR("  re-arming cannot run unattended without an interrupt line");
+		LOG_ERR("=== Rung 4 FAIL: cannot sustain playback ===");
+		ret = -EIO;
+		goto stop;
+	}
+
+	LOG_INF("cyclic playback confirmed running after 5 ms -- tone is continuous at the DAC");
 
 	LOG_INF("=== Rung 4 PASS: transmit path moves samples DDR -> DAC, link stayed in DATA ===");
 	LOG_INF("    (scope the DAC output to confirm the analog tone, or run Rung 5 loopback)");

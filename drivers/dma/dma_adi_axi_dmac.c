@@ -36,6 +36,7 @@ LOG_MODULE_REGISTER(adi_axi_dmac, CONFIG_DMA_LOG_LEVEL);
 #define AXI_DMAC_IRQ_SOT		BIT(0)
 #define AXI_DMAC_IRQ_EOT		BIT(1)
 #define AXI_DMAC_CTRL_ENABLE		BIT(0)
+#define AXI_DMAC_FLAGS_CYCLIC		BIT(0)
 #define AXI_DMAC_TRANSFER_SUBMIT	BIT(0)
 #define AXI_DMAC_QUEUE_FULL		BIT(0)
 
@@ -173,7 +174,16 @@ static int dmac_service(const struct device *dev, struct axi_dmac_data *data)
 				data->next_src_addr  = data->cyclic_src_addr;
 				data->next_dest_addr = data->cyclic_dest_addr;
 				data->remaining_size = data->cyclic_size;
-				dmac_submit_burst(dev, data);
+				/*
+				 * Only re-submit when the hardware is not looping
+				 * on its own; doing both would queue a second
+				 * transfer against the one the core already
+				 * restarted. The state above is still restored
+				 * either way so the channel keeps reporting busy.
+				 */
+				if (!data->hw_cyclic) {
+					dmac_submit_burst(dev, data);
+				}
 				event = DMA_STATUS_BLOCK;
 			} else {
 				event = DMA_STATUS_COMPLETE;
@@ -300,7 +310,18 @@ static int axi_dmac_start(const struct device *dev, uint32_t channel)
 	data->saw_sot = false;
 	data->pending_bursts = 0;
 
-	dmac_write(dev, AXI_DMAC_REG_FLAGS, 0);
+	/*
+	 * Hand cyclic mode to the hardware when the core supports it. The software
+	 * re-arm in dmac_service() only advances from the ISR or a get_status()
+	 * poll, so on a core synthesized without an interrupt line an unattended
+	 * cyclic transfer would stop after one buffer -- the hardware flag keeps it
+	 * running with no help from the CPU, which is what a continuous DAC
+	 * playback needs. dmac_service() still re-arms on top of this: harmless
+	 * when the hardware is already looping, and the only mechanism when the
+	 * core lacks cyclic support.
+	 */
+	dmac_write(dev, AXI_DMAC_REG_FLAGS,
+		   (data->cyclic && data->hw_cyclic) ? AXI_DMAC_FLAGS_CYCLIC : 0);
 
 	ctrl = dmac_read(dev, AXI_DMAC_REG_CTRL);
 	if (!(ctrl & AXI_DMAC_CTRL_ENABLE)) {
@@ -326,6 +347,8 @@ static int axi_dmac_stop(const struct device *dev, uint32_t channel)
 	dmac_write(dev, AXI_DMAC_REG_CTRL, 0);
 	dmac_write(dev, AXI_DMAC_REG_IRQ_MASK,
 		   AXI_DMAC_IRQ_SOT | AXI_DMAC_IRQ_EOT);
+	/* Clear cyclic so a subsequent one-shot transfer does not loop forever. */
+	dmac_write(dev, AXI_DMAC_REG_FLAGS, 0);
 
 	data->remaining_size = 0;
 	data->pending_bursts = 0;
@@ -435,11 +458,12 @@ static int axi_dmac_init(const struct device *dev)
 		[AXI_DMAC_MEM_TO_MEM] = "MEM_TO_MEM",
 	};
 
-	LOG_INF("AXI DMAC v%d.%d.%c — %s, max_len=%u, src_w=%u, dest_w=%u",
+	LOG_INF("AXI DMAC v%d.%d.%c — %s, max_len=%u, src_w=%u, dest_w=%u, cyclic=%s",
 		version >> 16, (version >> 8) & 0xff, version & 0xff,
 		dir_names[data->direction],
 		data->max_length + 1,
-		data->width_src, data->width_dest);
+		data->width_src, data->width_dest,
+		data->hw_cyclic ? "hw" : "sw-only");
 
 	return 0;
 }
