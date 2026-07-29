@@ -57,18 +57,30 @@ LOG_MODULE_REGISTER(jesd_capture, LOG_LEVEL_INF);
  * "1 in 8 captures saw signal" result says nothing about how often the signal is
  * actually there.
  *
- * 256 KiB = 16384 beats = ~65 us, long enough to hold many on/off periods of a
- * bursty output and let a per-chunk RMS scan read the duty cycle directly instead
- * of inferring it from hit counts. DDR is 2 GB; the cost is irrelevant.
+ * 256 KiB (~65 us) settled the first question: the return is not bursty at
+ * microsecond scale. A capture reads either the tone or the noise floor uniformly
+ * across all of it, never a mix -- so whatever varies has a period longer than a
+ * capture, and a window that cannot contain a transition cannot time one.
+ *
+ * 4 MiB = 262144 beats = ~1.05 ms, 16x longer, chosen to bracket the flip rather
+ * than sample around it: if the source gates the tone, a transition falls inside
+ * this window and the per-chunk scan dates it. If a 1 ms capture is still uniform,
+ * the signal is steady over that span and the variable is the capture itself.
+ * DDR is 2 GB; the cost is irrelevant.
  */
-#define CAP_BUF_BYTES   (256U * 1024U)
+#define CAP_BUF_BYTES   (4U * 1024U * 1024U)
 #define CAP_DMA_ALIGN   16U
 #define CAP_NUM_SAMPLES (CAP_BUF_BYTES / sizeof(uint16_t))
 
 static uint16_t cap_buf[CAP_NUM_SAMPLES] __aligned(CAP_DMA_ALIGN);
 
-/* Poll budget: the whole 8 KiB block should move in well under this. */
-#define CAP_POLL_TIMEOUT_MS 200
+/*
+ * Poll budget. At the link's 4 GB/s the block moves in about a millisecond, but the
+ * transfer is advanced by dma_get_status() polls rather than an interrupt, so the
+ * achieved rate depends on how often this loop runs. Allow generously -- the point
+ * of the timeout is to catch a stalled path, not a slow one.
+ */
+#define CAP_POLL_TIMEOUT_MS 2000
 
 /*
  * Run one capture into cap_buf: arm the DMAC, poll it to completion, and do the

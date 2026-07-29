@@ -557,17 +557,23 @@ static void diag_repeatability(void)
  * and the hit count cannot separate them.
  *
  * This scans a single capture in fixed-size chunks and reports each chunk's RMS.
- * The shape of that list is the answer, and there are only two possible shapes:
+ * At 65 us that already answered the first question: every chunk of every capture
+ * read uniformly high or uniformly low, never a mix, so the return is not gated at
+ * microsecond scale and the "brief bursts averaging to the noise floor" theory is
+ * false.
  *
- *   uniformly high   -> the tone is continuous; the old 2 us window was simply too
- *                       short to land on it reliably, and there is no intermittence
- *                       to explain
- *   high/low bursts  -> the DAC output really is gated; the on:off ratio and the
- *                       period are readable straight off the list, which is the
- *                       first hard number anything upstream can be checked against
+ * At 1.05 ms the same scan separates what is left, and there are only two shapes:
  *
- * Chunks are one tone period's worth of beats times a power of two, so a chunk
- * boundary never splits the tone in a way that depresses its RMS.
+ *   mixed high/low  -> the source really does gate the tone, on a period longer
+ *                      than 65 us; a transition falls inside this window, so the
+ *                      list dates it and gives the period
+ *   still uniform   -> the signal is steady across a millisecond, so it is not the
+ *                      signal that varies between captures -- it is the capture.
+ *                      Each one re-arms the RX DMAC from scratch, and that arming
+ *                      is then the only remaining variable
+ *
+ * Chunks are a multiple of the 8-beat tone period, so a chunk boundary never splits
+ * the tone in a way that depresses its RMS.
  */
 /* Integer square root (Newton), matching jesd_loopback.c's lb_isqrt(). */
 static uint64_t diag_isqrt(uint64_t v)
@@ -590,7 +596,7 @@ static uint64_t diag_isqrt(uint64_t v)
 	return x;
 }
 
-#define DIAG_CHUNK_BEATS   512U
+#define DIAG_CHUNK_BEATS   4096U
 #define DIAG_CHUNKS_MAX    64U
 #define DIAG_CHUNKS_PER_ROW 16U
 
@@ -655,18 +661,19 @@ static void diag_duty_cycle(void)
 		(unsigned int)((uint64_t)chunks * DIAG_CHUNK_BEATS * 1000000U /
 			       JESD_PB_SAMPLE_RATE));
 
-	if (on == chunks) {
-		LOG_INF("  CONTINUOUS -- the tone is always present. The [4/7] misses were");
-		LOG_INF("  a measurement artefact of the old 2 us window, not intermittence:");
-		LOG_INF("  there is no on/off behaviour left to explain.");
-	} else if (on == 0) {
-		LOG_WRN("  nothing at all in this capture -- [4/7]'s hit, if any, was in a");
-		LOG_WRN("  different window; re-run to catch one.");
+	if (on == chunks || on == 0) {
+		LOG_WRN("  UNIFORM across the whole capture (%s) -- the return does not",
+			on ? "tone throughout" : "noise floor throughout");
+		LOG_WRN("  change state within a millisecond. Combined with [4/7] showing");
+		LOG_WRN("  both outcomes at the same settings, the thing that varies is not");
+		LOG_WRN("  the signal but the capture: each one re-arms the RX DMAC, and");
+		LOG_WRN("  that arming is now the only untested variable left.");
 	} else {
-		LOG_WRN("  BURSTY -- the DAC output is genuinely gated, roughly %zu%% on.",
+		LOG_WRN("  MIXED -- the return genuinely switches state, roughly %zu%% on,",
 			on * 100U / chunks);
-		LOG_WRN("  This is a real duty cycle, not a sampling artefact: whatever");
-		LOG_WRN("  gates it must account for that ratio and period.");
+		LOG_WRN("  with a transition inside this 1 ms window. The source is gating");
+		LOG_WRN("  the tone; the chunk list above dates the transition and gives");
+		LOG_WRN("  the period to check upstream stages against.");
 	}
 }
 
