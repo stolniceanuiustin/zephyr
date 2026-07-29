@@ -199,6 +199,16 @@ static int pb_submit(const struct device *tx_dma, bool cyclic)
 	return 0;
 }
 
+int jesd_playback_buffer(const int16_t **buf, size_t *bytes)
+{
+	if (buf == NULL || bytes == NULL) {
+		return -EINVAL;
+	}
+	*buf = pb_buf;
+	*bytes = sizeof(pb_buf);
+	return 0;
+}
+
 int jesd_playback_sine(void)
 {
 	const struct device *tx_dma = DEVICE_DT_GET(DT_NODELABEL(tx_dmac));

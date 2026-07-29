@@ -52,6 +52,9 @@
  */
 
 #include <zephyr/kernel.h>
+#include <zephyr/device.h>
+#include <zephyr/drivers/dma.h>
+#include <zephyr/cache.h>
 
 #include <zephyr/logging/log.h>
 LOG_MODULE_REGISTER(jesd_diag, LOG_LEVEL_INF);
@@ -100,25 +103,26 @@ static const uint32_t diag_sweep_mhz[] = { 100, 500, 1000, 1968 };
  * whether or not it correlates with the tone we sent. */
 #define DIAG_SIGNAL_RMS 16
 
+/* AXI DMAC channel index, matching Rung 4 (single-channel core). */
+#define PB_DIAG_DMA_CHANNEL 0
+
 /*
  * Read the chip's latched interrupt status.
  *
- * The IRQB0 pin on the board is lit red. That is the chip asserting a fault, and
- * it reframes everything above: every check so far has read registers that report
- * *state* (lanes locked, link in DATA, gain 1024), none of which report an error
- * condition. The chip has had a complaint outstanding the whole time and nothing
- * in this app has ever asked what it was.
+ * The IRQB0 pin on the board is lit red, and no check here had ever asked the chip
+ * what it was complaining about -- every register consulted reported *state* (lanes
+ * locked, link in DATA, gain 1024) rather than faults.
  *
- * These bits are worth reading even though nothing here enabled them, because
+ * These bits are live without us enabling anything, because
  * adi_ad9081_device_startup_tx() ends with adi_ad9081_dac_irqs_enable_set(device,
- * 0x0030cccc00) -- bits 11/15/19/23 are PAERR0-3, the per-DAC PA-protection
- * errors, and PA protection exists to *blank the DAC output*. A latched PAERR
- * would explain the whole symptom set at once, including the parts that defeated
- * every previous hypothesis: the output is muted downstream of the digital
- * datapath, so gain still reads 1024 and the deframer still reports locked lanes;
- * it is armed per bring-up, so it is intermittent across boots rather than tied to
- * any setting; and it is a level-triggered blanking rather than a register value,
- * so no configuration readback could ever have caught it.
+ * 0x0030cccc00), whose bits 11/15/19/23 are PAERR0-3, the per-DAC PA-protection
+ * errors. Measured result: 0x40 00 00 43 f0 00 -- DATA_READY, PLL_LOCK_FAST/SLOW,
+ * DLL_LOCK23, DLL_VTH_PASS on all four datapaths. No PAERR, no SYSREF_JITTER, no
+ * LANE_FIFO, no DLL_LOST. The chip reports no fault at all, and DATA_READY on its
+ * own holds that open-drain pin low, so the LED was never a fault indication.
+ *
+ * Kept because ruling out that whole class of fault costs six SPI reads, and
+ * because a regression into a real PAERR or DLL_LOST would otherwise be invisible.
  *
  * Read as six bytes rather than through adi_ad9081_dac_irqs_status_get(), whose
  * 0x2800 multi-byte field descriptor writes 8 bytes into a uint64_t -- correct on
@@ -139,7 +143,7 @@ static void diag_irq_status(adi_ad9081_device_t *dev)
 	};
 	uint8_t st[6] = { 0 };
 
-	LOG_INF("[0/6] chip latched IRQ status (IRQB0 is lit on the board):");
+	LOG_INF("[0/7] chip latched IRQ status (IRQB0 is lit on the board):");
 
 	for (uint8_t i = 0; i < 6; i++) {
 		int32_t err = adi_ad9081_hal_reg_get(dev, REG_IRQ_STATUS0_ADDR + i,
@@ -217,7 +221,7 @@ static void diag_irq_status(adi_ad9081_device_t *dev)
  */
 static void diag_check_tx_gain(adi_ad9081_device_t *dev)
 {
-	LOG_INF("[1/6] TX fine-DUC channel gain readback (programmed 1024):");
+	LOG_INF("[1/7] TX fine-DUC channel gain readback (programmed 1024):");
 
 	for (uint8_t ch = 0; ch < 4; ch++) {
 		uint8_t raw[2] = { 0, 0 };
@@ -329,7 +333,7 @@ static bool diag_sweep(adi_ad9081_device_t *dev)
 {
 	bool found_any = false;
 
-	LOG_INF("[2/6] NCO frequency sweep (TX main + RX coarse together):");
+	LOG_INF("[2/7] NCO frequency sweep (TX main + RX coarse together):");
 	LOG_INF("  baseband tone stays at -%u MHz; only the RF carrier moves",
 		JESD_PB_TONE_HZ / 1000000U);
 
@@ -394,7 +398,7 @@ static bool diag_internal_tone(adi_ad9081_device_t *dev)
 	bool present = false;
 	int ret;
 
-	LOG_INF("[3/6] chip-internal DAC test tone (bypasses DMA + link + deframer):");
+	LOG_INF("[3/7] chip-internal DAC test tone (bypasses DMA + link + deframer):");
 
 	if (diag_retune(dev, DIAG_NCO_HZ_DEFAULT) != 0) {
 		LOG_WRN("  could not restore the NCO pair; skipping");
@@ -476,7 +480,7 @@ static void diag_repeatability(void)
 	uint32_t hits = 0;
 	uint64_t best_rms = 0;
 
-	LOG_INF("[4/6] repeatability of our own tone (%u captures at the same setting):",
+	LOG_INF("[4/7] repeatability of our own tone (%u captures at the same setting):",
 		DIAG_REPEATS);
 
 	for (uint32_t i = 0; i < DIAG_REPEATS; i++) {
@@ -531,7 +535,7 @@ static void diag_channel_tone(adi_ad9081_device_t *dev)
 	struct jesd_loopback_meas m;
 	int32_t err;
 
-	LOG_INF("[5/6] fine-DUC (channel) DC test tone -- one stage earlier than [3]:");
+	LOG_INF("[5/7] fine-DUC (channel) DC test tone -- one stage earlier than [3]:");
 
 	err = adi_ad9081_dac_dc_test_tone_offset_set(dev, AD9081_DAC_CH_0, 0x4000);
 	if (err != API_CMS_ERROR_OK) {
@@ -603,7 +607,7 @@ static void diag_fpga_dds(void)
 	struct jesd_loopback_meas m;
 	int ret;
 
-	LOG_INF("[6/6] FPGA DDS tone at the TPL input (crosses lanes + deframer):");
+	LOG_INF("[6/7] FPGA DDS tone at the TPL input (crosses lanes + deframer):");
 
 	ret = axi_tpl_tx_dds(JESD_PB_TONE_HZ, JESD_PB_SAMPLE_RATE, true);
 	if (ret) {
@@ -647,6 +651,109 @@ static void diag_fpga_dds(void)
 	(void)axi_tpl_tx_dds(0, 0, false);
 }
 
+/*
+ * Read the playback buffer back through a non-cached mapping and re-check the DMA.
+ *
+ * With [6] showing an FPGA-sourced tone completing the whole trip, everything from
+ * the TPL input onward is proven. What remains upstream is small and entirely
+ * checkable: are the samples actually in DDR where the DMA reads them, and is the
+ * engine actually still fetching them?
+ *
+ * pb_fill() flushes the buffer, and reading it back through the ordinary mapping
+ * would just hit the same D-cache lines the CPU wrote -- it would confirm the CPU's
+ * view, not memory's, which is precisely the thing in question. So invalidate first
+ * and force the read to come from DDR.
+ *
+ * The second half is the rate question, which nothing has yet asked. The transfer
+ * "completing" says the engine emptied its descriptor; it says nothing about
+ * whether it sustained 250 MSPS x 16 bytes = 4 GB/s. At that rate our 1 KiB buffer
+ * is 256 ns long and a cyclic transfer wraps it 3.9 million times a second. If the
+ * engine cannot re-arm that fast the TPL is starved between wraps and the DAC
+ * outputs mostly nothing -- which would look exactly like the observed silence
+ * while every status bit stayed healthy, and would vary per boot with bus
+ * contention. Sampling the byte counter across a known interval measures the
+ * achieved rate instead of assuming it.
+ */
+static void diag_dma_feed(void)
+{
+	const struct device *tx_dma = DEVICE_DT_GET(DT_NODELABEL(tx_dmac));
+	const int16_t *buf;
+	struct dma_status s0, s1;
+	size_t bytes;
+	bool nonzero = false;
+
+	LOG_INF("[7/7] the DMA feed itself (everything from the TPL on is proven):");
+
+	if (jesd_playback_buffer(&buf, &bytes) != 0) {
+		LOG_WRN("  playback buffer unavailable");
+		return;
+	}
+
+	/* Read what is actually in DDR, not what the CPU's cache remembers. */
+	sys_cache_data_invd_range((void *)buf, bytes);
+
+	for (size_t i = 0; i < bytes / sizeof(int16_t); i++) {
+		if (buf[i] != 0) {
+			nonzero = true;
+			break;
+		}
+	}
+
+	LOG_INF("  DDR contents, first beat: %6d %6d %6d %6d %6d %6d %6d %6d",
+		buf[0], buf[1], buf[2], buf[3],
+		buf[4], buf[5], buf[6], buf[7]);
+
+	if (!nonzero) {
+		LOG_ERR("  the playback buffer is ALL ZEROS in DDR -- the DMA has been");
+		LOG_ERR("  faithfully transmitting silence. THIS is the fault.");
+		return;
+	}
+	LOG_INF("  buffer holds the tone in DDR, so the DMA is reading real samples");
+
+	/*
+	 * Measure the achieved feed rate. Two status reads a known interval apart;
+	 * pending_length is the bytes left in the current buffer, so its movement
+	 * (accounting for wraps) is throughput. Even a coarse figure settles the
+	 * question, because the requirement is 4 GB/s and anything the CPU can
+	 * observe stepping slowly is orders of magnitude short.
+	 */
+	if (dma_get_status(tx_dma, PB_DIAG_DMA_CHANNEL, &s0) != 0) {
+		LOG_WRN("  could not read DMA status");
+		return;
+	}
+	k_msleep(50);
+	if (dma_get_status(tx_dma, PB_DIAG_DMA_CHANNEL, &s1) != 0) {
+		LOG_WRN("  could not read DMA status");
+		return;
+	}
+
+	LOG_INF("  DMA busy=%u then %u, pending %u then %u over 50 ms",
+		s0.busy, s1.busy, s0.pending_length, s1.pending_length);
+
+	if (!s1.busy) {
+		LOG_ERR("  the cyclic transfer has STOPPED -- the DAC is being fed");
+		LOG_ERR("  nothing at all, which is the silence Rung 5 sees.");
+		return;
+	}
+
+	/*
+	 * Still busy. Then the open question is sustained rate: this datapath wants
+	 * 4 GB/s (250 MSPS x 16 B/beat), and a 1 KiB cyclic buffer is only 256 ns
+	 * long, so it must wrap 3.9 million times per second. That is the one
+	 * remaining explanation consistent with every observation: the engine is
+	 * alive and the link is perfect, but the TPL is starved between wraps, so
+	 * the DAC emits brief bursts separated by long gaps. Averaged over a
+	 * capture that is indistinguishable from noise, and it would vary per boot.
+	 */
+	LOG_WRN("  engine is alive and the buffer is correct, yet no tone arrives.");
+	LOG_WRN("  Remaining suspect is sustained rate: this link needs 4 GB/s");
+	LOG_WRN("  (250 MSPS x 16 B/beat) and the 1 KiB buffer is only 256 ns long,");
+	LOG_WRN("  so it must wrap ~3.9 M times/s. If re-arming cannot keep up the");
+	LOG_WRN("  TPL starves between wraps and the DAC emits bursts with long");
+	LOG_WRN("  gaps -- which averages to the noise floor Rung 5 reports.");
+	LOG_WRN("  Next step: enlarge the playback buffer by ~1000x and retest.");
+}
+
 int jesd_diag_loopback(void)
 {
 	adi_ad9081_device_t *dev = ad9081_get_device();
@@ -670,6 +777,7 @@ int jesd_diag_loopback(void)
 	internal_ok = diag_internal_tone(dev);
 	diag_channel_tone(dev);
 	diag_fpga_dds();
+	diag_dma_feed();
 
 	/* Back to the configured plan before judging repeatability, so the repeats
 	 * measure the frequency the rest of the app actually runs at. */

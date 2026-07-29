@@ -49,4 +49,15 @@
  */
 int jesd_playback_sine(void);
 
+/*
+ * Expose the playback buffer so a diagnostic can inspect what the DMA is actually
+ * sourcing. Returns 0 and fills *buf / *bytes, or -EINVAL on a null argument.
+ *
+ * The caller is reading a buffer the DMA reads from DDR, so to see memory's view
+ * rather than the CPU's it must invalidate the range first -- pb_fill() wrote it
+ * through the D-cache and flushed, and a plain read would be answered by those same
+ * lines, confirming nothing.
+ */
+int jesd_playback_buffer(const int16_t **buf, size_t *bytes);
+
 #endif /* JESD_PLAYBACK_H_ */
