@@ -155,19 +155,24 @@ restore:
 }
 
 /*
- * Inspect a captured block. We don't yet assume the exact converter interleave
- * across the 16-byte bus, so this is deliberately lenient: dump the first
- * samples so the ramp is visible in the log, then sanity-check that the buffer
- * (a) isn't all-zero (DMA never wrote / cache stale) and (b) isn't stuck at one
- * value (link/datapath dead). A strict per-lane ramp check comes once the
- * interleave is confirmed from this raw dump.
+ * Interleave confirmed from the first raw HW capture (2026-07-28):
+ *   [00] 31d1 1919 31d1 1919 31d1 1919 31d1 1919
+ *   [08] 31d2 191a 31d2 191a 31d2 191a 31d2 191a
+ * Each 16-byte DMA beat = 8 x 16-bit samples. Within a beat the even lanes
+ * carry one ramp and the odd lanes another (the I/Q of the M8 converters -- in
+ * RAMP test mode every converter emits the identical counter, so all four even
+ * lanes match and all four odd lanes match). Both ramps advance by exactly 1
+ * per beat. This checker validates that model strictly, deriving the two ramp
+ * start values from beat 0 (they're just wherever the counters happened to be
+ * when capture began) rather than hard-coding them.
  */
+#define CAP_LANES_PER_BEAT 8 /* 16-byte bus / 2-byte sample */
+#define CAP_MISMATCH_DUMP  8 /* cap the per-mismatch log spam */
+
 int jesd_capture_analyze(const uint16_t *buf, size_t n)
 {
-	uint16_t first = buf[0];
-	bool all_zero = true;
-	bool all_same = true;
-	size_t ramp_steps = 0;
+	uint16_t base_even, base_odd;
+	size_t beats, bad = 0;
 
 	LOG_INF("first 16 samples:");
 	for (size_t i = 0; i < 16 && i < n; i += 8) {
@@ -176,40 +181,59 @@ int jesd_capture_analyze(const uint16_t *buf, size_t n)
 			buf[i + 4], buf[i + 5], buf[i + 6], buf[i + 7]);
 	}
 
-	for (size_t i = 0; i < n; i++) {
-		if (buf[i] != 0) {
-			all_zero = false;
+	if (n < CAP_LANES_PER_BEAT * 2) {
+		LOG_ERR("capture too short to validate (%zu samples)", n);
+		return -EINVAL;
+	}
+
+	base_even = buf[0];
+	base_odd = buf[1];
+
+	/* All-zero / all-constant fall out of the strict check, but call them out
+	 * explicitly -- they're the two classic DMA/datapath failures. */
+	if (base_even == 0 && base_odd == 0) {
+		bool all_zero = true;
+
+		for (size_t i = 0; i < n; i++) {
+			if (buf[i] != 0) {
+				all_zero = false;
+				break;
+			}
 		}
-		if (buf[i] != first) {
-			all_same = false;
+		if (all_zero) {
+			LOG_ERR("capture is all-zero: DMA didn't write, or no samples arrived");
+			return -EIO;
 		}
 	}
 
-	/*
-	 * Count adjacent +1 steps as a rough "does it ramp?" signal. With M8
-	 * interleave the stride may not be 1 sample, but a ramp still produces
-	 * many incrementing neighbours; a dead/garbage buffer produces few.
-	 */
-	for (size_t i = 1; i < n; i++) {
-		if ((uint16_t)(buf[i] - buf[i - 1]) == 1U) {
-			ramp_steps++;
+	beats = n / CAP_LANES_PER_BEAT;
+	for (size_t b = 0; b < beats; b++) {
+		uint16_t exp_even = (uint16_t)(base_even + b);
+		uint16_t exp_odd = (uint16_t)(base_odd + b);
+
+		for (size_t l = 0; l < CAP_LANES_PER_BEAT; l++) {
+			uint16_t v = buf[b * CAP_LANES_PER_BEAT + l];
+			uint16_t exp = (l & 1) ? exp_odd : exp_even;
+
+			if (v != exp) {
+				if (bad < CAP_MISMATCH_DUMP) {
+					LOG_WRN("  mismatch beat %zu lane %zu: got %04x want %04x",
+						b, l, v, exp);
+				}
+				bad++;
+			}
 		}
 	}
 
-	LOG_INF("analysis: all_zero=%d all_same=%d adjacent_+1_steps=%zu/%zu",
-		all_zero, all_same, ramp_steps, n - 1);
+	LOG_INF("ramp check: base even=0x%04x odd=0x%04x, %zu beats, %zu mismatches",
+		base_even, base_odd, beats, bad);
 
-	if (all_zero) {
-		LOG_ERR("capture is all-zero: DMA didn't write, or samples never arrived");
+	if (bad) {
+		LOG_ERR("=== Rung 2 FAIL: %zu/%zu samples off the ramp ===", bad, n);
 		return -EIO;
 	}
-	if (all_same) {
-		LOG_ERR("capture is a constant 0x%04x: datapath stuck, no live samples",
-			first);
-		return -EIO;
-	}
 
-	LOG_INF("=== Rung 2 PASS: live samples captured to DDR ===");
-	LOG_INF("    (ramp interleave to be confirmed from the dump above)");
+	LOG_INF("=== Rung 2 PASS: clean ramp captured to DDR (all %zu samples) ===",
+		n);
 	return 0;
 }
