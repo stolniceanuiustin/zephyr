@@ -45,8 +45,15 @@ struct pn_case {
 };
 
 static const struct pn_case pn_cases[] = {
-	{ "PN9",  AD9081_TMODE_PN9,  AXI_TPL_PN9  },
-	{ "PN23", AD9081_TMODE_PN23, AXI_TPL_PN23 },
+	{ "PN9",   AD9081_TMODE_PN9,  AXI_TPL_PN9   },
+	/*
+	 * The AXI ADC core distinguishes two PN23 conventions; converters that
+	 * generate PN on-chip (like the AD9082 ADC datapath) use the "A" variant
+	 * -- pairing chip PN23 with AXI_TPL_PN23 (6) leaves the checker unable to
+	 * sync (PN_OOS on every lane), while AXI_TPL_PN23A (1) locks. This mirrors
+	 * no-OS fmcdaq2, which monitors AD9680 PN23 as AXI_ADC_PN23A.
+	 */
+	{ "PN23A", AD9081_TMODE_PN23, AXI_TPL_PN23A },
 };
 
 int jesd_test_rx_pn(void)
