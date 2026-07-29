@@ -266,16 +266,19 @@ int jesd_loopback_verify(void)
 	rms = m.rms;
 
 	/*
-	 * Judge on whichever I/Q pairing actually describes the buffer. The chip's
-	 * virtual converters are ordered I,Q,I,Q, but what reaches DDR has been
-	 * through the FPGA transport core and two lane maps, so the pairing is
-	 * measured rather than assumed -- see jesd_loopback_meas. The wrong pairing
-	 * scores ~500 on a perfectly good signal, which would read as permanent
-	 * quadrature imbalance.
+	 * Judge on the interleaved pairing, which the diagnostic settled: the
+	 * chip's main-datapath DC test tone came back as lanes 12290/0/8/0/...,
+	 * with lane 1 exactly zero rather than noise. An upconverted DC offset is
+	 * real-valued, so a zero Q on the odd lane is precisely what an interleaved
+	 * I,Q,I,Q buffer produces -- matching the virtual-converter order the chip
+	 * is programmed with.
+	 *
+	 * The split pairing is still measured and reported, because it is the cheap
+	 * check that would catch this being wrong again, but it deliberately does
+	 * not feed the verdict: taking the better of two scores would let an
+	 * accidental correlation manufacture a pass.
 	 */
-	bool split = m.concentration_split > m.concentration;
-
-	concentration = split ? m.concentration_split : m.concentration;
+	concentration = m.concentration;
 
 	LOG_INF("per-lane RMS (which slots carry energy):");
 	LOG_INF("  %llu %llu %llu %llu %llu %llu %llu %llu",
@@ -288,9 +291,8 @@ int jesd_loopback_verify(void)
 		(unsigned long long)m.lane_rms[6],
 		(unsigned long long)m.lane_rms[7]);
 
-	LOG_INF("I/Q pairing: interleaved (0,1) scores %u, split (0,4) scores %u -> %s",
-		m.concentration, m.concentration_split,
-		split ? "split" : "interleaved");
+	LOG_INF("I/Q pairing: interleaved (0,1) scores %u, split (0,4) scores %u (judging interleaved)",
+		m.concentration, m.concentration_split);
 
 	LOG_INF("capture: per-sample RMS %llu", (unsigned long long)rms);
 
@@ -306,8 +308,8 @@ int jesd_loopback_verify(void)
 	}
 
 	LOG_INF("tone bin: amplitude %llu (sent %d), %u/1000 of total energy",
-		(unsigned long long)(split ? m.amplitude_split : m.amplitude),
-		JESD_PB_AMPLITUDE, concentration);
+		(unsigned long long)m.amplitude, JESD_PB_AMPLITUDE,
+		concentration);
 
 	if (concentration < LB_TONE_CONCENTRATION_MIN) {
 		LOG_ERR("signal present but it is not the transmitted tone");

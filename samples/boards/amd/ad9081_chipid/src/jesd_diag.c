@@ -11,8 +11,23 @@
  * losing the signal, in a way nothing readable admits to.
  *
  * Guessing at that is expensive: each hypothesis costs a rebuild and a reflash.
- * So rather than change one setting and retry, this runs three checks that
- * partition the remaining possibilities, and reports what each one found.
+ * So rather than change one setting and retry, these checks partition the
+ * remaining possibilities and report what each one found.
+ *
+ * What the earlier rounds established, so it is not re-litigated: the balun
+ * passes 500 kHz - 9 GHz, so 2 GHz is not a band problem. Every NCO frequency
+ * tuning word reads back exactly as requested, so the silence at the swept
+ * frequencies is not a failed retune. The TX channel gains read back as the
+ * programmed 1024, so the datapath is not muted. And the chip's main-datapath DC
+ * test tone returns through the cable at full amplitude, which proves the DAC
+ * output stage, balun, cable, ADC, RX DDC, framer, RX link, RX DMA and the TX
+ * main NCO all work.
+ *
+ * That leaves our samples failing somewhere in deframer -> fine DUC -> main DUC,
+ * the only stretch the internal tone skips -- and failing *intermittently*: the
+ * same verified frequency returned RMS 4567 on one boot and RMS 8 on the next.
+ * An intermittent fault is not a wrong register value, so the last two checks
+ * measure how often it works and which half of that stretch loses it.
  *
  * SPDX-License-Identifier: Apache-2.0
  */
@@ -46,13 +61,13 @@ LOG_MODULE_REGISTER(jesd_diag, LOG_LEVEL_INF);
  *   - 100 MHz is low enough that essentially nothing in the analog path can be
  *     blamed: well inside the balun's range, far from Nyquist, no aliasing.
  *   - 500 and 1000 MHz fill in the middle so a rolloff is visible as a trend.
- *   - 1968.75 MHz (the current setting) sits near the Nyquist edge and is the
- *     point that is known to fail, kept so the sweep includes the failing case
- *     for comparison rather than only working ones.
+ *   - 1968.75 MHz is the configured plan, kept so the sweep always includes the
+ *     frequency the rest of the app actually runs at.
  *
- * A flat noise floor across all four says the fault is not frequency-dependent
- * at all, which rules out the whole class of band/alias explanations in one boot
- * and points at the datapath or the DAC output instead.
+ * With the FTW readback confirming each point was programmed, a flat noise floor
+ * across all four rules out the whole class of band and alias explanations --
+ * which is what happened, so this check has already served its purpose and is
+ * retained mainly to detect a regression into frequency dependence.
  */
 static const uint32_t diag_sweep_mhz[] = { 100, 500, 1000, 1968 };
 
@@ -74,7 +89,7 @@ static const uint32_t diag_sweep_mhz[] = { 100, 500, 1000, 1968 };
  */
 static void diag_check_tx_gain(adi_ad9081_device_t *dev)
 {
-	LOG_INF("[1/3] TX fine-DUC channel gain readback (programmed 1024):");
+	LOG_INF("[1/5] TX fine-DUC channel gain readback (programmed 1024):");
 
 	for (uint8_t ch = 0; ch < 4; ch++) {
 		uint8_t raw[2] = { 0, 0 };
@@ -186,7 +201,7 @@ static bool diag_sweep(adi_ad9081_device_t *dev)
 {
 	bool found_any = false;
 
-	LOG_INF("[2/3] NCO frequency sweep (TX main + RX coarse together):");
+	LOG_INF("[2/5] NCO frequency sweep (TX main + RX coarse together):");
 	LOG_INF("  baseband tone stays at -%u MHz; only the RF carrier moves",
 		JESD_PB_TONE_HZ / 1000000U);
 
@@ -251,7 +266,7 @@ static bool diag_internal_tone(adi_ad9081_device_t *dev)
 	bool present = false;
 	int ret;
 
-	LOG_INF("[3/3] chip-internal DAC test tone (bypasses DMA + link + deframer):");
+	LOG_INF("[3/5] chip-internal DAC test tone (bypasses DMA + link + deframer):");
 
 	if (diag_retune(dev, DIAG_NCO_HZ_DEFAULT) != 0) {
 		LOG_WRN("  could not restore the NCO pair; skipping");
@@ -314,6 +329,123 @@ static bool diag_internal_tone(adi_ad9081_device_t *dev)
 	return present;
 }
 
+/*
+ * Repeat one measurement of our own tone at the configured frequency.
+ *
+ * Across two boots the identical 1968 MHz point returned RMS 4567 once and RMS 8
+ * the next time, with the frequency tuning words verified identical and correct
+ * both times. That rules out every static misconfiguration -- a wrong register
+ * value does not work once and then stop -- so the useful question is no longer
+ * "which setting is wrong" but "how often does it work". A tone that appears in a
+ * minority of captures points at something that has to line up in time rather
+ * than in configuration: deframer elastic-buffer or LMFC alignment, or SYSREF
+ * timing, none of which the lane-locked status bits report on.
+ */
+#define DIAG_REPEATS 8
+
+static void diag_repeatability(void)
+{
+	uint32_t hits = 0;
+	uint64_t best_rms = 0;
+
+	LOG_INF("[4/5] repeatability of our own tone (%u captures at the same setting):",
+		DIAG_REPEATS);
+
+	for (uint32_t i = 0; i < DIAG_REPEATS; i++) {
+		struct jesd_loopback_meas m;
+
+		if (jesd_loopback_measure(&m) != 0) {
+			continue;
+		}
+
+		if (m.rms > best_rms) {
+			best_rms = m.rms;
+		}
+		if (m.rms >= DIAG_SIGNAL_RMS) {
+			hits++;
+		}
+
+		LOG_INF("  #%u: RMS %llu, tone %u/1000 (lane0 %llu, lane1 %llu)",
+			i, (unsigned long long)m.rms, m.concentration,
+			(unsigned long long)m.lane_rms[0],
+			(unsigned long long)m.lane_rms[1]);
+	}
+
+	LOG_INF("  %u/%u captures saw signal, best RMS %llu", hits,
+		DIAG_REPEATS, (unsigned long long)best_rms);
+
+	if (hits == 0) {
+		LOG_INF("  never, this boot -- yet it worked on a previous boot at this");
+		LOG_INF("  same verified frequency, so the fault varies per bring-up");
+		LOG_INF("  (alignment/timing), not per setting.");
+	} else if (hits < DIAG_REPEATS) {
+		LOG_WRN("  INTERMITTENT within a single boot -- the datapath is not");
+		LOG_WRN("  deterministically delivering samples to the DAC.");
+	} else {
+		LOG_INF("  consistently present this boot.");
+	}
+}
+
+/*
+ * Enable the DC test tone at the *channel* (fine DUC) datapath rather than the
+ * main one. The main-datapath tone used in check 3 injects downstream of both the
+ * deframer and the fine DUC, so its success narrows the fault only to "somewhere
+ * before the main DUC". This injects one stage earlier -- downstream of the
+ * deframer, upstream of the main DUC -- splitting that span in half:
+ *
+ *   returns  -> the fine DUC and everything after it are fine, so the deframer
+ *               is not handing our samples on despite reporting locked lanes
+ *   silent   -> the fine DUC stage itself is where the signal dies, even though
+ *               its gain reads back as the programmed 1024
+ */
+static void diag_channel_tone(adi_ad9081_device_t *dev)
+{
+	struct jesd_loopback_meas m;
+	int32_t err;
+
+	LOG_INF("[5/5] fine-DUC (channel) DC test tone -- one stage earlier than [3]:");
+
+	err = adi_ad9081_dac_dc_test_tone_offset_set(dev, AD9081_DAC_CH_0, 0x4000);
+	if (err != API_CMS_ERROR_OK) {
+		LOG_WRN("  channel test tone offset failed (%d)", err);
+		return;
+	}
+
+	err = adi_ad9081_dac_dc_test_tone_en_set(dev, AD9081_DAC_CH_0, 1);
+	if (err != API_CMS_ERROR_OK) {
+		LOG_WRN("  channel test tone enable failed (%d)", err);
+		return;
+	}
+
+	k_msleep(2);
+
+	if (jesd_loopback_measure(&m) == 0) {
+		LOG_INF("  RMS %llu, lanes %llu/%llu/%llu/%llu/%llu/%llu/%llu/%llu",
+			(unsigned long long)m.rms,
+			(unsigned long long)m.lane_rms[0],
+			(unsigned long long)m.lane_rms[1],
+			(unsigned long long)m.lane_rms[2],
+			(unsigned long long)m.lane_rms[3],
+			(unsigned long long)m.lane_rms[4],
+			(unsigned long long)m.lane_rms[5],
+			(unsigned long long)m.lane_rms[6],
+			(unsigned long long)m.lane_rms[7]);
+
+		if (m.rms >= DIAG_SIGNAL_RMS) {
+			LOG_INF("  the fine DUC reaches the DAC: the fault is the");
+			LOG_INF("  deframer -> fine DUC handoff of our JESD samples.");
+		} else {
+			LOG_WRN("  silent: the fine DUC stage is where the signal dies,");
+			LOG_WRN("  despite its gain reading back as the programmed 1024.");
+		}
+	}
+
+	err = adi_ad9081_dac_dc_test_tone_en_set(dev, AD9081_DAC_CH_0, 0);
+	if (err != API_CMS_ERROR_OK) {
+		LOG_WRN("  could not disable the channel test tone (%d)", err);
+	}
+}
+
 int jesd_diag_loopback(void)
 {
 	adi_ad9081_device_t *dev = ad9081_get_device();
@@ -331,6 +463,12 @@ int jesd_diag_loopback(void)
 	diag_check_tx_gain(dev);
 	swept_ok = diag_sweep(dev);
 	internal_ok = diag_internal_tone(dev);
+	diag_channel_tone(dev);
+
+	/* Back to the configured plan before judging repeatability, so the repeats
+	 * measure the frequency the rest of the app actually runs at. */
+	(void)diag_retune(dev, DIAG_NCO_HZ_DEFAULT);
+	diag_repeatability();
 
 	/* Restore the configured frequency plan whatever happened, so the board
 	 * is left in the state the rest of the app documents. */
@@ -348,10 +486,13 @@ int jesd_diag_loopback(void)
 		LOG_INF("  frequencies were never programmed, so their silence says");
 		LOG_INF("  nothing about the analog path.");
 	} else if (internal_ok) {
-		LOG_INF("the chip's own tone reaches the ADC but ours never does:");
-		LOG_INF("  the DAC output and the whole analog path are fine, so the");
-		LOG_INF("  fault is upstream -- our samples are not reaching the DAC");
-		LOG_INF("  core despite the deframer reporting locked lanes.");
+		LOG_INF("the chip's own tone reaches the ADC but ours does not:");
+		LOG_INF("  the DAC output stage, balun, cable, ADC, RX DDC, framer,");
+		LOG_INF("  RX link and RX DMA all work -- and so does the TX main NCO,");
+		LOG_INF("  since it is what upconverts that DC offset into a tone.");
+		LOG_INF("  With every FTW verified correct, the fault is confined to");
+		LOG_INF("  the stretch our samples take and the internal tone skips:");
+		LOG_INF("  deframer -> fine DUC -> main DUC. See [5] for which half.");
 	} else {
 		LOG_INF("nothing reaches the ADC at any frequency, not even a tone");
 		LOG_INF("  generated inside the chip downstream of our entire");
