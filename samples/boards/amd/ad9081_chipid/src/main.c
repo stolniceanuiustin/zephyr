@@ -45,6 +45,7 @@ LOG_MODULE_REGISTER(main, LOG_LEVEL_INF);
 #include "jesd_fsm.h"
 #include "jesd_test.h"
 #include "jesd_capture.h"
+#include "jesd_playback.h"
 
 int main(void)
 {
@@ -184,5 +185,18 @@ int main(void)
 		return ret;
 	}
 	LOG_INF("SUCCESS: ADC samples captured to DDR via DMA");
+
+	/*
+	 * Rung 4 datapath validation: the mirror of Rung 2, running the other
+	 * way -- push a sine table from DDR through the TX AXI DMAC into the DAC
+	 * datapath. First rung to exercise the transmit direction at all, and it
+	 * leaves a cyclic transfer running so the tone can be scoped.
+	 */
+	ret = jesd_playback_sine();
+	if (ret) {
+		LOG_WRN("Rung 4 DAC playback failed (%d)", ret);
+		return ret;
+	}
+	LOG_INF("SUCCESS: sine played out DDR -> DMA -> DAC");
 	return 0;
 }
