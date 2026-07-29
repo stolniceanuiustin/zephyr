@@ -137,15 +137,15 @@ int jesd204_bringup(void)
 	 * measured 0x4A1 = 0x41 on this board -- and nothing clears it on a 204B
 	 * link: the vendor API clears only bit7 BUF_PROTECTION, and no-OS clears
 	 * bit6 only for 204C on rev<3 silicon. A 204B port therefore inherits it
-	 * enabled, which is what gated the DAC output on and off at ~2.7 ms with
-	 * every status register reading healthy.
+	 * enabled, so this write brings the link in line with what the reference
+	 * code does for 204C.
 	 *
-	 * It also explains the asymmetry that shaped the whole investigation: the
-	 * chip's internal DAC and fine-DUC test tones inject downstream of this
-	 * buffer and were always continuous, while DMA-sourced samples must cross
-	 * it. PHASE_DIFF (0x4A5) reads a stable 4 here, so the phase is not actually
-	 * drifting -- the protection is asserting on a margin this link does not
-	 * need, rather than reporting a real alignment problem.
+	 * It was found while chasing the ~2.7 ms gating of the DAC output, and it is
+	 * NOT the cause: clearing it here (confirmed 0x41 -> 0x01 by readback) left
+	 * the gating unchanged. PHASE_DIFF (0x4A5) also reads a stable 4, so the
+	 * protection had no marginal phase to act on in the first place. Kept because
+	 * inheriting a reset default the reference code clears is worth not doing,
+	 * not because it fixes anything.
 	 */
 	err = adi_ad9081_hal_bf_set(dev, REG_JRX_TPL_1_ADDR,
 				    BF_JRX_TPL_BUF_PROTECT_EN_INFO, 0);

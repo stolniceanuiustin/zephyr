@@ -16,18 +16,29 @@
  *
  * What the earlier rounds established, so it is not re-litigated: the balun
  * passes 500 kHz - 9 GHz, so 2 GHz is not a band problem. Every NCO frequency
- * tuning word reads back exactly as requested, so the silence at the swept
- * frequencies is not a failed retune. The TX channel gains read back as the
- * programmed 1024, so the datapath is not muted. And the chip's main-datapath DC
- * test tone returns through the cable at full amplitude, which proves the DAC
- * output stage, balun, cable, ADC, RX DDC, framer, RX link, RX DMA and the TX
- * main NCO all work.
+ * tuning word reads back exactly as requested, so silence at a swept frequency is
+ * not a failed retune. The TX channel gains read back as the programmed 1024, so
+ * the datapath is not muted. The chip's main-datapath and fine-DUC DC test tones
+ * both return through the cable at full amplitude, proving DAC output stage,
+ * balun, cable, ADC, RX DDC, framer, RX link, RX DMA and the TX NCOs all work.
+ * And the JRX elastic-buffer protection (0x4A1 bit6) has been cleared with no
+ * effect on the symptom, so it is not the mechanism either.
  *
- * That leaves our samples failing somewhere in deframer -> fine DUC -> main DUC,
- * the only stretch the internal tone skips -- and failing *intermittently*: the
- * same verified frequency returned RMS 4567 on one boot and RMS 8 on the next.
- * An intermittent fault is not a wrong register value, so two of these checks
- * measure how often it works and which half of that stretch loses it.
+ * The symptom is now characterised rather than merely observed: the return is
+ * *gated*, ~200-300 us on against ~2500-2800 us off, about 9% duty ([8] and [9]).
+ * Nothing in software asks for that. It is a measurement, not an inference -- a
+ * capture straddling a transition gives the same amplitude by two independent
+ * routes (RMS = sqrt(f)*A and concentration = f*500 both yield A ~ 4580, matching
+ * the 4576 that full-window captures read).
+ *
+ * That reframes every check here. Our DMA-sourced tone *does* complete the whole
+ * trip -- DDR -> DMA -> TPL -> lanes -> deframer -> DUC -> DAC -> cable -> ADC ->
+ * DMA -> DDR -- at full amplitude, just not continuously. So no stage is dead,
+ * and any check that reads presence-or-absence from a single capture is measuring
+ * the gate phase it happened to land in, not the stage it means to test. At 9%
+ * duty a lone capture is a coin flip. Every check that judges presence therefore
+ * samples across several gate periods and reports a duty cycle; [2] documents the
+ * arithmetic behind how many samples that takes.
  *
  * The board's IRQB0 LED being lit turned out to be a red herring: the latched
  * status reads 0x40 00 00 43 f0 00, which is DATA_READY plus PLL and DLL *lock*
@@ -38,28 +49,44 @@
  * it reports what the chip was already complaining about rather than anything
  * provoked here.
  *
- * What did narrow it: the fine-DUC test tone in [5] returns at full amplitude,
- * matching the main-DUC tone in [3]. So fine DUC -> main DUC -> DAC -> balun ->
- * cable -> ADC -> framer -> RX link -> RX DMA -> DDR is proven end to end, and
- * the suspect stretch collapses to a single interface: the deframer handing
- * samples into the fine DUC. Both those tones are injected inside the chip,
- * downstream of the deframer, so neither can see across it. Check [6] approaches
- * that interface from the other side with a tone generated in the FPGA at the TPL
- * input, which crosses the lanes and the deframer but skips DDR and the DMA --
- * bracketing the fault between the two.
+ * RESOLVED. The gate was an ADI axi_data_offload core sitting between the TX DMAC
+ * and the TPL, which this port had never configured -- see axi_data_offload.h. It
+ * is a store-and-replay buffer: it accumulates 1 MiB, streams it out at line rate
+ * (65536 beats / 250 MSPS = 262 us), then goes silent while refilling. That is the
+ * entire 9% duty and the 262 us on-time, from one number. main.c now puts both
+ * cores into bypass at startup and the measured duty is 64/64.
+ *
+ * Nothing was faulty. The block was doing exactly what it was built to do, and the
+ * port had never told it to do anything else. The reason this took four wrong
+ * answers is worth recording: every hypothesis was formed from register readbacks
+ * of blocks we already knew about, and no readback can reveal a block absent from
+ * your model of the datapath. The reference HDL states plainly that the offload
+ * gates the DMA's transfer-request line; reading it earlier would have skipped the
+ * whole detour.
+ *
+ * The checks are kept, at their historical numbering, because they are what makes
+ * that claim falsifiable and because each one still bounds something: [2] proves the
+ * gate was frequency-independent, [6] places it relative to the TPL input, [10]
+ * rules out the elastic-buffer protection, and [12] is now a regression check that
+ * the bypass is still in effect.
  *
  * SPDX-License-Identifier: Apache-2.0
  */
+
+#include <string.h>
 
 #include <zephyr/kernel.h>
 #include <zephyr/device.h>
 #include <zephyr/drivers/dma.h>
 #include <zephyr/cache.h>
+#include <zephyr/kernel/mm.h>
+#include <zephyr/sys/device_mmio.h>
 
 #include <zephyr/logging/log.h>
 LOG_MODULE_REGISTER(jesd_diag, LOG_LEVEL_INF);
 
 #include "ad9081.h"
+#include "axi_data_offload.h"
 #include "axi_tpl.h"
 #include "jesd_capture.h"
 #include "jesd_diag.h"
@@ -78,22 +105,43 @@ LOG_MODULE_REGISTER(jesd_diag, LOG_LEVEL_INF);
 #define DIAG_NCO_HZ_DEFAULT 2000000000LL
 
 /*
- * Sweep points for the TX/RX NCO pair, in MHz. Spread across the ADC's first
- * Nyquist zone (0-2000 MHz) rather than clustered, because the question is the
- * *shape* of the response, not the value at any one point:
- *
- *   - 100 MHz is low enough that essentially nothing in the analog path can be
- *     blamed: well inside the balun's range, far from Nyquist, no aliasing.
- *   - 500 and 1000 MHz fill in the middle so a rolloff is visible as a trend.
- *   - 1968.75 MHz is the configured plan, kept so the sweep always includes the
- *     frequency the rest of the app actually runs at.
- *
- * With the FTW readback confirming each point was programmed, a flat noise floor
- * across all four rules out the whole class of band and alias explanations --
- * which is what happened, so this check has already served its purpose and is
- * retained mainly to detect a regression into frequency dependence.
+ * Sweep points for the TX/RX NCO pair, in MHz, spanning the ADC's first Nyquist
+ * zone. 1968 is kept last so the sweep always includes the frequency the rest of
+ * the app actually runs at.
  */
-static const uint32_t diag_sweep_mhz[] = { 100, 500, 1000, 1968 };
+static const uint32_t diag_sweep_mhz[] = {
+	10,  25,  50,  75,   100,  150,  200,  300,
+	400, 500, 700, 900,  1200, 1500, 1750, 1968,
+};
+
+/*
+ * Probes per sweep point.
+ *
+ * This number is the whole correctness of the sweep, so it is derived rather than
+ * picked. The return is gated at ~9% duty with a ~2.8 ms period ([8] and [9]), and
+ * the earlier version of this check took *one* full measurement per point. At 9%
+ * duty a single sample reads "signal" 9% of the time, so four points yielding one
+ * hit is precisely what a gate with no frequency dependence predicts -- expected
+ * 0.36 hits -- and reading that one hit at 100 MHz as a property *of* 100 MHz is
+ * the error this check used to invite. Simply densifying the point list would have
+ * made that worse rather than better: 16 single-sample points scatter ~1.4 hits
+ * across the band, and scattered hits always look like a pattern.
+ *
+ * So each point is sampled long enough to have certainly seen both gate phases. At
+ * ~340 us per probe, 64 probes span ~22 ms -- about eight gate periods, enough that
+ * an on-window cannot be missed by luck. Each point then reports a duty cycle
+ * instead of a coin flip, and comparing points becomes meaningful:
+ *
+ *   duty ~9% at every point -> the gate is frequency-independent and the 100 MHz
+ *                              hit was sampling luck. The tone gets through
+ *                              everywhere, gated identically.
+ *   duty varies with f      -> the gating mechanism is itself frequency-dependent,
+ *                              which is a far stronger clue than presence/absence
+ *                              and points at the DUC/NCO path rather than the link.
+ *   duty 0 at some points   -> a real band limit, and now trustworthy: zero out of
+ *                              64 probes is not luck.
+ */
+#define DIAG_SWEEP_PROBES 64U
 
 /* Recovered-tone concentration (permille) that counts as "the tone came back".
  * Well above the ~13 that broadband noise scores, well below the ~999 of a clean
@@ -104,36 +152,55 @@ static const uint32_t diag_sweep_mhz[] = { 100, 500, 1000, 1968 };
  * whether or not it correlates with the tone we sent. */
 #define DIAG_SIGNAL_RMS 16
 
-/* AXI DMAC channel index, matching Rung 4 (single-channel core). */
-#define PB_DIAG_DMA_CHANNEL 0
-
-/* How much of the playback buffer to read back when checking DDR contents. The
- * buffer is megabytes; a few KiB is plenty to tell a written buffer from an empty
- * one, and keeps the cache invalidate proportionate. */
-#define PB_DIAG_INSPECT_BYTES 4096U
+/*
+ * TX DMAC, addressed directly. [7] counts buffer wraps out of IRQ_PENDING, and
+ * doing that through the DMA API is not possible: dma_get_status() pumps the
+ * driver's state machine, which reads IRQ_PENDING and writes it straight back, and
+ * the register is write-1-to-clear -- so the API call consumes the very events
+ * being counted.
+ */
+#define DIAG_DMAC_TX_BASE          0x9C430000UL
+#define DIAG_DMAC_REG_IRQ_PENDING  0x0084
+#define DIAG_DMAC_REG_CTRL         0x0400
+#define DIAG_DMAC_REG_TRANSFER_ID  0x0404
+#define DIAG_DMAC_REG_INTF_DESC    0x0010
 
 /*
- * TX DMAC registers, read directly rather than through the DMA API.
+ * Bus width, read from the core instead of assumed.
  *
- * The driver probes hardware cyclic support and the maximum burst length at init
- * and keeps both in its private data, where a consumer cannot see them -- yet they
- * decide whether buffer size can possibly matter here. Re-probing the two
- * registers is a couple of reads and keeps the diagnostic's claims answerable from
- * the core instead of from an assumption about the bitstream. FLAGS bit0 reads back
- * set only if the core was synthesized with cyclic support; writing 0xFFFFFFFF to
- * X_LENGTH and reading it back gives the largest burst it can hold, but the value
- * is only read here (the transfer is live, so it must not be disturbed).
+ * INTF_DESC encodes bytes-per-beat as a log2 exponent per interface: source width in
+ * bits 11:8, destination width in bits 3:0. Everything in this sample was written
+ * around "the bus is 16 bytes wide", which sets both the beat layout and the 4 GB/s
+ * figure that the whole bandwidth argument rests on -- and that number was taken from
+ * the HDL handoff, never read back. If the core is actually 32 bytes wide the demand
+ * is 8 GB/s, not 4, and every capacity claim made so far is off by 2x. Cheap to check,
+ * so it is checked.
  */
-#define PB_DIAG_DMAC_BASE       0x9C430000UL
-#define PB_DIAG_DMAC_REG_FLAGS  0x040C
-#define PB_DIAG_DMAC_REG_X_LENGTH 0x0418
-#define PB_DIAG_DMAC_REG_CTRL          0x0400
-#define PB_DIAG_DMAC_REG_TRANSFER_ID   0x0404
-#define PB_DIAG_DMAC_REG_TRANSFER_DONE 0x0428
-#define PB_DIAG_DMAC_REG_IRQ_PENDING   0x0084
+#define DIAG_INTF_BPB_SRC_MASK  GENMASK(11, 8)
+#define DIAG_INTF_BPB_DEST_MASK GENMASK(3, 0)
 
-/* Bytes the JESD link consumes per sample period: 8 converters x NP16. */
-#define PB_DIAG_BEAT_BYTES 16U
+/*
+ * Bytes the JESD link consumes per sample period: 8 converters x NP16.
+ *
+ * Confirmed against the reference HDL rather than inherited from the handoff. For
+ * this build (JESD_MODE=8B10B, M=8, L=4, S=1, NP=16 -- the project defaults):
+ *
+ *   F = (M*S*NP)/(8*L) = 4,  DATAPATH_WIDTH = 4 (8B10B)
+ *   SAMPLES_PER_CHANNEL = (L*8*DATAPATH_WIDTH)/(M*NP) = 1
+ *   dma_data_width = NP * M * SAMPLES_PER_CHANNEL = 128 bits = 16 bytes
+ *
+ * So 16 is right, and the INTF_DESC readback in [7] agrees (src=dest=16). The
+ * "256 bits" in the block design is do_axi_data_width -- the *memory-mapped* AXI
+ * width of the data-offload block below, a different interface entirely.
+ */
+#define DIAG_BEAT_BYTES 16U
+
+/*
+ * The data-offload cores are handled by axi_data_offload.c, which owns their
+ * register map and puts both into bypass at startup. Nothing here duplicates that
+ * -- the checks below call into it rather than keeping a second copy of the map,
+ * which is how the register offsets came to be defined twice in the first place.
+ */
 
 /*
  * Read the chip's latched interrupt status.
@@ -172,7 +239,7 @@ static void diag_irq_status(adi_ad9081_device_t *dev)
 	};
 	uint8_t st[6] = { 0 };
 
-	LOG_INF("[0/10] chip latched IRQ status (IRQB0 is lit on the board):");
+	LOG_INF("[0/12] chip latched IRQ status (IRQB0 is lit on the board):");
 
 	for (uint8_t i = 0; i < 6; i++) {
 		int32_t err = adi_ad9081_hal_reg_get(dev, REG_IRQ_STATUS0_ADDR + i,
@@ -250,7 +317,7 @@ static void diag_irq_status(adi_ad9081_device_t *dev)
  */
 static void diag_check_tx_gain(adi_ad9081_device_t *dev)
 {
-	LOG_INF("[1/10] TX fine-DUC channel gain readback (programmed 1024):");
+	LOG_INF("[1/12] TX fine-DUC channel gain readback (programmed 1024):");
 
 	for (uint8_t ch = 0; ch < 4; ch++) {
 		uint8_t raw[2] = { 0, 0 };
@@ -289,13 +356,12 @@ static void diag_check_tx_gain(adi_ad9081_device_t *dev)
  *
  * The readback is the point. A sweep that only writes cannot tell "this
  * frequency does not get through the analog path" from "this frequency was
- * never actually programmed" -- both look like silence, and the first reading
- * of this sweep (three silent points and one working one, in no pattern any
- * filter would produce) fits the second explanation at least as well as the
- * first. Comparing the readback against the FTW the requested frequency implies
- * settles it: a matching FTW means the tone really was on that carrier and the
- * silence is physical, while a stale or clamped FTW means the sweep was
- * measuring the same setting repeatedly.
+ * never actually programmed" -- both look like silence. Comparing the readback
+ * against the FTW the requested frequency implies settles it: a matching FTW
+ * means the tone really was on that carrier and any silence is physical, while a
+ * stale or clamped FTW means the sweep was measuring the same setting
+ * repeatedly. Every point has matched for many runs, so only a mismatch is
+ * logged; see the print below.
  *
  * Expected FTW = 2^48 * f / f_clk, and for a negative shift the API stores the
  * two's-complement form (2^48 - x), matching adi_ad9081_hal_calc_rx_nco_ftw.
@@ -343,47 +409,123 @@ static int diag_retune(adi_ad9081_device_t *dev, int64_t hz)
 		LOG_WRN("  RX FTW readback failed (%d)", err);
 	}
 
-	LOG_INF("    FTW tx 0x%012llx (want 0x%012llx)%s, rx 0x%012llx (want 0x%012llx)%s",
-		(unsigned long long)tx_ftw, (unsigned long long)want_tx,
-		(tx_ftw == want_tx) ? "" : " MISMATCH",
-		(unsigned long long)rx_ftw, (unsigned long long)want_rx,
-		(rx_ftw == want_rx) ? "" : " MISMATCH");
+	/*
+	 * Only a mismatch is worth a line. Every FTW has read back exactly as
+	 * requested for many runs now, and the sweep has grown from 4 points to 16,
+	 * so printing the agreeing case would add 16 lines that say nothing. The
+	 * check still runs on every retune -- silence here means all four values
+	 * matched, and a regression still announces itself.
+	 */
+	if (tx_ftw != want_tx || rx_ftw != want_rx) {
+		LOG_ERR("    FTW MISMATCH: tx 0x%012llx (want 0x%012llx), rx 0x%012llx (want 0x%012llx)",
+			(unsigned long long)tx_ftw, (unsigned long long)want_tx,
+			(unsigned long long)rx_ftw, (unsigned long long)want_rx);
+		LOG_ERR("    this frequency was never programmed, so any silence at it");
+		LOG_ERR("    says nothing about the analog path");
+	}
 
 	return 0;
 }
 
 /*
- * Sweep the matched NCO pair and measure the returning tone at each point. The
- * baseband tone that Rung 4 is playing does not move -- only the RF frequency it
- * is carried on does -- so the correlator stays valid at every point without
- * touching the playback buffer.
+ * Sweep the matched NCO pair and measure, at each point, what fraction of the time
+ * the tone comes back. The baseband tone Rung 4 is playing does not move -- only the
+ * RF carrier it rides on does -- so the correlator stays valid at every point
+ * without touching the playback buffer.
+ *
+ * Two instruments per point, because they answer different questions and neither
+ * alone is enough while the return is gated:
+ *
+ *   DIAG_SWEEP_PROBES fast probes give the *duty cycle* -- how often anything is
+ *   there. Cheap, one bit each, and immune to the sampling luck that made the old
+ *   single-measurement version unreadable.
+ *
+ *   Then, only where the duty is non-zero, up to DIAG_SWEEP_ID_TRIES full
+ *   measurements to identify *what* is there -- the probe cannot tell the tone from
+ *   any other energy. These retry because a full measurement is itself a coin flip
+ *   against the gate: at ~9% duty a single one usually lands in an off-window, and
+ *   giving up after one would report "gated but unidentifiable" at nearly every
+ *   point that is in fact returning a clean tone.
  */
+#define DIAG_SWEEP_ID_TRIES 12U
+
 static bool diag_sweep(adi_ad9081_device_t *dev)
 {
 	bool found_any = false;
 
-	LOG_INF("[2/10] NCO frequency sweep (TX main + RX coarse together):");
+	LOG_INF("[2/12] NCO frequency sweep, %u probes per point (gate-aware):",
+		DIAG_SWEEP_PROBES);
 	LOG_INF("  baseband tone stays at -%u MHz; only the RF carrier moves",
 		JESD_PB_TONE_HZ / 1000000U);
+	LOG_INF("  duty is what matters: the return is gated, so presence in any one");
+	LOG_INF("  capture is luck. Compare duty across points, not hit/miss.");
 
 	for (size_t i = 0; i < ARRAY_SIZE(diag_sweep_mhz); i++) {
 		int64_t hz = (int64_t)diag_sweep_mhz[i] * 1000000LL;
 		struct jesd_loopback_meas m;
-		int ret;
+		size_t on = 0, taken = 0;
+		int64_t t0;
+		uint32_t span_us;
 
 		if (diag_retune(dev, hz) != 0) {
 			continue;
 		}
 
-		ret = jesd_loopback_measure(&m);
-		if (ret) {
-			LOG_WRN("  %4u MHz: capture failed (%d)",
-				diag_sweep_mhz[i], ret);
+		t0 = k_uptime_ticks();
+		for (size_t p = 0; p < DIAG_SWEEP_PROBES; p++) {
+			int r = jesd_capture_probe();
+
+			if (r < 0) {
+				LOG_WRN("  %4u MHz: probe failed (%d)",
+					diag_sweep_mhz[i], r);
+				break;
+			}
+			on += (size_t)r;
+			taken++;
+		}
+		span_us = (uint32_t)k_ticks_to_us_floor64(k_uptime_ticks() - t0);
+
+		if (taken == 0) {
 			continue;
 		}
 
-		LOG_INF("  %4u MHz: RMS %llu, lanes %llu/%llu/%llu/%llu/%llu/%llu/%llu/%llu",
-			diag_sweep_mhz[i], (unsigned long long)m.rms,
+		LOG_INF("  %4u MHz: duty %zu/%zu (%zu%%) over %u us",
+			diag_sweep_mhz[i], on, taken, on * 100U / taken, span_us);
+
+		if (on == 0) {
+			/*
+			 * Nothing in the whole window. Unlike the old version this is
+			 * a real statement: DIAG_SWEEP_PROBES spans several gate
+			 * periods, so silence here is silence, not a missed window.
+			 */
+			continue;
+		}
+
+		/*
+		 * Something is arriving. Identify it, retrying against the gate --
+		 * see DIAG_SWEEP_ID_TRIES above.
+		 */
+		memset(&m, 0, sizeof(m));
+		for (size_t t = 0; t < DIAG_SWEEP_ID_TRIES; t++) {
+			if (jesd_loopback_measure(&m) != 0) {
+				m.rms = 0;
+				continue;
+			}
+			if (m.rms >= DIAG_SIGNAL_RMS) {
+				break;
+			}
+			m.rms = 0;
+		}
+
+		if (m.rms < DIAG_SIGNAL_RMS) {
+			LOG_INF("       energy present but %u full captures all landed in",
+				DIAG_SWEEP_ID_TRIES);
+			LOG_INF("       off-windows, so it is gated but unidentified here");
+			continue;
+		}
+
+		LOG_INF("       RMS %llu, lanes %llu/%llu/%llu/%llu/%llu/%llu/%llu/%llu",
+			(unsigned long long)m.rms,
 			(unsigned long long)m.lane_rms[0],
 			(unsigned long long)m.lane_rms[1],
 			(unsigned long long)m.lane_rms[2],
@@ -392,16 +534,18 @@ static bool diag_sweep(adi_ad9081_device_t *dev)
 			(unsigned long long)m.lane_rms[5],
 			(unsigned long long)m.lane_rms[6],
 			(unsigned long long)m.lane_rms[7]);
-		LOG_INF("            tone: interleaved %u/1000 (amp %llu), split %u/1000 (amp %llu)",
+		LOG_INF("       tone: interleaved %u/1000 (amp %llu), split %u/1000 (amp %llu)",
 			m.concentration, (unsigned long long)m.amplitude,
 			m.concentration_split,
 			(unsigned long long)m.amplitude_split);
 
 		uint32_t best = MAX(m.concentration, m.concentration_split);
 
-		if (best >= DIAG_TONE_FOUND_MIN && m.rms >= DIAG_SIGNAL_RMS) {
-			LOG_INF("         ^^ the tone came back at this frequency");
+		if (best >= DIAG_TONE_FOUND_MIN) {
+			LOG_INF("       ^^ our tone, gated at the duty above");
 			found_any = true;
+		} else {
+			LOG_INF("       ^^ energy, but not our tone (wrong bin)");
 		}
 	}
 
@@ -427,7 +571,7 @@ static bool diag_internal_tone(adi_ad9081_device_t *dev)
 	bool present = false;
 	int ret;
 
-	LOG_INF("[3/10] chip-internal DAC test tone (bypasses DMA + link + deframer):");
+	LOG_INF("[3/12] chip-internal DAC test tone (bypasses DMA + link + deframer):");
 
 	if (diag_retune(dev, DIAG_NCO_HZ_DEFAULT) != 0) {
 		LOG_WRN("  could not restore the NCO pair; skipping");
@@ -509,7 +653,7 @@ static void diag_repeatability(void)
 	uint32_t hits = 0;
 	uint64_t best_rms = 0;
 
-	LOG_INF("[4/10] repeatability of our own tone (%u captures at the same setting):",
+	LOG_INF("[4/12] repeatability of our own tone (%u captures at the same setting):",
 		DIAG_REPEATS);
 
 	for (uint32_t i = 0; i < DIAG_REPEATS; i++) {
@@ -543,7 +687,7 @@ static void diag_repeatability(void)
 		LOG_WRN("  INTERMITTENT within a single boot -- the datapath is not");
 		LOG_WRN("  deterministically delivering samples to the DAC.");
 	} else {
-		LOG_WRN("  INTERMITTENT within a single boot -- see [8/10] for whether that");
+		LOG_WRN("  INTERMITTENT within a single boot -- see [8/12] for whether that");
 		LOG_WRN("  is really intermittence or just a too-short capture window.");
 	}
 }
@@ -551,7 +695,7 @@ static void diag_repeatability(void)
 /*
  * Duty cycle of the analog return, measured *within* one capture.
  *
- * [4/10] counts how many captures saw signal, and that count has been misleading:
+ * [4/12] counts how many captures saw signal, and that count has been misleading:
  * each capture is one short window, so "1 of 8" conflates "the signal is rarely
  * there" with "we rarely looked while it was there". Those demand different fixes
  * and the hit count cannot separate them.
@@ -607,7 +751,7 @@ static void diag_duty_cycle(void)
 	size_t n, beats, chunks, on = 0;
 	uint64_t rms[DIAG_CHUNKS_MAX];
 
-	LOG_INF("[8/10] duty cycle of the return within one capture:");
+	LOG_INF("[8/12] duty cycle of the return within one capture:");
 
 	if (jesd_capture_raw(&buf, &n) != 0) {
 		LOG_WRN("  capture failed");
@@ -667,7 +811,7 @@ static void diag_duty_cycle(void)
 			on ? "tone throughout" : "noise floor throughout");
 		LOG_INF("  which is the common case once the gating is known: a window");
 		LOG_INF("  shorter than the period usually misses the transition. It still");
-		LOG_INF("  bounds one half of the cycle at >= %u us. See [9/10] for the period.",
+		LOG_INF("  bounds one half of the cycle at >= %u us. See [9/12] for the period.",
 			(unsigned int)((uint64_t)chunks * DIAG_CHUNK_BEATS * 1000000U /
 				       JESD_PB_SAMPLE_RATE));
 	} else {
@@ -693,7 +837,7 @@ static void diag_duty_cycle(void)
 
 		LOG_WRN("  MIXED -- the return genuinely switches state, roughly %zu%% on,",
 			on * 100U / chunks);
-		LOG_WRN("  so the source is gating the tone. This also explains [4/10]:");
+		LOG_WRN("  so the source is gating the tone. This also explains [4/12]:");
 		LOG_WRN("  captures shorter than the gate period land wholly inside an on-");
 		LOG_WRN("  or off-period, which is why they read all-or-nothing.");
 		LOG_INF("  %zu transitions, longest on-run %zu chunks (%u us)", edges,
@@ -716,12 +860,12 @@ static void diag_duty_cycle(void)
 /*
  * Period of the gating, measured across many captures instead of within one.
  *
- * [8/10] established that the return is gated and bounded the two halves at on >=
+ * [8/12] established that the return is gated and bounded the two halves at on >=
  * 65 us and off >= 262 us, but it cannot do better: a single transfer caps at 1 MiB
  * (~262 us) on this core, so no one capture spans a full cycle.
  *
  * Run captures back to back instead and record only whether each saw the tone. That
- * turns [8/10]'s limitation into the instrument: because a capture shorter than the
+ * turns [8/12]'s limitation into the instrument: because a capture shorter than the
  * period reads all-or-nothing, each one is a clean one-bit sample of the gate state,
  * and the run lengths in the resulting strip are the on and off times. Sampling is
  * uneven (each capture costs its own arming and cache maintenance, and the log call
@@ -740,7 +884,7 @@ static void diag_gate_period(void)
 	size_t on = 0, edges = 0, taken = 0;
 	int64_t t0, elapsed_us;
 
-	LOG_INF("[9/10] gate period from %u fast probes:", DIAG_STRIP_SAMPLES);
+	LOG_INF("[9/12] gate period from %u fast probes:", DIAG_STRIP_SAMPLES);
 
 	/*
 	 * Sample as fast as the probe allows, timestamping each one. The previous
@@ -878,7 +1022,7 @@ static void diag_jrx_buffer(void)
 	uint8_t pd_min = 0xFF, pd_max = 0;
 	int32_t err;
 
-	LOG_INF("[10/10] JRX TPL elastic-buffer state (0x4A1 / 0x4A5):");
+	LOG_INF("[10/12] JRX TPL elastic-buffer state (0x4A1 / 0x4A5):");
 
 	if (dev == NULL) {
 		return;
@@ -945,7 +1089,7 @@ static void diag_channel_tone(adi_ad9081_device_t *dev)
 	struct jesd_loopback_meas m;
 	int32_t err;
 
-	LOG_INF("[5/10] fine-DUC (channel) DC test tone -- one stage earlier than [3]:");
+	LOG_INF("[5/12] fine-DUC (channel) DC test tone -- one stage earlier than [3]:");
 
 	err = adi_ad9081_dac_dc_test_tone_offset_set(dev, AD9081_DAC_CH_0, 0x4000);
 	if (err != API_CMS_ERROR_OK) {
@@ -998,16 +1142,18 @@ static void diag_channel_tone(adi_ad9081_device_t *dev)
  * our samples on. The DDS enters at the opposite end: inside the FPGA, at the TPL
  * input, upstream of the transport core, the serial lanes and the deframer.
  *
- * Between them the two tones bracket the one remaining suspect stretch:
+ * What it can and cannot conclude has narrowed since it was written. A returning DDS
+ * tone was originally read as "the fault is upstream of the TPL, in the DMA feed" --
+ * but [2] has since recovered our own DMA-sourced tone at full amplitude, so DMA
+ * samples demonstrably do cross the TPL, the lanes and the deframer. That conclusion
+ * is false and is not drawn here any more.
  *
- *   DDS returns  -> the TPL, lanes and deframer all deliver samples into the DAC
- *                   datapath. Nothing between DDR and the DAC is broken, so the
- *                   fault is our DMA feed: the buffer contents, the descriptor, the
- *                   cache maintenance, or the cyclic transfer not actually
- *                   presenting data on the TPL's input.
- *   DDS silent   -> the deframer is not passing samples on despite reporting four
- *                   locked lanes, which is the LMFC/elastic-buffer alignment
- *                   suspicion and is consistent with the per-boot intermittency.
+ * What remains useful is the comparison, not a verdict: the DDS is a continuous
+ * source injected at the TPL input, so its duty cycle isolates which side of the TPL
+ * the gate is on. A gated DDS return puts the gate at or after the TPL input; a
+ * continuous one puts it upstream, in how our samples reach that input. Measured
+ * with the same probe as [2] for exactly that reason -- a single capture cannot tell
+ * gated from absent, which is the trap the earlier version fell into.
  *
  * Judged on RMS rather than the correlator: the DDS frequency is quantised by a
  * 16-bit phase accumulator and does not land on the bin the correlator watches.
@@ -1017,7 +1163,7 @@ static void diag_fpga_dds(void)
 	struct jesd_loopback_meas m;
 	int ret;
 
-	LOG_INF("[6/10] FPGA DDS tone at the TPL input (crosses lanes + deframer):");
+	LOG_INF("[6/12] FPGA DDS tone at the TPL input (crosses lanes + deframer):");
 
 	ret = axi_tpl_tx_dds(JESD_PB_TONE_HZ, JESD_PB_SAMPLE_RATE, true);
 	if (ret) {
@@ -1028,6 +1174,30 @@ static void diag_fpga_dds(void)
 	/* The TPL SYNC and the chip's deframer need a moment to settle on the new
 	 * data source before the capture means anything. */
 	k_msleep(5);
+
+	/*
+	 * Duty cycle of the DDS return, measured the same way [2] measures ours. The
+	 * DDS source is continuous by construction, so any gating in its return was
+	 * imposed downstream of the TPL input -- which is the one thing this check can
+	 * still settle.
+	 */
+	size_t on = 0, taken = 0;
+
+	for (size_t p = 0; p < DIAG_SWEEP_PROBES; p++) {
+		int r = jesd_capture_probe();
+
+		if (r < 0) {
+			LOG_WRN("  probe failed (%d)", r);
+			break;
+		}
+		on += (size_t)r;
+		taken++;
+	}
+
+	if (taken) {
+		LOG_INF("  DDS return duty %zu/%zu (%zu%%)", on, taken,
+			on * 100U / taken);
+	}
 
 	if (jesd_loopback_measure(&m) == 0) {
 		LOG_INF("  RMS %llu, lanes %llu/%llu/%llu/%llu/%llu/%llu/%llu/%llu",
@@ -1040,20 +1210,26 @@ static void diag_fpga_dds(void)
 			(unsigned long long)m.lane_rms[5],
 			(unsigned long long)m.lane_rms[6],
 			(unsigned long long)m.lane_rms[7]);
+	}
 
-		if (m.rms >= DIAG_SIGNAL_RMS) {
-			LOG_ERR("  THE LINK AND DEFRAMER ARE FINE -- an FPGA-generated");
-			LOG_ERR("  tone crosses the lanes and deframer and reaches the");
-			LOG_ERR("  ADC. The fault is upstream of the TPL: the DDR buffer,");
-			LOG_ERR("  the TX DMA descriptor, cache maintenance, or the cyclic");
-			LOG_ERR("  transfer not presenting data at the TPL input.");
-		} else {
-			LOG_ERR("  silent -- the deframer is not passing samples into the");
-			LOG_ERR("  DAC datapath despite reporting four locked lanes. That");
-			LOG_ERR("  is an alignment problem (LMFC / elastic buffer / SYSREF),");
-			LOG_ERR("  matching the per-boot intermittency: lane lock does not");
-			LOG_ERR("  imply the deframer found a valid frame boundary.");
-		}
+	/*
+	 * Compare against our own duty from [2] to place the gate. Stated as what the
+	 * reading implies rather than as a verdict: a continuous DDS return with a
+	 * gated DMA return is the interesting outcome, and it points at the DMA-to-TPL
+	 * stream handshake -- the one interface the DDS bypasses.
+	 */
+	if (taken && on == taken) {
+		LOG_INF("  continuous -- the gate is NOT downstream of the TPL input, so");
+		LOG_INF("  it is in how our samples reach that input (the DMA-to-TPL");
+		LOG_INF("  stream handshake), not in the lanes, deframer or DUC.");
+	} else if (taken && on > 0) {
+		LOG_INF("  gated too, at a duty comparable to ours -- so the gate is at or");
+		LOG_INF("  after the TPL input and affects any source equally. The DMA feed");
+		LOG_INF("  is exonerated; suspect the link, deframer or DAC datapath.");
+	} else if (taken) {
+		LOG_INF("  silent throughout, while our own tone does return in [2] -- so");
+		LOG_INF("  the DDS is not actually driving the converters (check the");
+		LOG_INF("  DATA_SEL write and SYNC), rather than the link being at fault.");
 	}
 
 	/* Put the converters back on the DMA source whatever happened, so the board
@@ -1062,241 +1238,246 @@ static void diag_fpga_dds(void)
 }
 
 /*
- * Read the playback buffer back through a non-cached mapping and re-check the DMA.
+ * Achieved TX bandwidth, measured rather than assumed.
  *
- * With [6] showing an FPGA-sourced tone completing the whole trip, everything from
- * the TPL input onward is proven. What remains upstream is small and entirely
- * checkable: are the samples actually in DDR where the DMA reads them, and is the
- * engine actually still fetching them?
+ * This is the number the whole Rung 5 investigation has been missing, and every
+ * theory offered so far has been an assumption standing in for it.
  *
- * pb_fill() flushes the buffer, and reading it back through the ordinary mapping
- * would just hit the same D-cache lines the CPU wrote -- it would confirm the CPU's
- * view, not memory's, which is precisely the thing in question. So invalidate first
- * and force the read to come from DDR.
+ * The link consumes one 16-byte beat per sample period: at 250 MSPS that is a flat
+ * 4.0 GB/s the DMA must sustain, forever, with no gaps. Nothing has ever checked
+ * whether it does. Status registers cannot answer it -- they report that transfers
+ * complete, not how fast, and under hardware cyclic a completed transfer looks
+ * identical whether it took 1 ms or 10 ms.
  *
- * The second half is the rate question, which nothing has yet asked. The transfer
- * "completing" says the engine emptied its descriptor; it says nothing about
- * whether it sustained 250 MSPS x 16 bytes = 4 GB/s. A cyclic buffer shorter than
- * the CPU's re-arm latency would starve the TPL between wraps, and the DAC would
- * emit brief bursts separated by long gaps -- indistinguishable from noise once
- * averaged over a capture, with every status bit healthy throughout.
+ * The core exposes no byte-progress counter, so bandwidth is counted from wraps
+ * instead. Each time the cyclic buffer is fully consumed the core latches EOT in
+ * IRQ_PENDING, so N wraps over a known interval means N x buffer_bytes moved:
  *
- * But that only bites if the CPU is in the re-arm path at all, so this reads the
- * core's cyclic capability rather than assuming it: with hardware cyclic the loop
- * runs unattended and wrap rate is free, which rules buffer size out entirely
- * instead of leaving it as a plausible-sounding suspect. The numbers are printed
- * from the actual buffer and the actual registers, because a diagnostic that
- * hardcodes the figures it is arguing from will keep asserting them after the code
- * has changed underneath it -- which is exactly what happened here on the first
- * pass.
+ *     achieved = wraps * PB_BUF_BYTES / elapsed
+ *
+ * EOT is write-1-to-clear, so the loop must clear each one to see the next, and
+ * this counts them directly rather than calling dma_get_status() -- that pumps the
+ * driver's state machine and consumes the very bit being counted.
+ *
+ * That last point cuts both ways, and the first version of this check got it wrong:
+ * it counted zero wraps in 50 ms while [2] was recovering the tone at full
+ * amplitude, which is impossible if the transfer is running -- and it is, so the
+ * instrument was at fault, not the DMA. The reason is that this core has no
+ * interrupt line wired to the PS GIC (see the overlay), so the driver runs its
+ * polling path: dmac_service() is pumped from dma_get_status(), and it *also* reads
+ * IRQ_PENDING and writes it straight back. Anything that polls the DMA between our
+ * samples -- and the capture path does, on every probe -- silently eats the EOTs we
+ * are trying to count. A zero here therefore means "nobody let us see the events",
+ * not "no bytes moved".
+ *
+ * So the window must be quiet: no capture, no probe, no dma_get_status() on this
+ * channel while counting. The playback transfer is already running cyclically and
+ * needs no service to keep going (cyclic=hw), so simply not touching it for the
+ * duration is enough, and this check now runs before anything else disturbs it.
+ *
+ * Two possible outcomes, and they point at completely different work:
+ *
+ *   ~4 GB/s   The DMA sustains line rate, so the samples really are arriving
+ *             continuously and something downstream gates the output. The gating
+ *             hunt is then still the right hunt.
+ *   ~360 MB/s The DMA is simply the bottleneck -- 9% of 4 GB/s is what a 9% duty
+ *             delivers on average. Then nothing is "gating" anything: the TPL emits
+ *             samples while its FIFO has data and silence while it refills, and the
+ *             duty cycle is just the ratio of those. That is a bandwidth problem,
+ *             not a fault, and it is fixed by lowering the demand (sample rate,
+ *             interpolation, lane count) or raising the supply (wider DMA path),
+ *             not by finding a bit to clear.
+ *
+ * Sampled with a short polling window: the buffer is 4 MiB, so at 4 GB/s it wraps
+ * every ~1 ms and even a few tens of ms of polling counts plenty of wraps.
  */
-static void diag_dma_feed(void)
+#define DIAG_BW_WINDOW_MS 50U
+
+static void diag_tx_bandwidth(void)
 {
-	const struct device *tx_dma = DEVICE_DT_GET(DT_NODELABEL(tx_dmac));
+	uintptr_t dmac = DIAG_DMAC_TX_BASE;
+	uint32_t wraps = 0;
+	int64_t t0, elapsed_us;
+	uint64_t achieved, demand;
 	const int16_t *buf;
-	struct dma_status s0, s1;
-	size_t bytes, pb_bytes;
-	bool nonzero = false;
+	size_t buf_bytes;
 
-	LOG_INF("[7/10] the DMA feed itself (everything from the TPL on is proven):");
+	LOG_INF("[7/12] achieved TX DMA bandwidth (the link needs a sustained 4 GB/s):");
 
-	if (jesd_playback_buffer(&buf, &bytes) != 0) {
-		LOG_WRN("  playback buffer unavailable");
+	/* The wrap count only converts to bytes if the buffer size is known, and it
+	 * is read from the playback module rather than recomputed here so the two
+	 * cannot drift apart. */
+	if (jesd_playback_buffer(&buf, &buf_bytes) != 0 || buf_bytes == 0) {
+		LOG_WRN("  playback buffer size unavailable; cannot convert wraps to bytes");
 		return;
 	}
 
 	/*
-	 * Read what is actually in DDR, not what the CPU's cache remembers. Only
-	 * the leading portion is inspected: the buffer is now megabytes, the
-	 * question is whether pb_fill()'s writes reached memory at all, and a
-	 * partial flush would show up in the first beats as readily as the last.
-	 * Invalidating only what is read also avoids discarding clean lines
-	 * needlessly.
+	 * What the core says its own bus is, before any rate is quoted against an
+	 * assumed one. See DIAG_INTF_BPB_*_MASK: this sample assumes 16 bytes
+	 * everywhere, and if the hardware disagrees the beat layout is wrong too, not
+	 * just the bandwidth arithmetic.
 	 */
-	pb_bytes = bytes; /* keep the real size; the read-back below is clamped */
-	if (bytes > PB_DIAG_INSPECT_BYTES) {
-		bytes = PB_DIAG_INSPECT_BYTES;
-	}
-	sys_cache_data_invd_range((void *)buf, bytes);
+	uint32_t intf = sys_read32(dmac + DIAG_DMAC_REG_INTF_DESC);
+	uint32_t w_src = 1U << FIELD_GET(DIAG_INTF_BPB_SRC_MASK, intf);
+	uint32_t w_dst = 1U << FIELD_GET(DIAG_INTF_BPB_DEST_MASK, intf);
 
-	for (size_t i = 0; i < bytes / sizeof(int16_t); i++) {
-		if (buf[i] != 0) {
-			nonzero = true;
+	LOG_INF("  core bus width: src %u B, dest %u B (INTF_DESC 0x%08x)", w_src,
+		w_dst, intf);
+
+	if (w_src != DIAG_BEAT_BYTES || w_dst != DIAG_BEAT_BYTES) {
+		LOG_ERR("  MISMATCH: this sample assumes a %u-byte beat everywhere, so the",
+			DIAG_BEAT_BYTES);
+		LOG_ERR("  sample-to-lane layout in jesd_capture/jesd_playback and the link");
+		LOG_ERR("  demand below are both computed from the wrong width. Fix that");
+		LOG_ERR("  before drawing any conclusion from the rate.");
+	}
+
+	/* Clear anything already latched so the count starts from now. */
+	sys_write32(BIT(0) | BIT(1), dmac + DIAG_DMAC_REG_IRQ_PENDING);
+
+	t0 = k_uptime_ticks();
+	do {
+		uint32_t pend = sys_read32(dmac + DIAG_DMAC_REG_IRQ_PENDING);
+
+		if (pend & BIT(1)) {
+			/* Write-1-to-clear, so clear it to see the next wrap. */
+			sys_write32(pend & (BIT(0) | BIT(1)),
+				    dmac + DIAG_DMAC_REG_IRQ_PENDING);
+			wraps++;
+		}
+		elapsed_us = k_ticks_to_us_floor64(k_uptime_ticks() - t0);
+	} while (elapsed_us < (int64_t)DIAG_BW_WINDOW_MS * 1000);
+
+	if (elapsed_us <= 0) {
+		LOG_WRN("  timer gave no elapsed time; cannot compute a rate");
+		return;
+	}
+
+	/* Demand from the width the core reports, not the one this sample assumes --
+	 * the whole point of reading INTF_DESC above. */
+	demand = (uint64_t)JESD_PB_SAMPLE_RATE * w_src;
+	achieved = ((uint64_t)wraps * (uint64_t)buf_bytes * 1000000ULL) /
+		   (uint64_t)elapsed_us;
+
+	LOG_INF("  %u buffer wraps in %lld us", wraps, (long long)elapsed_us);
+	LOG_INF("  achieved %llu MB/s, link demands %llu MB/s (%llu%%)",
+		(unsigned long long)(achieved / 1000000ULL),
+		(unsigned long long)(demand / 1000000ULL),
+		(unsigned long long)(demand ? achieved * 100ULL / demand : 0));
+
+	if (wraps == 0) {
+		/*
+		 * Do not read this as "no bytes moved" -- see the note above. Report
+		 * the alternatives in the order they are likely, and prove the
+		 * transfer is alive independently before blaming the bandwidth.
+		 */
+		LOG_WRN("  no wraps counted. This does NOT mean no data moved: with no IRQ");
+		LOG_WRN("  line on this core, any dma_get_status() elsewhere clears EOT");
+		LOG_WRN("  before we see it. Checking whether the transfer is alive:");
+
+		uint32_t ctrl = sys_read32(dmac + DIAG_DMAC_REG_CTRL);
+		uint32_t id0 = sys_read32(dmac + DIAG_DMAC_REG_TRANSFER_ID);
+
+		k_msleep(1);
+
+		uint32_t id1 = sys_read32(dmac + DIAG_DMAC_REG_TRANSFER_ID);
+
+		LOG_WRN("  CTRL 0x%08x (enable=%u), TRANSFER_ID %u -> %u", ctrl,
+			(unsigned int)((ctrl & BIT(0)) != 0), id0, id1);
+
+		if (!(ctrl & BIT(0))) {
+			LOG_ERR("  the core is DISABLED -- the transfer really is not running.");
+		} else if (id0 != id1) {
+			LOG_WRN("  the ID is advancing, so the engine IS moving data and the");
+			LOG_WRN("  zero above is purely a lost-event artefact. Re-run with");
+			LOG_WRN("  nothing else polling this channel to get a real rate.");
+		} else {
+			LOG_WRN("  enabled but the ID is static. Under hardware cyclic that is");
+			LOG_WRN("  the normal reading (one transfer is replayed forever), so it");
+			LOG_WRN("  neither confirms nor refutes movement. The tone returning in");
+			LOG_WRN("  [2] is the stronger evidence: if it does, data is moving.");
+		}
+		return;
+	}
+
+	/*
+	 * Judged against the duty cycle, because that is what makes the two
+	 * candidate explanations distinguishable rather than merely plausible.
+	 */
+	if (achieved * 2ULL >= demand) {
+		LOG_INF("  the DMA sustains most of line rate, so samples really do arrive");
+		LOG_INF("  continuously and the ~9%% duty is imposed downstream of the DMA.");
+		LOG_INF("  Bandwidth is NOT the explanation; keep looking for a gate.");
+	} else {
+		LOG_WRN("  the DMA delivers well under line rate. This alone accounts for");
+		LOG_WRN("  the duty cycle -- the TPL emits while its FIFO has data and goes");
+		LOG_WRN("  silent while it refills, so no gating mechanism need exist. Match");
+		LOG_WRN("  this percentage against [2]'s duty: if they agree, the answer is");
+		LOG_WRN("  bandwidth, and the fix is to lower the demand (sample rate,");
+		LOG_WRN("  interpolation, lane count) or widen the DMA path.");
+	}
+}
+
+/*
+ * [12] Duty cycle with the offload in bypass -- the regression check for the one
+ * mechanism this investigation actually identified.
+ *
+ * History, because it is the useful part: the DAC output was present only ~9% of
+ * the time, and four explanations were offered and disproved before the cause was
+ * found -- a JRX elastic-buffer protection bit (cleared it, no change), frequency
+ * dependence in the DUC path (swept 10-1968 MHz, duty flat at 9% everywhere), and
+ * raw DMA bandwidth (unmeasurable on this core, and wrong in principle: the offload
+ * exists precisely to absorb that).
+ *
+ * The cause was an axi_data_offload core between the DMA and the TPL that this port
+ * had never configured. Its 1 MiB buffer drains in 262 us at 250 MSPS and then goes
+ * quiet while refilling, which is the entire 9%. Toggling bypass moved the measured
+ * duty from 6/64 to 64/64 in a single run -- the only intervention in this whole
+ * investigation that changed the symptom.
+ *
+ * main.c now sets bypass at startup, so this check no longer runs an experiment; it
+ * confirms the fix is still in effect. A duty back near 9% means the bypass write
+ * did not take, which is worth catching loudly rather than rediscovering.
+ */
+static void diag_offload_duty(void)
+{
+	size_t on = 0, taken = 0;
+
+	LOG_INF("[12/12] output duty with the offload bypassed (expect ~100%%):");
+
+	for (size_t p = 0; p < DIAG_SWEEP_PROBES; p++) {
+		int r = jesd_capture_probe();
+
+		if (r < 0) {
+			LOG_WRN("  probe failed (%d)", r);
 			break;
 		}
+		on += (size_t)r;
+		taken++;
 	}
 
-	LOG_INF("  DDR contents, first beat: %6d %6d %6d %6d %6d %6d %6d %6d",
-		buf[0], buf[1], buf[2], buf[3],
-		buf[4], buf[5], buf[6], buf[7]);
-
-	if (!nonzero) {
-		LOG_ERR("  the playback buffer is ALL ZEROS in DDR -- the DMA has been");
-		LOG_ERR("  faithfully transmitting silence. THIS is the fault.");
-		return;
-	}
-	LOG_INF("  buffer holds the tone in DDR, so the DMA is reading real samples");
-
-	/*
-	 * The driver's view is reported at the very end, after the hardware has been
-	 * sampled -- NOT here. dma_get_status() on an IRQ-less core pumps
-	 * dmac_service(), which reads IRQ_PENDING and writes it straight back, and
-	 * that register is write-1-to-clear: calling it first wipes the latched
-	 * SOT/EOT bits and any subsequent read of them returns 0 no matter what the
-	 * core did. Doing exactly that is what made this check report "the transfer
-	 * never ran" while capture #5 of [4] was recovering the tone at full
-	 * amplitude. Read the hardware before touching the DMA API.
-	 */
-
-	/*
-	 * The open question was sustained rate: this datapath wants
-	 * 4 GB/s (250 MSPS x 16 B/beat), and a 1 KiB cyclic buffer is only 256 ns
-	 * long, so it must wrap 3.9 million times per second. That is the one
-	 * remaining explanation consistent with every observation: the engine is
-	 * alive and the link is perfect, but the TPL is starved between wraps, so
-	 * the DAC emits brief bursts separated by long gaps. Averaged over a
-	 * capture that is indistinguishable from noise, and it would vary per boot.
-	 */
-	/*
-	 * Still busy. The rate question comes next, but it only has teeth if the
-	 * CPU is the one re-arming, so read that out of the core rather than
-	 * asserting it. AXI_DMAC_REG_FLAGS bit0 reads back set only when the core
-	 * was synthesized with cyclic support, in which case the hardware loops the
-	 * buffer unaided and the wrap rate costs nothing -- no amount of wrapping
-	 * can starve a transfer nobody has to service. If it reads back clear, every
-	 * wrap needs a dma_get_status() poll to re-submit, and at these rates that
-	 * is hopeless.
-	 *
-	 * X_LENGTH matters for the same reason and is easy to miss: the driver
-	 * chunks a transfer into max_length-sized bursts, and hardware cyclic loops
-	 * only the burst it last submitted. A buffer larger than one burst therefore
-	 * plays its tail repeatedly, not the whole buffer -- harmless for a periodic
-	 * tone, but it means "I made the buffer bigger" is not the same statement as
-	 * "the loop got longer".
-	 */
-	uintptr_t dmac = PB_DIAG_DMAC_BASE;
-	uint32_t saved = sys_read32(dmac + PB_DIAG_DMAC_REG_FLAGS);
-	uint32_t hw_cyclic, max_len;
-
-	sys_write32(BIT(0), dmac + PB_DIAG_DMAC_REG_FLAGS);
-	hw_cyclic = sys_read32(dmac + PB_DIAG_DMAC_REG_FLAGS) & BIT(0);
-	sys_write32(saved, dmac + PB_DIAG_DMAC_REG_FLAGS);
-	max_len = sys_read32(dmac + PB_DIAG_DMAC_REG_X_LENGTH) + 1U;
-
-	LOG_WRN("  the buffer is correct in DDR, yet no tone arrives.");
-	LOG_INF("  buffer %zu KiB (%u us per wrap at %u MSPS x %u B/beat)",
-		pb_bytes / 1024U,
-		(unsigned int)((uint64_t)(pb_bytes / PB_DIAG_BEAT_BYTES) *
-			       1000000U / JESD_PB_SAMPLE_RATE),
-		JESD_PB_SAMPLE_RATE / 1000000U, PB_DIAG_BEAT_BYTES);
-	LOG_INF("  DMAC cyclic=%s, current burst length %u bytes",
-		hw_cyclic ? "hw" : "sw-only", max_len);
-
-	/*
-	 * Ask the hardware whether it is moving data, which nothing has yet done.
-	 *
-	 * dma_status.busy is not evidence: the driver computes it as
-	 * (remaining_size > 0 || pending_bursts > 0), both software counters. For a
-	 * buffer that fits one burst, submitting leaves remaining_size at 0 and
-	 * pending_bursts at 1, and with no IRQ line and hardware cyclic active
-	 * dmac_service() never decrements either -- so busy reads 1 forever whether
-	 * or not a single byte has left DDR. Every "the DMA is running" claim in this
-	 * ladder traced back to that variable.
-	 *
-	 * TRANSFER_ID and TRANSFER_DONE are counters in the core itself, and SOT/EOT
-	 * latch in IRQ_PENDING. Sampling them across a known interval distinguishes
-	 * the two cases the software flag cannot: a core cycling through transfers,
-	 * versus a core sitting on a submitted descriptor it never started.
-	 */
-	uint32_t id0 = sys_read32(dmac + PB_DIAG_DMAC_REG_TRANSFER_ID);
-	uint32_t done0 = sys_read32(dmac + PB_DIAG_DMAC_REG_TRANSFER_DONE);
-	uint32_t pend0 = sys_read32(dmac + PB_DIAG_DMAC_REG_IRQ_PENDING);
-	uint32_t ctrl = sys_read32(dmac + PB_DIAG_DMAC_REG_CTRL);
-
-	k_msleep(50);
-
-	uint32_t id1 = sys_read32(dmac + PB_DIAG_DMAC_REG_TRANSFER_ID);
-	uint32_t done1 = sys_read32(dmac + PB_DIAG_DMAC_REG_TRANSFER_DONE);
-	uint32_t pend1 = sys_read32(dmac + PB_DIAG_DMAC_REG_IRQ_PENDING);
-
-	LOG_INF("  core: CTRL=0x%08x (enable=%u), X_LENGTH=%u", ctrl,
-		!!(ctrl & BIT(0)), max_len);
-	LOG_INF("  core: TRANSFER_ID %u -> %u, TRANSFER_DONE 0x%08x -> 0x%08x",
-		id0, id1, done0, done1);
-	LOG_INF("  core: IRQ_PENDING 0x%02x -> 0x%02x (SOT=%u/%u EOT=%u/%u)",
-		pend0, pend1, !!(pend0 & BIT(0)), !!(pend1 & BIT(0)),
-		!!(pend0 & BIT(1)), !!(pend1 & BIT(1)));
-
-	if (!(ctrl & BIT(0))) {
-		LOG_ERR("  the core is DISABLED -- CTRL enable bit is clear, so it is not");
-		LOG_ERR("  fetching anything. THIS is the fault.");
+	if (taken == 0) {
+		LOG_WRN("  no probes completed; inconclusive.");
 		return;
 	}
 
-	/*
-	 * Interpreting this needs care, because under hardware cyclic a *healthy*
-	 * core also leaves TRANSFER_ID still: it replays the one submitted transfer
-	 * rather than issuing new IDs, so a frozen ID is not a stall. SOT is the
-	 * meaningful bit -- it latches when a transfer actually starts moving beats,
-	 * and nothing but a genuinely unstarted transfer leaves it clear.
-	 */
-	if (!(pend0 & (BIT(0) | BIT(1))) && id0 == id1 && done0 == done1) {
-		LOG_WRN("  no SOT/EOT latched and no counter movement. Under hardware cyclic a");
-		LOG_WRN("  static TRANSFER_ID is normal (one transfer is replayed), so this is");
-		LOG_WRN("  only suggestive -- but a never-latched SOT would mean the transfer");
-		LOG_WRN("  never started, pointing at the DMA-to-TPL stream handshake: the one");
-		LOG_WRN("  interface [6] cannot exercise, since the TPL's internal DDS bypasses");
-		LOG_WRN("  the stream input entirely.");
+	size_t pct = on * 100U / taken;
+
+	LOG_INF("  duty %zu/%zu (%zu%%)", on, taken, pct);
+
+	if (pct >= 90U) {
+		LOG_INF("  continuous -- the offload bypass is in effect and the datapath");
+		LOG_INF("  streams without gaps. This is the working configuration.");
+	} else if (pct <= 20U) {
+		LOG_ERR("  back to a gated duty. The startup bypass write did not take, or");
+		LOG_ERR("  something re-enabled store-and-replay. Check [11]'s bypass bit:");
+		LOG_ERR("  this exact reading is what the whole Rung 5 hunt was chasing.");
 	} else {
-		LOG_INF("  the core has started transfers (SOT/EOT latched or counters moved),");
-		LOG_INF("  so it is genuinely fetching from DDR and streaming to the TPL.");
-	}
-
-	/*
-	 * Whatever the registers say, [4] is the stronger evidence and it overrides
-	 * any conclusion drawn here: if even one capture in that run recovered the
-	 * tone at amplitude, samples demonstrably complete the whole trip and no
-	 * "the transfer never ran" story can be true. The fault is then not a broken
-	 * datapath but an unreliable one, which is a different search.
-	 */
-	LOG_INF("  NOTE: if [4] shows any capture recovering the tone, the feed provably");
-	LOG_INF("  works and the fault is intermittency, not a dead stage.");
-
-	/*
-	 * Logged last, and only for contrast: busy is (remaining_size > 0 ||
-	 * pending_bursts > 0), pure software state that a one-burst hardware-cyclic
-	 * transfer pins at 1 forever. Reading it earlier would have destroyed the
-	 * SOT/EOT evidence above.
-	 */
-	if (dma_get_status(tx_dma, PB_DIAG_DMA_CHANNEL, &s0) == 0) {
-		LOG_INF("  driver view (software counters, not evidence): busy=%u pending=%u",
-			s0.busy, s0.pending_length);
-	}
-	(void)s1;
-
-	if (!hw_cyclic) {
-		LOG_ERR("  the core has NO hardware cyclic support, so every wrap needs a");
-		LOG_ERR("  dma_get_status() poll to re-submit. At %u MSPS x %u B/beat this",
-			JESD_PB_SAMPLE_RATE / 1000000U, PB_DIAG_BEAT_BYTES);
-		LOG_ERR("  link drains the buffer far faster than the CPU can re-arm it, so");
-		LOG_ERR("  the TPL starves between wraps and the DAC emits brief bursts with");
-		LOG_ERR("  long gaps -- which averages to the noise floor Rung 5 reports.");
-		LOG_ERR("  Fix is a longer buffer (fewer wraps/s), not a different setting.");
-		return;
-	}
-
-	LOG_WRN("  but the hardware loops the buffer itself, so the CPU is not in the");
-	LOG_WRN("  re-arm path and wrap rate cannot starve it. Buffer size is NOT the");
-	LOG_WRN("  fault. What remains is what the loop actually contains: hardware");
-	LOG_WRN("  cyclic repeats only the last submitted burst, so if the burst length");
-	LOG_WRN("  above is smaller than the buffer, the DAC is replaying the tail.");
-	if (max_len < pb_bytes) {
-		LOG_WRN("  -- and it IS smaller here (%u < %zu). Size the buffer to one burst.",
-			max_len, pb_bytes);
-	} else {
-		LOG_WRN("  -- the whole buffer fits one burst, so the loop content is right");
-		LOG_WRN("  too, and the remaining suspects are the TPL's sample-to-beat");
-		LOG_WRN("  mapping and the DMA-to-TPL stream handshake, not the buffer.");
+		LOG_WRN("  partially gated, which neither configuration predicts. Check");
+		LOG_WRN("  [11] for a latched SRC_OVERFLOW or DST_UNDERFLOW -- in bypass");
+		LOG_WRN("  there is no buffer to absorb a rate mismatch, so a DMA that");
+		LOG_WRN("  cannot keep up shows here rather than being hidden.");
 	}
 }
 
@@ -1319,11 +1500,28 @@ int jesd_diag_loopback(void)
 	diag_irq_status(dev);
 
 	diag_check_tx_gain(dev);
+
+	/*
+	 * Before any capture runs. Every capture and probe calls dma_get_status(),
+	 * which on this IRQ-less core clears the EOT events [7] counts -- so this has
+	 * to measure while the playback transfer is the only thing touching the DMA.
+	 * Running it after the sweep is what made it report 0 MB/s.
+	 */
+	diag_tx_bandwidth();
+
+	/*
+	 * Offload state, as the running playback left it. Includes the overflow and
+	 * underflow flags, which answer the starvation question in hardware rather
+	 * than by inference -- and which [7] cannot answer at all on this core, since
+	 * hardware cyclic never increments the transfer ID it counts.
+	 */
+	LOG_INF("[11/12] AXI data-offload cores (bypassed at startup by main.c):");
+	axi_data_offload_status();
+
 	swept_ok = diag_sweep(dev);
 	internal_ok = diag_internal_tone(dev);
 	diag_channel_tone(dev);
 	diag_fpga_dds();
-	diag_dma_feed();
 
 	/* Back to the configured plan before judging repeatability, so the repeats
 	 * measure the frequency the rest of the app actually runs at. */
@@ -1343,6 +1541,8 @@ int jesd_diag_loopback(void)
 	 * that gates sample delivery and that the 204B path never configures. */
 	diag_jrx_buffer();
 
+	diag_offload_duty();
+
 	/* Restore the configured frequency plan whatever happened, so the board
 	 * is left in the state the rest of the app documents. */
 	if (diag_retune(dev, DIAG_NCO_HZ_DEFAULT) != 0) {
@@ -1352,22 +1552,21 @@ int jesd_diag_loopback(void)
 
 	LOG_INF("--- conclusion ---");
 	if (swept_ok) {
-		LOG_INF("the tone returns at one or more frequencies: the full chain");
-		LOG_INF("  works -- DDR -> DMA -> DAC -> cable -> ADC -> DMA -> DDR.");
-		LOG_INF("  Check the FTW readbacks above before reading the silent");
-		LOG_INF("  points as a band limit: a mismatch there means those");
-		LOG_INF("  frequencies were never programmed, so their silence says");
-		LOG_INF("  nothing about the analog path.");
+		LOG_INF("our tone returns: the full chain works -- DDR -> DMA -> DAC ->");
+		LOG_INF("  cable -> ADC -> DMA -> DDR. No stage is dead, so the open");
+		LOG_INF("  question is only the gating, and [2]'s per-point duty is the");
+		LOG_INF("  measurement to read: a duty that is flat across the band means");
+		LOG_INF("  the gate is frequency-independent, while one that varies puts");
+		LOG_INF("  the mechanism in the DUC/NCO path.");
 	} else if (internal_ok) {
-		LOG_INF("the chip's own tone reaches the ADC but ours does not:");
-		LOG_INF("  the DAC output stage, balun, cable, ADC, RX DDC, framer,");
-		LOG_INF("  RX link and RX DMA all work -- and so does the TX main NCO,");
-		LOG_INF("  since it is what upconverts that DC offset into a tone.");
-		LOG_INF("  With every FTW verified correct, and [5] showing the fine");
-		LOG_INF("  DUC reaching the DAC too, the fault is confined to a single");
-		LOG_INF("  interface: the deframer handing samples into the fine DUC.");
-		LOG_INF("  [6] decides which side of it -- an FPGA tone that crosses");
-		LOG_INF("  the deframer but skips DDR and the DMA.");
+		LOG_INF("the chip's own tone reaches the ADC but ours did not this run:");
+		LOG_INF("  the DAC output stage, balun, cable, ADC, RX DDC, framer, RX");
+		LOG_INF("  link and RX DMA all work, and so does the TX main NCO, since");
+		LOG_INF("  it is what upconverts that DC offset into a tone.");
+		LOG_INF("  Do not read this as our datapath being dead: [2] has recovered");
+		LOG_INF("  the DMA-sourced tone at full amplitude before, so an all-silent");
+		LOG_INF("  sweep here means the gate stayed off throughout -- check the");
+		LOG_INF("  per-point duty above, and [9] for whether the gate is running.");
 	} else {
 		LOG_INF("nothing reaches the ADC at any frequency, not even a tone");
 		LOG_INF("  generated inside the chip downstream of our entire");
