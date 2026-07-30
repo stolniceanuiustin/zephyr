@@ -31,8 +31,14 @@ int jesd204_bringup(void);
  * (no-OS has adxcvr_clk_disable() / axi_jesd204_*_lane_clk_disable(); this port
  * has not needed them). So this is a link stop, not a full unwind.
  *
- * Untested: nothing in the sample calls it, and it has never run on hardware.
- * Whether jesd204_bringup() succeeds after it is unverified.
+ * That partial unwind is nevertheless enough to re-bring-up from: with
+ * CONFIG_AD9081_FAULT_INJECTION the sample tears the link down and calls
+ * jesd204_bringup() again, and the link reaches DATA the second time (verified
+ * on hardware). Disabling the deframer does drop the link out of DATA, and
+ * re-running CLK_SYNC and LINK_ENABLE over the still-running GT, lane clocks and
+ * HMC7044 tree renegotiates it. Only this one cycle is tested -- nothing says
+ * repeated cycles stay clean, and the blocks left running are why it works, so a
+ * fuller unwind would need its own verification.
  *
  * Returns the number of failed steps (0 on a clean walk), or -ENODEV if the chip
  * was never initialised.

@@ -83,8 +83,13 @@ LOG_MODULE_REGISTER(axi_adxcvr, LOG_LEVEL_INF);
 #define ADXCVR_RESETN        BIT(0)
 #define ADXCVR_BUFSTATUS_RST BIT(1)
 
-/* REG_STATUS bits. */
+/*
+ * REG_STATUS bits. Layout from the IP itself (HDL axi_adxcvr_up.v:537):
+ *   {25'd0, bufstatus[1], bufstatus[0], ~pll_locked, 3'b0, status}
+ * so bit4 is active-high "PLL *not* locked" -- the inverse sense of the others.
+ */
 #define ADXCVR_STATUS              BIT(0)
+#define ADXCVR_PLL_NOT_LOCKED      BIT(4)
 #define ADXCVR_BUFSTATUS_UNDERFLOW BIT(5)
 #define ADXCVR_BUFSTATUS_OVERFLOW  BIT(6)
 
@@ -519,13 +524,22 @@ static int adxcvr_reset(struct adxcvr *x)
 	} while (retry--);
 
 	/*
-	 * RESET_DONE never asserted. The raw STATUS word tells us why: 0x0 means
-	 * the GT PLL never locked -- almost always a missing/wrong reference clock
-	 * at the transceiver (QPLL0 for TX, CPLL for RX) rather than a reset-pulse
-	 * problem. A nonzero value with bit0 clear points at the elastic buffer.
+	 * RESET_DONE never asserted. The raw STATUS word says why, so decode the
+	 * common cause rather than leaving the reader to look up the bit layout:
+	 * bit4 is ~pll_locked (axi_adxcvr_up.v:537), and a GT that cannot lock its
+	 * PLL almost always has a missing or wrong reference clock (QPLL0 for TX,
+	 * CPLL for RX) rather than a reset-pulse problem.
+	 *
+	 * Verified by fault injection: pointing the RX GT at an undriven QPLL1
+	 * produces exactly STATUS=0x10 here.
 	 */
-	LOG_ERR("%s: RESET_DONE not set after 2x100ms (raw STATUS=0x%08x)",
-		x->name, status);
+	if (status & ADXCVR_PLL_NOT_LOCKED) {
+		LOG_ERR("%s: GT PLL not locked after 2x100ms (STATUS=0x%08x) -- "
+			"check the reference clock", x->name, status);
+	} else {
+		LOG_ERR("%s: RESET_DONE not set after 2x100ms (raw STATUS=0x%08x)",
+			x->name, status);
+	}
 	return -ETIMEDOUT;
 }
 

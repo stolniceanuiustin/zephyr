@@ -38,6 +38,12 @@ int axi_jesd204_rx_lane_clk_enable(void);
  * No-ops (returns 0) when the link is disabled or not yet in DATA. Returns
  * -EAGAIN if a restart was issued -- the link needs time to re-negotiate, so the
  * caller should re-read status rather than treat it as a hard failure.
+ *
+ * Both outcomes are verified by fault injection: forcing a desynced LANE_STATUS
+ * makes this bounce the link and return -EAGAIN, after which the link
+ * renegotiates to DATA in well under 100 ms; with nothing forced it leaves a
+ * healthy link alone. That second check is the regression test for an inverted
+ * polarity bug that used to restart working links.
  */
 int axi_jesd204_rx_watchdog(void);
 
