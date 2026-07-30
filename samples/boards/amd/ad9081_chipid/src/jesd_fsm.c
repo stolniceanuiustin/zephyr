@@ -1,29 +1,42 @@
 /*
- * JESD204B bring-up sequence.
+ * JESD204B bring-up -- device state tables and topology.
  *
- * Every block was *configured* separately (adxcvr, jesd204 link cores, TPL, and
- * the AD9082 datapath), each holding its link/reset dark. A JESD204 link only
- * comes alive when the FPGA transceiver + link cores and the AD9082's framer/
- * deframer are activated together, in a fixed phase order, with SYSREF crossing
- * both ends. no-OS/Linux express this as a jesd204 state machine that steps all
- * devices through each phase in lock-step. We don't pull in that framework; this
- * file reproduces the same phase order by hand for our single chip + single FPGA
- * link pair.
+ * Every block (adxcvr, jesd204 link cores, TPL, AD9082 datapath) is *configured*
+ * separately at boot, each holding its link/reset dark. A JESD204 link only
+ * comes alive when the FPGA transceiver, the FPGA link cores and the AD9082's
+ * framer/deframer are activated together in a fixed phase order, with SYSREF
+ * crossing both ends.
  *
- * Phase order (mirrors the no-OS FSM ops for the ad9081 + axi_jesd devices):
- *   LINK_INIT      - link params already programmed at configure time.
- *   SETUP/SYNC     - chip one-shot SYNC + NCO sync (subclass 1 uses SYSREF).
- *   CLOCKS_ENABLE  - GT reset-release (both dirs); chip JESD PLL lock check;
- *                    204C background calibration on the chip's JRX; enable the
- *                    FPGA lane clocks (link cores).
- *   LINK_ENABLE    - chip JRX deframer enable; SYSREF is free-running from the
- *                    HMC7044 (continuous, ch3/ch13), so both ends see it.
- *   LINK_RUNNING   - read link status on both the FPGA cores and the chip.
+ * That order lives in the tables below rather than in a hand-written sequence.
+ * Each participating device registers callbacks against the phases it cares
+ * about, and jesd204_fsm_start() (jesd204_fsm.c) walks the phases op-major:
+ * every device completes a phase before any device starts the next. This is the
+ * structure of the no-OS/Linux jesd204 framework -- see
+ * no-OS drivers/frequency/hmc7044/hmc7044.c:1441 and
+ * drivers/axi_core/jesd204/axi_jesd204_rx.c:840 for the reference tables.
  *
- * SYSREF note: the HMC7044 emits DEV_SYSREF / FPGA_SYSREF continuously at
- * 1.953 MHz (see hmc7044.c), so there is no explicit "pulse SYSREF" step here --
- * subclass-1 alignment happens against that free-running SYSREF as each end is
- * enabled.
+ * Phase assignment here, and where it comes from in no-OS:
+ *
+ *   CLK_SYNC_STAGE1  chip one-shot SYNC (subclass 1). The clock-sync phases are
+ *                    where no-OS's HMC7044 driver does its tree sync
+ *                    (hmc7044.c:1447-1458); this chip's SYNC belongs in the same
+ *                    window.
+ *   CLK_SYNC_STAGE2  chip NCO sync.
+ *   CLOCKS_ENABLE    GT reset-release, then FPGA lane clocks -- in that order,
+ *                    matching no-OS jesd204_clk_enable() (jesd204_clk.c:44-66),
+ *                    which drives adxcvr before the link cores. Chip JESD PLL
+ *                    lock and 204C calibration also sit here.
+ *   LINK_ENABLE      chip JRX deframer enable, after clearing the JRX
+ *                    transport-layer buffer protection.
+ *   LINK_RUNNING     poll for DATA on both FPGA cores, read chip link status,
+ *                    then verify the TPL datapath.
+ *
+ * Ordering *within* a phase is the device order in jesd204_topology below.
+ *
+ * SYSREF: the HMC7044 emits DEV_SYSREF / FPGA_SYSREF continuously at 1.953 MHz
+ * (hmc7044.c), so no device registers a sysref_cb and no phase requests a pulse.
+ * Subclass-1 alignment happens against that free-running SYSREF as each end is
+ * enabled. The framework hook exists for a board that gates SYSREF instead.
  *
  * SPDX-License-Identifier: Apache-2.0
  */
@@ -37,6 +50,7 @@ LOG_MODULE_REGISTER(jesd_fsm, LOG_LEVEL_INF);
 #include "axi_adxcvr.h"
 #include "axi_jesd204.h"
 #include "axi_tpl.h"
+#include "jesd204_fsm.h"
 
 #include "adi_ad9081.h"
 #include "adi_ad9081_hal.h"
@@ -46,166 +60,386 @@ LOG_MODULE_REGISTER(jesd_fsm, LOG_LEVEL_INF);
 #define AD9081_JRX_LINK AD9081_LINK_0
 
 /*
- * Bring-up is deliberately best-effort: a JESD204 link stalls at the *first*
- * broken stage, but which stage that is, is exactly what we're trying to learn.
- * So instead of aborting on the first failure (which blinds us to everything
- * downstream), each step records its result and we press on. The chip SPI ops
- * and the FPGA AXI status reads are all safe to attempt regardless of GT state.
- * A one-line-per-step summary at the end shows the whole chain in one boot.
+ * Every callback returns JESD204_STATE_CHANGE_DONE on success and a negative
+ * errno on failure, as in no-OS. On UNINIT most of them have nothing to undo:
+ * the phase is a no-op on the way down and says so by returning DONE.
  */
-struct step_result {
-	const char *name;
-	int rc;
+#define JESD204_STATE_CHANGE_DONE 1
+
+/* ---------------------------------------------------------------- AD9082 --- */
+
+static adi_ad9081_device_t *chip(void)
+{
+	return ad9081_get_device();
+}
+
+static int ad9081_fsm_oneshot_sync(struct jesd204_dev *jdev,
+				   enum jesd204_state_op_reason reason)
+{
+	ARG_UNUSED(jdev);
+
+	if (reason != JESD204_STATE_OP_REASON_INIT) {
+		return JESD204_STATE_CHANGE_DONE;
+	}
+
+	if (adi_ad9081_jesd_oneshot_sync(chip(), JESD_SUBCLASS_1)) {
+		return -EIO;
+	}
+	return JESD204_STATE_CHANGE_DONE;
+}
+
+static int ad9081_fsm_nco_sync(struct jesd204_dev *jdev,
+			       enum jesd204_state_op_reason reason)
+{
+	ARG_UNUSED(jdev);
+
+	if (reason != JESD204_STATE_OP_REASON_INIT) {
+		return JESD204_STATE_CHANGE_DONE;
+	}
+
+	if (adi_ad9081_device_nco_sync_post(chip())) {
+		return -EIO;
+	}
+	return JESD204_STATE_CHANGE_DONE;
+}
+
+static int ad9081_fsm_clks_enable(struct jesd204_dev *jdev,
+				  enum jesd204_state_op_reason reason,
+				  struct jesd204_link *lnk)
+{
+	uint8_t pll_status = 0;
+
+	ARG_UNUSED(jdev);
+	ARG_UNUSED(lnk);
+
+	if (reason != JESD204_STATE_OP_REASON_INIT) {
+		return JESD204_STATE_CHANGE_DONE;
+	}
+
+	if (adi_ad9081_jesd_pll_lock_status_get(chip(), &pll_status)) {
+		LOG_ERR("chip JESD PLL status read failed");
+		return -EIO;
+	}
+	LOG_INF("chip JESD PLL status = 0x%x", pll_status);
+	if (!pll_status) {
+		return -EIO;
+	}
+
+	/* 204C background calibration on the deframer (force reset, no boost). */
+	if (adi_ad9081_jesd_rx_calibrate_204c(chip(), 1, 0, 1)) {
+		LOG_WRN("chip JRX 204C calibration failed");
+		return -EIO;
+	}
+
+	return JESD204_STATE_CHANGE_DONE;
+}
+
+static int ad9081_fsm_link_enable(struct jesd204_dev *jdev,
+				  enum jesd204_state_op_reason reason,
+				  struct jesd204_link *lnk)
+{
+	ARG_UNUSED(jdev);
+	ARG_UNUSED(lnk);
+
+	if (reason == JESD204_STATE_OP_REASON_UNINIT) {
+		if (adi_ad9081_jesd_rx_link_enable_set(chip(), AD9081_JRX_LINK,
+						       0)) {
+			return -EIO;
+		}
+		return JESD204_STATE_CHANGE_DONE;
+	}
+
+	/*
+	 * Disable the JRX transport-layer elastic-buffer protection before
+	 * enabling the link.
+	 *
+	 * JRX_TPL_1 (0x4A1) bit6 BUF_PROTECT_EN withholds samples from the
+	 * deframer output when the elastic-buffer phase is judged marginal. It
+	 * resets to 1 -- measured 0x4A1 = 0x41 on this board -- and nothing
+	 * clears it on a 204B link: the vendor API clears only bit7
+	 * BUF_PROTECTION, and no-OS clears bit6 only for 204C on rev<3 silicon.
+	 * A 204B port therefore inherits it enabled, so this write brings the
+	 * link in line with what the reference code does for 204C.
+	 *
+	 * It was found while chasing the ~2.7 ms gating of the DAC output, and it
+	 * is NOT the cause: clearing it here (confirmed 0x41 -> 0x01 by readback)
+	 * left the gating unchanged. PHASE_DIFF (0x4A5) also reads a stable 4, so
+	 * the protection had no marginal phase to act on in the first place. Kept
+	 * because inheriting a reset default the reference code clears is worth
+	 * not doing, not because it fixes anything.
+	 */
+	if (adi_ad9081_hal_bf_set(chip(), REG_JRX_TPL_1_ADDR,
+				  BF_JRX_TPL_BUF_PROTECT_EN_INFO, 0)) {
+		LOG_WRN("chip JRX buf-protect clear failed");
+		return -EIO;
+	}
+
+	/*
+	 * Enable the chip's JRX deframer. The JTX framer runs once its digital
+	 * reset is released (done inside startup_rx) and SYSREF arrives.
+	 */
+	if (adi_ad9081_jesd_rx_link_enable_set(chip(), AD9081_JRX_LINK, 1)) {
+		return -EIO;
+	}
+
+	/* Let the link negotiate CGS -> ILAS -> DATA before anyone reads status. */
+	k_msleep(10);
+
+	return JESD204_STATE_CHANGE_DONE;
+}
+
+static int ad9081_fsm_link_running(struct jesd204_dev *jdev,
+				   enum jesd204_state_op_reason reason,
+				   struct jesd204_link *lnk)
+{
+	uint16_t tx_status = 0;
+	uint16_t rx_status = 0;
+
+	ARG_UNUSED(jdev);
+	ARG_UNUSED(lnk);
+
+	if (reason != JESD204_STATE_OP_REASON_INIT) {
+		return JESD204_STATE_CHANGE_DONE;
+	}
+
+	if (adi_ad9081_jesd_tx_link_status_get(chip(), AD9081_LINK_0,
+					       &tx_status)) {
+		LOG_WRN("chip jesd_tx_link_status_get failed");
+	} else {
+		LOG_INF("chip JTX (framer)   link status = 0x%04x", tx_status);
+	}
+
+	if (adi_ad9081_jesd_rx_link_status_get(chip(), AD9081_JRX_LINK,
+					       &rx_status)) {
+		LOG_WRN("chip jesd_rx_link_status_get failed");
+	} else {
+		LOG_INF("chip JRX (deframer) link status = 0x%04x", rx_status);
+	}
+
+	/*
+	 * Reported, not gated. The chip status words are diagnostic here -- the
+	 * authoritative DATA check is the FPGA link cores' own, in
+	 * axi_jesd204_fsm_link_running(). no-OS treats them the same way
+	 * (app.c:450-451 prints them and acts on neither).
+	 */
+	return JESD204_STATE_CHANGE_DONE;
+}
+
+static const struct jesd204_dev_data ad9081_jesd204_data = {
+	.state_ops = {
+		[JESD204_OP_CLK_SYNC_STAGE1] = {
+			.per_device = ad9081_fsm_oneshot_sync,
+			.mode = JESD204_STATE_OP_MODE_PER_DEVICE,
+		},
+		[JESD204_OP_CLK_SYNC_STAGE2] = {
+			.per_device = ad9081_fsm_nco_sync,
+			.mode = JESD204_STATE_OP_MODE_PER_DEVICE,
+		},
+		[JESD204_OP_CLOCKS_ENABLE] = {
+			.per_link = ad9081_fsm_clks_enable,
+		},
+		[JESD204_OP_LINK_ENABLE] = {
+			.per_link = ad9081_fsm_link_enable,
+		},
+		[JESD204_OP_LINK_RUNNING] = {
+			.per_link = ad9081_fsm_link_running,
+		},
+	},
 };
 
-#define MAX_STEPS 12
+static struct jesd204_dev ad9081_jdev = {
+	.name = "ad9082",
+	.dev_data = &ad9081_jesd204_data,
+};
 
-static void record(struct step_result *steps, int *n, const char *name, int rc)
+/* ------------------------------------------------------- GT transceivers --- */
+
+/*
+ * GT reset-release. Each direction is released independently so a TX failure
+ * does not hide the state of RX.
+ *
+ * This runs before the link cores' lane-clock enable, which is the order no-OS
+ * uses in jesd204_clk_enable() (jesd204_clk.c:48-64): adxcvr first, then
+ * jesd204_rx, then jesd204_tx.
+ */
+static int adxcvr_fsm_clks_enable(struct jesd204_dev *jdev,
+				  enum jesd204_state_op_reason reason,
+				  struct jesd204_link *lnk)
 {
-	if (*n < MAX_STEPS) {
-		steps[*n].name = name;
-		steps[*n].rc = rc;
-		(*n)++;
+	int ret;
+
+	ARG_UNUSED(jdev);
+	ARG_UNUSED(lnk);
+
+	if (reason != JESD204_STATE_OP_REASON_INIT) {
+		return JESD204_STATE_CHANGE_DONE;
 	}
-	if (rc) {
-		LOG_WRN("step %-22s : FAIL (%d)", name, rc);
-	} else {
-		LOG_INF("step %-22s : ok", name);
+
+	ret = axi_adxcvr_tx_enable();
+	if (ret) {
+		return ret;
 	}
+
+	ret = axi_adxcvr_rx_enable();
+	if (ret) {
+		return ret;
+	}
+
+	return JESD204_STATE_CHANGE_DONE;
 }
+
+static const struct jesd204_dev_data adxcvr_jesd204_data = {
+	.state_ops = {
+		[JESD204_OP_CLOCKS_ENABLE] = {
+			.per_link = adxcvr_fsm_clks_enable,
+		},
+	},
+};
+
+static struct jesd204_dev adxcvr_jdev = {
+	.name = "adxcvr",
+	.dev_data = &adxcvr_jesd204_data,
+};
+
+/* ---------------------------------------------------- FPGA JESD204 cores --- */
+
+static int axi_jesd204_fsm_clks_enable(struct jesd204_dev *jdev,
+				       enum jesd204_state_op_reason reason,
+				       struct jesd204_link *lnk)
+{
+	int ret;
+
+	ARG_UNUSED(jdev);
+	ARG_UNUSED(lnk);
+
+	if (reason != JESD204_STATE_OP_REASON_INIT) {
+		return JESD204_STATE_CHANGE_DONE;
+	}
+
+	ret = axi_jesd204_rx_lane_clk_enable();
+	if (ret) {
+		return ret;
+	}
+
+	ret = axi_jesd204_tx_lane_clk_enable();
+	if (ret) {
+		return ret;
+	}
+
+	return JESD204_STATE_CHANGE_DONE;
+}
+
+/*
+ * The authoritative link check: both FPGA cores reporting DATA.
+ *
+ * no-OS polls here rather than assuming -- axi_jesd204_rx.c:818-823 retries the
+ * status read 20 times at 4 ms. axi_jesd204_status_read() logs and evaluates
+ * both ends in one call, so this retries around it on the same budget.
+ */
+static int axi_jesd204_fsm_link_running(struct jesd204_dev *jdev,
+					enum jesd204_state_op_reason reason,
+					struct jesd204_link *lnk)
+{
+	int retry = 20;
+	int ret;
+
+	ARG_UNUSED(jdev);
+	ARG_UNUSED(lnk);
+
+	if (reason != JESD204_STATE_OP_REASON_INIT) {
+		return JESD204_STATE_CHANGE_DONE;
+	}
+
+	do {
+		k_msleep(4);
+		ret = axi_jesd204_status_read();
+	} while (ret && retry--);
+
+	if (ret) {
+		return ret;
+	}
+
+	/* TPL datapath verify + DAC re-sync, now that the link clocks run. */
+	ret = axi_tpl_enable();
+	if (ret) {
+		LOG_WRN("TPL post-link verify failed (%d)", ret);
+		return ret;
+	}
+
+	return JESD204_STATE_CHANGE_DONE;
+}
+
+static const struct jesd204_dev_data axi_jesd204_jesd204_data = {
+	.state_ops = {
+		[JESD204_OP_CLOCKS_ENABLE] = {
+			.per_link = axi_jesd204_fsm_clks_enable,
+		},
+		[JESD204_OP_LINK_RUNNING] = {
+			.per_link = axi_jesd204_fsm_link_running,
+		},
+	},
+};
+
+static struct jesd204_dev axi_jesd204_jdev = {
+	.name = "axi-jesd204",
+	.dev_data = &axi_jesd204_jesd204_data,
+};
+
+/* ---------------------------------------------------------------- driver --- */
+
+/*
+ * Device visit order within each phase.
+ *
+ * This order is chosen to reproduce exactly the step order that was verified
+ * working on this board, which the phase tables alone do not determine. Inside
+ * CLOCKS_ENABLE it yields: GT TX/RX reset-release, then the chip's JESD PLL
+ * check and 204C calibration, then the FPGA lane clocks. adxcvr before
+ * axi-jesd204 is additionally what no-OS does in jesd204_clk_enable()
+ * (jesd204_clk.c:48-64).
+ *
+ * The CLK_SYNC phases are unaffected -- ad9082 is the only device registered
+ * for them. In LINK_RUNNING, ad9082 precedes axi-jesd204, which only affects
+ * log order: the chip's status read is diagnostic and the FPGA core's is the
+ * one that gates.
+ */
+static struct jesd204_topology topology = {
+	.devs = {
+		&adxcvr_jdev,
+		&ad9081_jdev,
+		&axi_jesd204_jdev,
+	},
+	.devs_number = 3,
+	.link = {
+		.link_id = 0,
+		.is_transmit = false,
+	},
+};
 
 int jesd204_bringup(void)
 {
-	adi_ad9081_device_t *dev = ad9081_get_device();
-	struct step_result steps[MAX_STEPS];
-	uint8_t jesd_pll_status = 0;
-	uint16_t rx_link_status = 0;
-	uint16_t tx_link_status = 0;
-	int nsteps = 0;
-	int fpga_ok;
-	int i;
-	int32_t err;
+	int failures;
 
-	if (dev == NULL) {
+	if (ad9081_get_device() == NULL) {
 		LOG_ERR("AD9081 device not initialised");
 		return -ENODEV;
 	}
 
-	LOG_INF("--- JESD204B bring-up sequence (best-effort, full chain) ---");
+	failures = jesd204_fsm_start(&topology);
 
-	/*
-	 * SETUP / SYNC. Subclass 1: one-shot SYNC then NCO sync. The chip aligns
-	 * to the continuous SYSREF from the HMC7044.
-	 */
-	err = adi_ad9081_jesd_oneshot_sync(dev, JESD_SUBCLASS_1);
-	record(steps, &nsteps, "chip oneshot_sync", err ? -EIO : 0);
-
-	err = adi_ad9081_device_nco_sync_post(dev);
-	record(steps, &nsteps, "chip nco_sync_post", err ? -EIO : 0);
-
-	/*
-	 * CLOCKS_ENABLE. Release the GT resets (each direction independently so a
-	 * TX failure doesn't hide RX), check the chip's JESD PLL and run 204C
-	 * calibration on the deframer, then enable the FPGA link-core lane clocks.
-	 */
-	record(steps, &nsteps, "GT TX reset-release", axi_adxcvr_tx_enable());
-	record(steps, &nsteps, "GT RX reset-release", axi_adxcvr_rx_enable());
-
-	err = adi_ad9081_jesd_pll_lock_status_get(dev, &jesd_pll_status);
-	if (err != API_CMS_ERROR_OK) {
-		record(steps, &nsteps, "chip JESD PLL read", -EIO);
-	} else {
-		LOG_INF("chip JESD PLL status = 0x%x", jesd_pll_status);
-		record(steps, &nsteps, "chip JESD PLL lock",
-		       jesd_pll_status ? 0 : -EIO);
+	if (failures) {
+		LOG_WRN("=== JESD204B link NOT fully up (%d failed step(s)) ===",
+			failures);
+		return -EIO;
 	}
 
-	/* 204C background calibration on the deframer (force reset, no boost). */
-	err = adi_ad9081_jesd_rx_calibrate_204c(dev, 1, 0, 1);
-	record(steps, &nsteps, "chip JRX 204C cal", err ? -EIO : 0);
+	LOG_INF("=== JESD204B LINK UP (both ends carrying DATA) ===");
+	return 0;
+}
 
-	/* FPGA link cores: release the framer/deframer lane clocks. */
-	record(steps, &nsteps, "FPGA rx lane clk", axi_jesd204_rx_lane_clk_enable());
-	record(steps, &nsteps, "FPGA tx lane clk", axi_jesd204_tx_lane_clk_enable());
-
-	/*
-	 * Disable the JRX transport-layer elastic-buffer protection before enabling
-	 * the link.
-	 *
-	 * JRX_TPL_1 (0x4A1) bit6 BUF_PROTECT_EN withholds samples from the deframer
-	 * output when the elastic-buffer phase is judged marginal. It resets to 1 --
-	 * measured 0x4A1 = 0x41 on this board -- and nothing clears it on a 204B
-	 * link: the vendor API clears only bit7 BUF_PROTECTION, and no-OS clears
-	 * bit6 only for 204C on rev<3 silicon. A 204B port therefore inherits it
-	 * enabled, so this write brings the link in line with what the reference
-	 * code does for 204C.
-	 *
-	 * It was found while chasing the ~2.7 ms gating of the DAC output, and it is
-	 * NOT the cause: clearing it here (confirmed 0x41 -> 0x01 by readback) left
-	 * the gating unchanged. PHASE_DIFF (0x4A5) also reads a stable 4, so the
-	 * protection had no marginal phase to act on in the first place. Kept because
-	 * inheriting a reset default the reference code clears is worth not doing,
-	 * not because it fixes anything.
-	 */
-	err = adi_ad9081_hal_bf_set(dev, REG_JRX_TPL_1_ADDR,
-				    BF_JRX_TPL_BUF_PROTECT_EN_INFO, 0);
-	record(steps, &nsteps, "chip JRX buf-protect off", err ? -EIO : 0);
-
-	/*
-	 * LINK_ENABLE. Enable the chip's JRX deframer; the JTX framer runs once
-	 * its digital reset is released (done inside startup_rx) and SYSREF
-	 * arrives. Give the link a moment to negotiate CGS -> ILAS -> DATA.
-	 */
-	err = adi_ad9081_jesd_rx_link_enable_set(dev, AD9081_JRX_LINK, 1);
-	record(steps, &nsteps, "chip JRX enable", err ? -EIO : 0);
-
-	k_msleep(10);
-
-	/*
-	 * LINK_RUNNING. Read link status on both ends. This is the meaningful
-	 * status check -- everything before was configuration/activation.
-	 */
-	LOG_INF("--- link status ---");
-
-	err = adi_ad9081_jesd_tx_link_status_get(dev, AD9081_LINK_0,
-						 &tx_link_status);
-	if (err == API_CMS_ERROR_OK) {
-		LOG_INF("chip JTX (framer)   link status = 0x%04x", tx_link_status);
-	} else {
-		LOG_WRN("chip jesd_tx_link_status_get failed (%d)", err);
+int jesd204_teardown(void)
+{
+	if (ad9081_get_device() == NULL) {
+		return -ENODEV;
 	}
-
-	err = adi_ad9081_jesd_rx_link_status_get(dev, AD9081_JRX_LINK,
-						 &rx_link_status);
-	if (err == API_CMS_ERROR_OK) {
-		LOG_INF("chip JRX (deframer) link status = 0x%04x", rx_link_status);
-	} else {
-		LOG_WRN("chip jesd_rx_link_status_get failed (%d)", err);
-	}
-
-	/* FPGA-side link state (CGS/ILAS/DATA). */
-	fpga_ok = axi_jesd204_status_read();
-	record(steps, &nsteps, "FPGA link DATA", fpga_ok);
-
-	/* TPL datapath verify + DAC re-sync now that the link clocks run. */
-	if (fpga_ok == 0) {
-		int tpl = axi_tpl_enable();
-
-		if (tpl) {
-			LOG_WRN("TPL post-link verify failed (%d)", tpl);
-		}
-	}
-
-	/* One-shot chain summary: the first FAIL is where the link stalls. */
-	LOG_INF("=== JESD204 bring-up summary ===");
-	for (i = 0; i < nsteps; i++) {
-		LOG_INF("  [%s] %s", steps[i].rc ? "FAIL" : " ok ", steps[i].name);
-	}
-
-	if (fpga_ok == 0) {
-		LOG_INF("=== JESD204B LINK UP (both ends carrying DATA) ===");
-	} else {
-		LOG_WRN("=== JESD204B link NOT fully up (see summary above) ===");
-	}
-	return fpga_ok;
+	return jesd204_fsm_stop(&topology);
 }
