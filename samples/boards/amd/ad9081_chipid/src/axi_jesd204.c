@@ -51,6 +51,13 @@ LOG_MODULE_REGISTER(axi_jesd204, LOG_LEVEL_INF);
 #define JESD204_RX_REG_LINK_CONF2     0x240
 #define JESD204_TX_REG_ILAS(x, y)     (((x) * 32 + (y) * 4) + 0x310)
 
+/* Per-lane RX status/error counters (axi_jesd204_rx only). */
+#define JESD204_RX_REG_LANE_STATUS(x) (((x) * 32) + 0x300)
+#define JESD204_RX_REG_LANE_ERRORS(x) (((x) * 32) + 0x308)
+
+/* LINK_STATUS value meaning "carrying data". */
+#define JESD204_LINK_STATUS_DATA 3
+
 /* Field bits. */
 #define JESD204_SYSREF_CONF_SYSREF_DISABLE   BIT(0)
 #define JESD204_RX_LINK_CONF2_BUFFER_EARLY_RELEASE BIT(16)
@@ -275,6 +282,75 @@ int axi_jesd204_tx_lane_clk_enable(void)
 int axi_jesd204_rx_lane_clk_enable(void)
 {
 	jesd_write(&jesd_rx, JESD204_REG_LINK_DISABLE, 0x0);
+	return 0;
+}
+
+/*
+ * Per-lane desync check -- port of no-OS axi_jesd204_rx_check_lane_status().
+ *
+ * Returns true if this lane needs the link restarted. For 8B/10B the low two
+ * status bits must both be clear; anything else means the lane lost alignment.
+ * The error counter is only present from PCORE minor 2 onward, so it is read
+ * for the log line but never gates the decision.
+ */
+static bool jesd_rx_check_lane_status(const struct axi_jesd204 *j, uint32_t lane)
+{
+	uint32_t status = jesd_read(j, JESD204_RX_REG_LANE_STATUS(lane));
+	uint32_t errors = 0;
+
+	/* This link is 8B/10B (JESD204B); the 64B/66B EMB path does not apply. */
+	if ((status & 0x3) == 0x0) {
+		return false;
+	}
+
+	if (PCORE_VER_MINOR(j->version) >= 2) {
+		errors = jesd_read(j, JESD204_RX_REG_LANE_ERRORS(lane));
+	}
+
+	LOG_WRN("%s: lane %u desynced (status 0x%08x, %u errors), restarting link",
+		j->name, lane, status, errors);
+	return true;
+}
+
+/*
+ * Link watchdog -- port of no-OS axi_jesd204_rx_watchdog(), called once after
+ * bring-up (no-OS app.c:448).
+ *
+ * A link can reach DATA with one lane already unhappy: the aggregate status only
+ * reports the link state, so a lane that lost alignment during ILAS stays
+ * invisible there. This inspects each lane and, if any is desynced, bounces
+ * LINK_DISABLE to force a fresh CGS/ILAS pass.
+ *
+ * Only meaningful while the link is enabled and already reporting DATA -- a link
+ * still negotiating has lanes legitimately mid-alignment, and disabling it then
+ * would interrupt a bring-up that was going to succeed.
+ */
+int axi_jesd204_rx_watchdog(void)
+{
+	const struct axi_jesd204 *j = &jesd_rx;
+	bool restart = false;
+
+	if (jesd_read(j, JESD204_RG_LINK_STATE) & 0x1) {
+		return 0; /* link disabled -- nothing to police */
+	}
+
+	if ((jesd_read(j, JESD204_REG_LINK_STATUS) & 0x3) !=
+	    JESD204_LINK_STATUS_DATA) {
+		return 0;
+	}
+
+	for (uint32_t lane = 0; lane < j->num_lanes; lane++) {
+		restart |= jesd_rx_check_lane_status(j, lane);
+	}
+
+	if (restart) {
+		jesd_write(j, JESD204_REG_LINK_DISABLE, 0x1);
+		k_msleep(100);
+		jesd_write(j, JESD204_REG_LINK_DISABLE, 0x0);
+		return -EAGAIN;
+	}
+
+	LOG_INF("%s: all %u lanes in sync", j->name, j->num_lanes);
 	return 0;
 }
 

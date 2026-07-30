@@ -151,26 +151,28 @@ not share.
 
 ---
 
-## Bearing on the open TX bypass decision
+## Resolution: the TX bypass decision was moot
 
-I was asked to inform this, not decide it. The comparison points one way:
+The open question was bypass (100% duty, no recoverable tone) versus
+store-and-replay (9% duty, recoverable tone). Neither is what the reference does.
 
-Reverting to store-and-replay (9% duty, **recoverable tone**) is closer to
-reference behaviour than bypass (100% duty, **no recoverable tone**). The offload
-in store-and-replay is the ADI-intended mode for replaying a finite buffer faster
-than DDR can sustain — the handoff's own note (`axi_data_offload.h:26-28`) states
-this correctly. no-OS leaves TX at its cyclic reset default and never overrides
-it.
+Since the scope was to port the driver, JESD204B and the FSM, and to make a
+sample *similar to no-OS*, the sample was trimmed to mirror `app.c` and the DAC is
+now fed from the TPL DDS — the reference's own output path, which sidesteps DDR
+bandwidth entirely. With `DATA_SELECT=0` the offload is not in the datapath at
+all (`ad_ip_jesd204_tpl_dac_channel.v:144`), so its mode no longer matters and
+neither does the 403 MB/s figure.
 
-A transmitter that emits a correct-but-gated tone is more useful than one that
-emits continuous garbage, and "correct tone, gated" is what the reference's own
-buffering mode is designed to produce.
+Removed as out of scope: `jesd_playback.c`, `jesd_capture.c`, `jesd_loopback.c`,
+`jesd_diag.c`, `jesd_test.c`, `axi_data_offload.c/.h`. Added:
+`axi_jesd204_rx_watchdog()`, closing the one genuine gap (delta #5).
 
-Worth noting for whoever decides: if the goal is *a continuous, correct tone at
-the DAC*, the reference's answer is neither bypass nor store-and-replay — it is
-**the TPL DDS**, which sidesteps DDR bandwidth entirely and is already
-implemented here at `axi_tpl.c:332-392`. That is a third option the framing did
-not include.
+The DMAC device-tree nodes are kept but undriven, matching no-OS — its `app.c`
+calls `axi_dmac_init()` on both cores (`:456-457`) and never transfers.
+
+This document is retained because the reasoning it records is what made the
+403 MB/s work stop, and because a future reader who reintroduces a DDR streaming
+path will need to know that the reference does not have one.
 
 ---
 

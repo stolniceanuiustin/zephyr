@@ -73,6 +73,12 @@
 		 * driver from the core, so we only need reg here. No interrupt line
 		 * is wired to the PS GIC for these cores; the driver falls back to
 		 * its polling path (dma_get_status pumps the transfer).
+		 *
+		 * Bound but not driven, matching no-OS: its app.c calls
+		 * axi_dmac_init() on both cores (app.c:456-457), which only reads
+		 * back their capabilities and starts no transfer. The DAC is fed
+		 * from the transport core's DDS instead, so neither engine is in the
+		 * datapath -- see the note in src/main.c.
 		 */
 		rx_dmac: dma@9c420000 {
 			compatible = "adi,axi-dmac";

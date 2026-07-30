@@ -43,18 +43,24 @@ int axi_tpl_enable(void);
  * Drive the TX transport core's converters from their internal FPGA DDS tone
  * generators (enable=true) or from the DMA stream (enable=false).
  *
- * A diagnostic aid for isolating where transmit samples are lost. The DDS sits at
- * the TPL input inside the FPGA, so its samples traverse the transport core, the
- * serial lanes and the chip's deframer -- everything the DMA path crosses except
- * DDR and the DMA engine. Comparing it against the chip's own test tone (which
- * enters downstream of the deframer) splits the transmit path in two.
+ * This is the no-OS example's actual output path: its axi_dac_init() writes
+ * DATA_SELECT=0 (DDS) to every converter (axi_dac_core.c:1235-1236), so the DMA
+ * and data-offload cores never enter the datapath and the tone costs no DDR
+ * bandwidth at all. The DDS sits at the TPL input, so its samples still cross the
+ * transport core, the serial lanes, the chip's deframer and the DAC datapath.
+ *
+ * scale_micro is micro-units of full scale (1000000 == 1.0), as in no-OS
+ * axi_dac_dds_set_scale(); values at or above 1999000 are clamped. Both DDSs of a
+ * converter get the same frequency and phase, with the phase alternating by
+ * converter index, matching the no-OS default.
  *
  * freq_hz is quantised to freq * 0xFFFF / sample_rate_hz by the 16-bit phase
  * accumulator, so the achieved frequency only equals the request when it divides
  * the sample rate evenly. Returns 0, or -EINVAL if the tone is below the DDS
  * resolution at that sample rate.
  */
-int axi_tpl_tx_dds(uint32_t freq_hz, uint32_t sample_rate_hz, bool enable);
+int axi_tpl_tx_dds(uint32_t freq_hz, uint32_t sample_rate_hz,
+		   uint32_t scale_micro, bool enable);
 
 /*
  * Run a PN link-integrity test on the receive path. The caller first puts the

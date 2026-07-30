@@ -26,6 +26,19 @@ int axi_jesd204_tx_lane_clk_enable(void);
 int axi_jesd204_rx_lane_clk_enable(void);
 
 /*
+ * Inspect each RX lane once the link is up and restart it if any lane desynced.
+ *
+ * The aggregate LINK_STATUS can read DATA while one lane has already lost
+ * alignment, so reaching DATA is not by itself proof that every lane is healthy.
+ * This checks them individually and bounces LINK_DISABLE if any is not.
+ *
+ * No-ops (returns 0) when the link is disabled or not yet in DATA. Returns
+ * -EAGAIN if a restart was issued -- the link needs time to re-negotiate, so the
+ * caller should re-read status rather than treat it as a hard failure.
+ */
+int axi_jesd204_rx_watchdog(void);
+
+/*
  * Read and log the TX/RX link state (link enabled?, CGS/ILAS/DATA phase).
  * Returns 0 when both the framer and deframer report DATA, -EIO otherwise.
  * Meaningful only at the end of the bring-up sequence (LINK_RUNNING).

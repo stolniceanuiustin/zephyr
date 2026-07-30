@@ -307,32 +307,38 @@ int axi_tpl_adc_pn_mon(uint32_t pn_sel, uint32_t delay_ms)
 }
 
 /*
- * Point the TX transport core's converters at their internal DDS tone generators
- * instead of the DMA stream, or back again.
+ * Point the TX transport core's converters at their internal FPGA DDS tone
+ * generators instead of the DMA stream, or back again.
  *
- * This is the bisect that the fine-DUC test tone left open. That tone proved the
- * chip's DAC datapath and the entire analog return path work; it enters the chip
- * downstream of the deframer, so it says nothing about whether the deframer hands
- * anything on. The DDS sits at the *other* end of the suspect stretch: inside the
- * FPGA, at the TPL input, so its samples cross the TPL, the serial lanes and the
- * chip's deframer -- everything our DMA samples cross except DDR and the DMA
- * engine itself.
+ * This is what the no-OS example actually emits. Its app.c passes
+ * `.channels = NULL` to axi_dac_init(), which sends axi_dac_data_setup() down its
+ * else branch (axi_dac_core.c:1227-1238) and writes DATA_SELECT=0 -- DATA_SEL_DDS
+ * -- to every converter. So the reference design's DAC output is an
+ * FPGA-generated tone, and its DMA and data-offload cores are not in the
+ * datapath at all: the TPL's dac_enable is only asserted for data_sel == 4'h2
+ * (ad_ip_jesd204_tpl_dac_channel.v:144), so with DDS selected the transport core
+ * never pulls a beat from the upack FIFO.
  *
- *   DDS tone returns  -> the link and deframer deliver samples correctly, so the
- *                        fault is upstream: DDR contents, the TX DMA, or how the
- *                        DMA feeds the TPL
- *   DDS tone silent   -> the deframer is not passing samples into the DAC
- *                        datapath, despite reporting all four lanes locked
+ * That also means this path needs no DDR bandwidth whatsoever, which is why the
+ * reference never has to care what the memory system can sustain.
  *
- * freq_hz is quantised by the 16-bit phase increment (freq * 0xFFFF / clock), so
- * the achieved tone is only exactly freq_hz when it divides the sample rate
- * evenly. The caller logs what it asked for; a correlator should not assume the
- * result landed on a convenient bin.
+ * The DDS sits at the TPL input inside the FPGA, so its samples still cross the
+ * transport core, the serial lanes and the chip's deframer, then the chip's DAC
+ * datapath and DUC. Everything except DDR and the DMA engine.
+ *
+ * scale_micro is in micro-units of full scale (1000000 == 1.0), matching no-OS
+ * axi_dac_dds_set_scale(); the register is 1.14 fixed point, so the conversion is
+ * scale * 0x4000 / 1000000.
+ *
+ * freq_hz is quantised by the 16-bit phase increment (freq * 0xFFFF / rate), so
+ * the achieved tone only equals the request when it divides the sample rate
+ * evenly.
  */
-int axi_tpl_tx_dds(uint32_t freq_hz, uint32_t sample_rate_hz, bool enable)
+int axi_tpl_tx_dds(uint32_t freq_hz, uint32_t sample_rate_hz,
+		   uint32_t scale_micro, bool enable)
 {
 	struct axi_tpl *t = &tpl_tx;
-	uint32_t incr;
+	uint32_t incr, scale;
 
 	if (!enable) {
 		for (uint32_t c = 0; c < TPL_NUM_CHANNELS; c++) {
@@ -355,31 +361,39 @@ int axi_tpl_tx_dds(uint32_t freq_hz, uint32_t sample_rate_hz, bool enable)
 		return -EINVAL;
 	}
 
+	/* Clamp as no-OS does, then convert micro-units to 1.14 fixed point. */
+	if (scale_micro >= 1999000U) {
+		scale_micro = 1999000U;
+	}
+	scale = (uint32_t)(((uint64_t)scale_micro * DAC_DDS_SCALE_1_0) / 1000000U);
+
 	/*
-	 * Hold SYNC low while reprogramming so every converter's DDS starts from
-	 * the same phase when it is released -- the two DDSs feeding a converter's
-	 * I and Q must stay in a fixed relationship or the result is not a single
-	 * complex tone.
+	 * Hold SYNC low across the whole reprogram so every DDS starts from the
+	 * same phase when it is released. no-OS toggles SYNC per register write;
+	 * doing it once around the batch is equivalent and leaves the converters
+	 * mutually aligned rather than staggered by write order.
 	 */
 	tpl_write(t, DAC_REG_SYNC_CONTROL, 0);
 
 	for (uint32_t c = 0; c < TPL_NUM_CHANNELS; c++) {
 		uint32_t dds_i = c * 2;
 		uint32_t dds_q = c * 2 + 1;
-
-		tpl_write(t, DAC_REG_DDS_SCALE(dds_i), DAC_DDS_SCALE_1_0);
-		tpl_write(t, DAC_REG_DDS_SCALE(dds_q), DAC_DDS_SCALE_1_0);
-
 		/*
-		 * Q lags I by 90 degrees (0x4000 of the 16-bit phase word), which
-		 * makes the pair a quadrature tone rather than two copies of the
-		 * same real signal. The low bit of INCR is set to match no-OS,
-		 * which ORs in 1 to enable the DDS.
+		 * Both DDSs of a converter get the same frequency and phase, and
+		 * the phase alternates 90/0 degrees by converter index. That is
+		 * no-OS's default (axi_dac_core.c:1229-1234), not a quadrature
+		 * pair -- 0x4000 is 90 degrees of the 16-bit phase word.
 		 */
+		uint32_t phase = (c % 2) ? 0U : 0x4000U;
+
+		tpl_write(t, DAC_REG_DDS_SCALE(dds_i), scale);
+		tpl_write(t, DAC_REG_DDS_SCALE(dds_q), scale);
+
+		/* Low bit of INCR enables the DDS, as no-OS ORs in. */
 		tpl_write(t, DAC_REG_DDS_INIT_INCR(dds_i),
-			  DAC_DDS_INIT(0) | DAC_DDS_INCR(incr) | 1U);
+			  DAC_DDS_INIT(phase) | DAC_DDS_INCR(incr) | 1U);
 		tpl_write(t, DAC_REG_DDS_INIT_INCR(dds_q),
-			  DAC_DDS_INIT(0x4000) | DAC_DDS_INCR(incr) | 1U);
+			  DAC_DDS_INIT(phase) | DAC_DDS_INCR(incr) | 1U);
 
 		tpl_write(t, DAC_REG_DATA_SELECT(c),
 			  DAC_DATA_SEL(DAC_DATA_SEL_DDS));
@@ -387,7 +401,8 @@ int axi_tpl_tx_dds(uint32_t freq_hz, uint32_t sample_rate_hz, bool enable)
 
 	tpl_write(t, DAC_REG_SYNC_CONTROL, DAC_SYNC);
 
-	LOG_INF("%s: DDS tone armed, %u Hz at %u SPS (incr 0x%04x), full scale",
-		t->name, freq_hz, sample_rate_hz, incr);
+	LOG_INF("%s: DDS tone armed, %u Hz at %u SPS (incr 0x%04x), scale 0x%04x (%u.%02u%% FS)",
+		t->name, freq_hz, sample_rate_hz, incr, scale,
+		scale_micro / 10000U, (scale_micro % 10000U) / 100U);
 	return 0;
 }
