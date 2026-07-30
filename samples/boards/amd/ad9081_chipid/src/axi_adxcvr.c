@@ -421,6 +421,14 @@ static int adxcvr_clk_set_rate(struct adxcvr *x, unsigned long rate,
 	return 0;
 }
 
+/* REG_CONTROL as this instance's configuration says it should be. */
+static uint32_t adxcvr_control_word(const struct adxcvr *x)
+{
+	return (x->lpm_enable ? ADXCVR_LPM_DFE_N : 0) |
+	       ADXCVR_SYSCLK_SEL(x->sys_clk_sel) |
+	       ADXCVR_OUTCLK_SEL(x->out_clk_sel);
+}
+
 static int adxcvr_configure(struct adxcvr *x)
 {
 	uint32_t synth = adxcvr_read(x, ADXCVR_REG_SYNTH);
@@ -461,9 +469,7 @@ static int adxcvr_configure(struct adxcvr *x)
 	/* Assert reset while we set the clock selection. */
 	adxcvr_write(x, ADXCVR_REG_RESETN, 0);
 
-	control = (x->lpm_enable ? ADXCVR_LPM_DFE_N : 0) |
-		  ADXCVR_SYSCLK_SEL(x->sys_clk_sel) |
-		  ADXCVR_OUTCLK_SEL(x->out_clk_sel);
+	control = adxcvr_control_word(x);
 	adxcvr_write(x, ADXCVR_REG_CONTROL, control);
 
 	LOG_INF("%s: CONTROL=0x%04x (sysclk=%u outclk=%u lpm=%u) enc=%s",
@@ -610,3 +616,56 @@ int axi_adxcvr_rx_enable(void)
 {
 	return adxcvr_clk_enable(&adxcvr_rx);
 }
+
+#ifdef CONFIG_AD9081_FAULT_INJECTION
+
+int axi_adxcvr_fi_rx_break_refclk(void)
+{
+	struct adxcvr *x = &adxcvr_rx;
+	uint32_t control;
+
+	/*
+	 * Point the RX GT at QPLL1, which this bitstream does not drive. The GT
+	 * then has no reference clock, its PLL cannot lock and RESET_DONE never
+	 * asserts -- the exact condition adxcvr_reset() reports -ETIMEDOUT for,
+	 * and the one a missing FMC clock would produce.
+	 *
+	 * Reset is asserted first so the GT is not running on the old selection
+	 * while the mux changes under it.
+	 */
+	adxcvr_write(x, ADXCVR_REG_RESETN, 0);
+
+	control = (x->lpm_enable ? ADXCVR_LPM_DFE_N : 0) |
+		  ADXCVR_SYSCLK_SEL(ADXCVR_SYS_CLK_QPLL1) |
+		  ADXCVR_OUTCLK_SEL(x->out_clk_sel);
+	adxcvr_write(x, ADXCVR_REG_CONTROL, control);
+
+	LOG_WRN("FI: rx_adxcvr sysclk forced to QPLL1 (undriven), CONTROL=0x%04x",
+		control);
+	return 0;
+}
+
+int axi_adxcvr_fi_rx_restore_refclk(void)
+{
+	struct adxcvr *x = &adxcvr_rx;
+	uint32_t control = adxcvr_control_word(x);
+
+	adxcvr_write(x, ADXCVR_REG_RESETN, 0);
+	adxcvr_write(x, ADXCVR_REG_CONTROL, control);
+
+	/*
+	 * The DRP dividers were programmed against CPLL at configure time and the
+	 * break above did not touch them, so restoring the mux is enough -- but
+	 * re-solve them anyway rather than assume, since a failed lock attempt is
+	 * not a state this code has any right to make assumptions about.
+	 */
+	LOG_INF("FI: rx_adxcvr sysclk restored to CPLL, CONTROL=0x%04x", control);
+	return adxcvr_clk_set_rate(x, x->lane_rate_khz, x->ref_rate_khz);
+}
+
+uint32_t axi_adxcvr_fi_rx_status(void)
+{
+	return adxcvr_read(&adxcvr_rx, ADXCVR_REG_STATUS);
+}
+
+#endif /* CONFIG_AD9081_FAULT_INJECTION */

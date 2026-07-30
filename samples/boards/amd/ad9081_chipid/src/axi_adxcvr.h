@@ -35,4 +35,24 @@ int axi_adxcvr_enable(void);
 int axi_adxcvr_tx_enable(void);
 int axi_adxcvr_rx_enable(void);
 
+#ifdef CONFIG_AD9081_FAULT_INJECTION
+#include <stdint.h>
+
+/*
+ * Fault-injection hooks (CONFIG_AD9081_FAULT_INJECTION only).
+ *
+ * break_refclk() re-points the RX GT's sys_clk mux at QPLL1, which this
+ * bitstream does not drive, so the transceiver loses its reference clock. The
+ * next axi_adxcvr_rx_enable() then exercises adxcvr_reset()'s two-attempt retry
+ * and its -ETIMEDOUT report for real, which is what pulling the FMC reference
+ * clock would do without needing to touch the board.
+ *
+ * restore_refclk() puts the mux back and re-programs the GT dividers.
+ * rx_status() is the raw REG_STATUS word, for reporting what the GT said.
+ */
+int axi_adxcvr_fi_rx_break_refclk(void);
+int axi_adxcvr_fi_rx_restore_refclk(void);
+uint32_t axi_adxcvr_fi_rx_status(void);
+#endif
+
 #endif /* AXI_ADXCVR_H_ */

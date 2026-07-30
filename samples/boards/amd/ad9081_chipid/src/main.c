@@ -62,6 +62,10 @@ LOG_MODULE_REGISTER(main, LOG_LEVEL_INF);
 #include "axi_tpl.h"
 #include "jesd_fsm.h"
 
+#ifdef CONFIG_AD9081_FAULT_INJECTION
+#include "fault_injection.h"
+#endif
+
 /*
  * DAC output tone, matching no-OS axi_dac_data_setup()'s defaults:
  * 3 MHz at 0.05 of full scale (axi_dac_core.c:1229-1234).
@@ -202,5 +206,18 @@ int main(void)
 		DAC_DDS_TONE_HZ / 1000000U, DAC_DDS_SCALE_MICRO / 10000U);
 
 	LOG_INF("=== bring-up complete ===");
+
+#ifdef CONFIG_AD9081_FAULT_INJECTION
+	/*
+	 * Last, deliberately. The tests need a link that is known to be up before
+	 * they break it, so that a test failure means the injected fault was
+	 * mishandled rather than that the link was never working. Anything the
+	 * bring-up above achieved has already been reported by this point.
+	 */
+	if (jesd204_fault_injection_run()) {
+		return -EIO;
+	}
+#endif
+
 	return 0;
 }
