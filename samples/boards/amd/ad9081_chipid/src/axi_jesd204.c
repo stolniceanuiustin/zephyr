@@ -288,10 +288,10 @@ int axi_jesd204_rx_lane_clk_enable(void)
 /*
  * Per-lane desync check -- port of no-OS axi_jesd204_rx_check_lane_status().
  *
- * Returns true if this lane needs the link restarted. For 8B/10B the low two
- * status bits must both be clear; anything else means the lane lost alignment.
- * The error counter is only present from PCORE minor 2 onward, so it is read
- * for the log line but never gates the decision.
+ * Returns true if this lane needs the link restarted. For 8B/10B a *non-zero*
+ * low two bits means the lane is fine (CGS/frame sync achieved); all-zero means
+ * it has lost alignment. The error counter is only present from PCORE minor 2
+ * onward, so it is read for the log line but never gates the decision.
  */
 static bool jesd_rx_check_lane_status(const struct axi_jesd204 *j, uint32_t lane)
 {
@@ -299,7 +299,7 @@ static bool jesd_rx_check_lane_status(const struct axi_jesd204 *j, uint32_t lane
 	uint32_t errors = 0;
 
 	/* This link is 8B/10B (JESD204B); the 64B/66B EMB path does not apply. */
-	if ((status & 0x3) == 0x0) {
+	if ((status & 0x3) != 0x0) {
 		return false;
 	}
 
@@ -324,6 +324,11 @@ static bool jesd_rx_check_lane_status(const struct axi_jesd204 *j, uint32_t lane
  * Only meaningful while the link is enabled and already reporting DATA -- a link
  * still negotiating has lanes legitimately mid-alignment, and disabling it then
  * would interrupt a bring-up that was going to succeed.
+ *
+ * One deliberate deviation: no-OS compares the whole status word against 3,
+ * while this masks the state field. On this core the RX word reads exactly 0x3,
+ * so both agree; masking only makes it tolerant of status bits above the state
+ * field rather than silently skipping the check.
  */
 int axi_jesd204_rx_watchdog(void)
 {
