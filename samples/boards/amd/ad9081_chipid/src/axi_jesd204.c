@@ -29,9 +29,15 @@ LOG_MODULE_REGISTER(axi_jesd204, LOG_LEVEL_INF);
 
 #include "axi_jesd204.h"
 
-/* AXI base addresses (on-board bitstream system.hwh). Mapped by axi_jesd.c. */
+/*
+ * AXI base addresses (from the on-board bitstream system.hwh, PS M_AXI_HPM0_LPD
+ * plane). Like the PS SPI pages, these are NOT in the A53 SoC MMU table -- each
+ * needs a 1:1 device_map(K_MEM_CACHE_NONE) before first access, done by the
+ * SYS_INIT below.
+ */
 #define JESD204_RX_BASE 0x84A90000UL
 #define JESD204_TX_BASE 0x84B90000UL
+#define JESD204_REG_SIZE 0x10000UL
 
 /* Register offsets (common to axi_jesd204_rx and _tx unless noted). */
 #define JESD204_REG_VERSION           0x00
@@ -90,6 +96,33 @@ LOG_MODULE_REGISTER(axi_jesd204, LOG_LEVEL_INF);
 #define JESD_SUBCLASS 1
 #define JESD_VERSION  1 /* 1 = 204B */
 #define JESD_SCRAMBLING 1
+
+/*
+ * 1:1 map both link-core register pages. PRE_KERNEL_1 because every jesd_read()
+ * below assumes virt == phys (CONFIG_KERNEL_DIRECT_MAP, forced on arm64 by
+ * arch/arm64/core/Kconfig: "select KERNEL_DIRECT_MAP if MMU").
+ */
+static int axi_jesd204_map(void)
+{
+	mm_reg_t virt;
+
+	device_map(&virt, JESD204_RX_BASE, JESD204_REG_SIZE, K_MEM_CACHE_NONE);
+	if (virt != JESD204_RX_BASE) {
+		LOG_ERR("RX JESD not identity-mapped: virt=0x%lx phys=0x%lx",
+			(unsigned long)virt, JESD204_RX_BASE);
+		return -EIO;
+	}
+
+	device_map(&virt, JESD204_TX_BASE, JESD204_REG_SIZE, K_MEM_CACHE_NONE);
+	if (virt != JESD204_TX_BASE) {
+		LOG_ERR("TX JESD not identity-mapped: virt=0x%lx phys=0x%lx",
+			(unsigned long)virt, JESD204_TX_BASE);
+		return -EIO;
+	}
+	return 0;
+}
+
+SYS_INIT(axi_jesd204_map, PRE_KERNEL_1, 0);
 
 /* One JESD204 link core (RX or TX). */
 struct axi_jesd204 {
@@ -227,6 +260,17 @@ static int jesd_configure(struct axi_jesd204 *j)
 		j->name, (unsigned long)j->base, PCORE_VER_MAJOR(j->version),
 		PCORE_VER_MINOR(j->version), j->num_lanes, j->data_path_width,
 		j->tpl_data_path_width);
+
+	/*
+	 * The core's synthesised lane count must match the geometry we are about
+	 * to program. A mismatch means the loaded bitstream is not the m8-l4
+	 * design these JESD_* parameters describe -- warn rather than fail, since
+	 * the link may still be diagnosable.
+	 */
+	if (j->num_lanes != JESD_L) {
+		LOG_WRN("%s: SYNTH_NUM_LANES=%u (expected %u for m8-l4)",
+			j->name, j->num_lanes, JESD_L);
+	}
 
 	/* Hold the link disabled while we configure it. */
 	jesd_write(j, JESD204_REG_LINK_DISABLE, 0x1);

@@ -56,7 +56,6 @@ LOG_MODULE_REGISTER(main, LOG_LEVEL_INF);
 
 #include "ad9081.h"
 #include "hmc7044.h"
-#include "axi_jesd.h"
 #include "axi_adxcvr.h"
 #include "axi_jesd204.h"
 #include "axi_tpl.h"
@@ -121,14 +120,6 @@ int main(void)
 		return ret;
 	}
 	LOG_INF("SUCCESS: AD9082 datapath configured (chip JESD links ready)");
-
-	/* Prove the PL AXI plane is alive before link bring-up. */
-	ret = axi_jesd_probe();
-	if (ret) {
-		LOG_ERR("AXI JESD204 probe failed (%d)", ret);
-		return ret;
-	}
-	LOG_INF("SUCCESS: PL AXI plane alive, JESD204 cores identified");
 
 	/*
 	 * GT transceiver config only (clock-mux select, held in reset). The

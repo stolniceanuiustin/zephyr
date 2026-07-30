@@ -16,7 +16,10 @@
  * holding both links disabled. LINK_INIT-phase, configure-only -- no status
  * gating. Returns 0 on success, negative errno otherwise.
  *
- * Note: the axi_jesd core register pages are mapped by axi_jesd.c's SYS_INIT.
+ * Identity (MAGIC, PCORE version, synthesised lane count) is validated here,
+ * which is also the proof that the PL AXI plane is alive and carries the
+ * expected bitstream. The core register pages are 1:1 mapped by a PRE_KERNEL_1
+ * SYS_INIT in axi_jesd204.c.
  */
 int axi_jesd204_configure(void);
 
