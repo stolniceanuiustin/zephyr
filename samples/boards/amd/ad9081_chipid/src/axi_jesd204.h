@@ -7,6 +7,8 @@
 #ifndef AXI_JESD204_H_
 #define AXI_JESD204_H_
 
+#include <stdbool.h>
+
 /*
  * Configure the RX and TX JESD204 link cores for the AD9082 m8-l4 link: verify
  * identity, program the multiframe/frame geometry and (for TX) the ILAS words,
@@ -44,5 +46,13 @@ int axi_jesd204_rx_watchdog(void);
  * Meaningful only at the end of the bring-up sequence (LINK_RUNNING).
  */
 int axi_jesd204_status_read(void);
+
+/*
+ * True when both link cores report DATA. The silent counterpart of
+ * axi_jesd204_status_read(), for polling: a caller waiting for the link to
+ * negotiate would otherwise emit two log lines per attempt and bury whatever
+ * failure it was waiting on. Log once with status_read() after the poll settles.
+ */
+bool axi_jesd204_link_is_data(void);
 
 #endif /* AXI_JESD204_H_ */

@@ -365,6 +365,15 @@ static const char *const tx_status_label[] = { "WAIT", "CGS", "ILAS", "DATA" };
 static const char *const rx_status_label[] = { "RESET", "WAIT_PHY", "CGS",
 					       "DATA" };
 
+bool axi_jesd204_link_is_data(void)
+{
+	uint32_t tx_status = jesd_read(&jesd_tx, JESD204_REG_LINK_STATUS);
+	uint32_t rx_status = jesd_read(&jesd_rx, JESD204_REG_LINK_STATUS);
+
+	return (tx_status & 0x3) == JESD204_LINK_STATUS_DATA &&
+	       (rx_status & 0x3) == JESD204_LINK_STATUS_DATA;
+}
+
 int axi_jesd204_status_read(void)
 {
 	uint32_t tx_state = jesd_read(&jesd_tx, JESD204_RG_LINK_STATE) & 0x1;

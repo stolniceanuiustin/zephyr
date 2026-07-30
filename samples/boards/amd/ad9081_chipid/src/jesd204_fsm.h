@@ -41,7 +41,14 @@ enum jesd204_state_op_reason {
 	JESD204_STATE_OP_REASON_UNINIT,
 };
 
-/* Whether a phase's work is per-device or per-link (no-OS jesd204.h:174-176). */
+/*
+ * Whether a phase's work is per-device or per-link (no-OS jesd204.h:174-176).
+ *
+ * Declarative only: which callback runs is decided by which function pointer is
+ * populated, not by this field, and the walker never reads it. no-OS is the same
+ * -- its FSM tests the pointers too (jesd204-fsm.c:29-40). Kept because the
+ * device tables read as documentation and this records the author's intent.
+ */
 enum jesd204_state_op_mode {
 	JESD204_STATE_OP_MODE_PER_LINK,
 	JESD204_STATE_OP_MODE_PER_DEVICE,
@@ -151,8 +158,12 @@ int jesd204_fsm_start(struct jesd204_topology *topology);
 
 /*
  * Walk every phase in reverse with REASON_UNINIT, visiting devices in reverse
- * topology order (no-OS jesd204-fsm.c:59-101). This is what makes a link
- * re-bringable: teardown is the same table read backwards.
+ * topology order (no-OS jesd204-fsm.c:59-101).
+ *
+ * How much actually gets undone is up to the device tables: a phase whose
+ * callbacks return DONE on UNINIT without doing anything is a no-op on the way
+ * down. This provides the walk, not the guarantee -- see jesd204_teardown() in
+ * jesd_fsm.h for what the current tables really unwind.
  */
 int jesd204_fsm_stop(struct jesd204_topology *topology);
 

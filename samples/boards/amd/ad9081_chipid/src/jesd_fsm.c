@@ -340,8 +340,7 @@ static int axi_jesd204_fsm_link_running(struct jesd204_dev *jdev,
 					enum jesd204_state_op_reason reason,
 					struct jesd204_link *lnk)
 {
-	int retry = 20;
-	int ret;
+	bool is_data = false;
 
 	ARG_UNUSED(jdev);
 	ARG_UNUSED(lnk);
@@ -350,20 +349,32 @@ static int axi_jesd204_fsm_link_running(struct jesd204_dev *jdev,
 		return JESD204_STATE_CHANGE_DONE;
 	}
 
-	do {
+	/*
+	 * Poll quietly, then log the outcome once. 20 attempts at 4 ms is no-OS's
+	 * budget (axi_jesd204_rx.c:813, :819-823); logging inside the loop would
+	 * emit two lines per attempt and bury the failure it is waiting on.
+	 */
+	for (int attempt = 0; attempt < 20 && !is_data; attempt++) {
 		k_msleep(4);
-		ret = axi_jesd204_status_read();
-	} while (ret && retry--);
-
-	if (ret) {
-		return ret;
+		is_data = axi_jesd204_link_is_data();
 	}
 
-	/* TPL datapath verify + DAC re-sync, now that the link clocks run. */
-	ret = axi_tpl_enable();
-	if (ret) {
-		LOG_WRN("TPL post-link verify failed (%d)", ret);
-		return ret;
+	/* Log both ends' state regardless of outcome, and take its verdict. */
+	if (axi_jesd204_status_read()) {
+		return -EIO;
+	}
+
+	/*
+	 * TPL datapath verify + DAC re-sync, now that the link clocks run.
+	 *
+	 * Warn but do not fail the phase: the link itself is up and carrying
+	 * DATA, which is what this phase decides. A TPL status complaint is a
+	 * datapath problem downstream of the link, and treating it as a link
+	 * failure would report the wrong thing. This matches the behaviour before
+	 * the FSM was table-driven.
+	 */
+	if (axi_tpl_enable()) {
+		LOG_WRN("TPL post-link verify failed (link is up regardless)");
 	}
 
 	return JESD204_STATE_CHANGE_DONE;
