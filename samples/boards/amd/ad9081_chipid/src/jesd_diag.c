@@ -28,6 +28,10 @@
  * the DAC datapath [8][9], the TPL input [10], and the shape of the gating
  * [11]-[15].
  *
+ * [16] is the one test that tries to make the throughput limit irrelevant rather
+ * than measure it: the offload core replaying its own buffer with the DMA
+ * stopped, which needs no DDR bandwidth at all once filled.
+ *
  * Measurement notes that matter for reading the output:
  *  - Presence is never judged from a single capture. If any gating remains, one
  *    capture samples whichever phase it landed in, so every presence test takes
@@ -95,6 +99,7 @@ enum diag_test {
 	T_PERIOD,
 	T_JRX,
 	T_DUTY_BYPASS,
+	T_CYCLIC,
 	DIAG_NUM_TESTS,
 };
 
@@ -114,6 +119,7 @@ static const char *const diag_names[DIAG_NUM_TESTS] = {
 	[T_PERIOD] = "gate period",
 	[T_JRX] = "JRX elastic buffer",
 	[T_DUTY_BYPASS] = "output duty (bypass)",
+	[T_CYCLIC] = "offload cyclic replay",
 };
 
 static struct {
@@ -1730,6 +1736,149 @@ static void diag_offload_duty(void)
 }
 
 /* ------------------------------------------------------------------------- */
+/* [16] Offload cyclic replay with the DMA stopped                           */
+/* ------------------------------------------------------------------------- */
+
+/*
+ * The one configuration that makes the 403 MB/s in [3] irrelevant, and the
+ * mode this IP was built to be used in.
+ *
+ * Everything in [3]-[5] says the transmit path cannot be fed continuously from
+ * DDR: 403 MB/s against 4000 MB/s of demand, with the same ceiling on receive
+ * and a CPU that reads the same memory far faster. Both remaining options --
+ * rebuild the bitstream, or lower the link's demand -- are outside this sample.
+ * This test checks a third that is not.
+ *
+ * The offload core can replay its own buffer. Its read FSM latches
+ * rd_cyclic_en = ~rd_oneshot on entering PRE_RD, and with sync_config =
+ * AUTOMATIC a completed pass loops RD_STATE_RD straight back to itself
+ * (data_offload_fsm.v:213-217). One bufferful then streams out at full line
+ * rate, forever, with no DDR traffic at all after the initial fill. The DMA's
+ * rate stops mattering because the DMA stops running.
+ *
+ * What prevents it here is one line -- data_offload_fsm.v:243:
+ *
+ *     if (rd_init_req_s) rd_cyclic_en <= 1'b0;
+ *
+ * init_req is wired to the DMA's transfer-request line
+ * (mxfe_tx_data_offload/init_req <- axi_mxfe_tx_dma/m_axis_xfer_req), so a DMA
+ * that keeps asking for transfers keeps clearing the cyclic latch. Cyclic
+ * replay and a running DMA are mutually exclusive by construction. This sample
+ * has always left the TX DMA armed in cyclic mode, which is exactly the thing
+ * that cancels the core's own cyclic mode -- two mechanisms fighting, with the
+ * DMA's winning and contributing nothing but its rate limit.
+ *
+ * So: leave store-and-replay on, fill the buffer once, stop the DMA, and look.
+ *
+ *   continuous + tone -> cyclic replay works. This is the answer: full duty and
+ *                        correct samples together, which no configuration has
+ *                        produced yet, and the DMA bottleneck is bypassed
+ *                        rather than fixed. Playback would be reconfigured
+ *                        around this.
+ *   gated or no tone  -> it does not, and the reason is worth knowing: the FSM
+ *                        state is logged either way. Then the only remaining
+ *                        fixes really are in the bitstream or the link geometry.
+ *
+ * The replayed segment is the offload's full buffer, and the tone table's
+ * period divides it evenly, so the loop point carries no phase discontinuity
+ * that would smear the correlation and read as starvation.
+ *
+ * Restores bypass and the continuous tone before returning, whatever happens,
+ * so this test does not change the state the rest of the run sees.
+ */
+static void diag_offload_cyclic(void)
+{
+	struct jesd_loopback_meas m;
+	uint64_t mem = 0;
+	size_t on = 0, taken = 0, pct;
+	uint32_t t_fill = 0, best;
+	bool tone;
+	int rc;
+
+	diag_begin(T_CYCLIC);
+
+	/* Store-and-replay: bypass replaces the buffer with a 16-entry FIFO, and
+	 * there is nothing to replay out of a FIFO. */
+	rc = axi_data_offload_bypass(false);
+	if (rc) {
+		diag_report(T_CYCLIC, DIAG_SKIP, "cannot leave bypass (%d)", rc);
+		return;
+	}
+
+	rc = axi_data_offload_tx_size(&mem);
+	if (rc || mem == 0) {
+		diag_report(T_CYCLIC, DIAG_SKIP, "offload size unreadable (%d)", rc);
+		goto restore;
+	}
+
+	/*
+	 * Fill exactly one bufferful and stop. jesd_playback_timed() ends in
+	 * dma_stop(), which deasserts xfer_req -- the whole point: with init_req
+	 * released, rd_cyclic_en can stay latched and the core keeps replaying what
+	 * it already holds.
+	 */
+	rc = jesd_playback_timed((size_t)mem, &t_fill);
+	if (rc) {
+		diag_report(T_CYCLIC, DIAG_SKIP, "fill transfer failed (%d)", rc);
+		goto restore;
+	}
+
+	LOG_INF("       filled %llu B in %u us, DMA now stopped",
+		(unsigned long long)mem, t_fill);
+
+	/* Let the core get through at least one replay pass before looking. */
+	k_msleep(5);
+	axi_data_offload_status();
+
+	for (size_t p = 0; p < DIAG_SWEEP_PROBES; p++) {
+		int r = jesd_capture_probe();
+
+		if (r < 0) {
+			LOG_WRN("       probe failed (%d)", r);
+			break;
+		}
+		on += (size_t)r;
+		taken++;
+	}
+
+	if (taken == 0) {
+		diag_report(T_CYCLIC, DIAG_SKIP, "no probe completed");
+		goto restore;
+	}
+	pct = on * 100U / taken;
+
+	if (jesd_loopback_measure(&m) != 0) {
+		diag_report(T_CYCLIC, DIAG_SKIP, "duty %zu%%, tone not measured", pct);
+		goto restore;
+	}
+
+	best = MAX(m.concentration, m.concentration_split);
+	tone = best >= DIAG_TONE_FOUND_MIN;
+	LOG_INF("       duty %zu/%zu (%zu%%), RMS %llu, tone %u/1000 (need %u)", on,
+		taken, pct, (unsigned long long)m.rms, best, DIAG_TONE_FOUND_MIN);
+
+	if (pct >= 90U && tone) {
+		diag_report(T_CYCLIC, DIAG_PASS,
+			    "replay works: %zu%% duty, tone %u/1000, no DMA", pct, best);
+	} else if (tone) {
+		diag_report(T_CYCLIC, DIAG_WARN,
+			    "tone %u/1000 but only %zu%% duty: replay stops early", best,
+			    pct);
+	} else if (pct >= 90U) {
+		diag_report(T_CYCLIC, DIAG_FAIL,
+			    "continuous %zu%% but no tone: not replaying the fill", pct);
+	} else {
+		diag_report(T_CYCLIC, DIAG_FAIL,
+			    "silent at %zu%% duty: replay did not start", pct);
+	}
+
+restore:
+	/* Back to the state the rest of the run expects, regardless of outcome. */
+	(void)axi_data_offload_bypass(true);
+	(void)jesd_playback_rearm();
+}
+
+/* ------------------------------------------------------------------------- */
 /* Runner                                                                   */
 /* ------------------------------------------------------------------------- */
 
@@ -1794,6 +1943,7 @@ int jesd_diag_loopback(void)
 	diag_gate_period();
 	diag_jrx_buffer();
 	diag_offload_duty();
+	diag_offload_cyclic();
 
 	/* Leave the board in the state the rest of the app documents. */
 	if (diag_retune(dev, DIAG_NCO_HZ_DEFAULT) != 0) {
