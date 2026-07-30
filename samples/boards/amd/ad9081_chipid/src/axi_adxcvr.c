@@ -22,6 +22,8 @@
  */
 
 #include <zephyr/kernel.h>
+#include <zephyr/device.h>
+#include <zephyr/drivers/clock_control.h>
 #include <zephyr/init.h>
 #include <zephyr/kernel/mm.h>
 #include <zephyr/sys/device_mmio.h>
@@ -32,6 +34,7 @@
 LOG_MODULE_REGISTER(axi_adxcvr, LOG_LEVEL_INF);
 
 #include "axi_adxcvr.h"
+#include <zephyr/drivers/clock_control/hmc7044.h>
 #include "xilinx_transceiver.h"
 
 /*
@@ -149,13 +152,20 @@ struct adxcvr {
 };
 
 /*
- * zcu102 ad9081_m8_l4 profile (no-OS ADXCVR_*_KHZ): 10 Gbps lanes off a 500 MHz
- * GT refclk. TX uses QPLL0, RX uses CPLL. These are the rates no-OS feeds to
+ * zcu102 ad9081_m8_l4 profile (no-OS ADXCVR_*_KHZ): 10 Gbps lanes. TX uses
+ * QPLL0, RX uses CPLL. These are the rates no-OS feeds to
  * adxcvr_clk_set_rate() -- programming the GT dividers over DRP at runtime
  * rather than trusting whatever the bitstream synthesised.
+ *
+ * The 500 MHz GT reference rate that used to sit beside this as a #define is now
+ * queried from the HMC7044 output that actually drives it (see
+ * adxcvr_query_ref_rate() below), so the divider math follows the clock tree
+ * instead of asserting a value about it.
  */
-#define ADXCVR_REF_CLK_KHZ  500000
 #define ADXCVR_LANE_CLK_KHZ 10000000
+
+/* Expected GT refclk, kept only to sanity-check what the clock tree reports. */
+#define ADXCVR_REF_CLK_KHZ_EXPECTED 500000
 
 static struct adxcvr adxcvr_tx = {
 	.name = "tx_adxcvr",
@@ -164,7 +174,7 @@ static struct adxcvr adxcvr_tx = {
 	.out_clk_sel = ADXCVR_PROGDIV_CLK,
 	.lpm_enable = false,
 	.lane_rate_khz = ADXCVR_LANE_CLK_KHZ,
-	.ref_rate_khz = ADXCVR_REF_CLK_KHZ,
+	/* .ref_rate_khz is filled in by adxcvr_query_ref_rate(). */
 };
 
 static struct adxcvr adxcvr_rx = {
@@ -174,7 +184,6 @@ static struct adxcvr adxcvr_rx = {
 	.out_clk_sel = ADXCVR_PROGDIV_CLK,
 	.lpm_enable = true,
 	.lane_rate_khz = ADXCVR_LANE_CLK_KHZ,
-	.ref_rate_khz = ADXCVR_REF_CLK_KHZ,
 };
 
 static inline uint32_t adxcvr_read(const struct adxcvr *x, uint32_t reg)
@@ -599,9 +608,77 @@ static int adxcvr_clk_enable(struct adxcvr *x)
 	return 0;
 }
 
+/*
+ * Fill in ref_rate_khz for both transceivers from the clock tree, rather than
+ * from a #define. The GT DRP divider solve in xilinx_transceiver.c is entirely
+ * driven by the ratio of lane_rate_khz to ref_rate_khz, so a refclk that does not
+ * match the hardware silently produces wrong dividers -- and a GT that never
+ * reports ready, with nothing in the log pointing at the reference clock.
+ *
+ * /aliases/gt-refclk names the HMC7044 output wired to the GT refclk input; the
+ * HMC7044 driver knows its rate because it programmed the divider. Once the
+ * adxcvr cores become devicetree nodes this becomes a clocks = <&hmc7044 12>
+ * phandle read with clock_control_get_rate(DEVICE_DT_GET_CLOCKS_CTLR(...)).
+ */
+#define ADXCVR_REFCLK_NODE DT_ALIAS(gt_refclk)
+#define ADXCVR_REFCLK_OUT  DT_REG_ADDR(ADXCVR_REFCLK_NODE)
+
+static int adxcvr_query_ref_rate(void)
+{
+	const struct device *clk = DEVICE_DT_GET(DT_PARENT(ADXCVR_REFCLK_NODE));
+	uint32_t rate_hz;
+	uint32_t rate_khz;
+	int ret;
+
+	if (!device_is_ready(clk)) {
+		LOG_ERR("GT refclk provider %s is not ready", clk->name);
+		return -ENODEV;
+	}
+
+	ret = clock_control_get_rate(clk, HMC7044_CLK_OUT(ADXCVR_REFCLK_OUT),
+				     &rate_hz);
+	if (ret) {
+		LOG_ERR("could not read the GT refclk rate from %s out%u (%d)",
+			clk->name, ADXCVR_REFCLK_OUT, ret);
+		return ret;
+	}
+
+	rate_khz = rate_hz / 1000U;
+	if (rate_khz == 0) {
+		LOG_ERR("GT refclk reported as 0 Hz");
+		return -EINVAL;
+	}
+
+	if (rate_khz != ADXCVR_REF_CLK_KHZ_EXPECTED) {
+		/*
+		 * Not an error: the queried rate is the authoritative one and is
+		 * what gets used. But this bitstream's GT attributes were
+		 * synthesised for 500 MHz, so a different tree is worth saying
+		 * out loud rather than discovering as a GT that will not lock.
+		 */
+		LOG_WRN("GT refclk is %u kHz, but this bitstream was synthesised "
+			"for %u kHz -- using the queried rate",
+			rate_khz, ADXCVR_REF_CLK_KHZ_EXPECTED);
+	}
+
+	adxcvr_tx.ref_rate_khz = rate_khz;
+	adxcvr_rx.ref_rate_khz = rate_khz;
+
+	LOG_INF("GT refclk from %s out%u: %u kHz", clk->name,
+		ADXCVR_REFCLK_OUT, rate_khz);
+
+	return 0;
+}
+
 int axi_adxcvr_configure(void)
 {
 	int ret;
+
+	/* Must precede adxcvr_configure() -- it solves the dividers. */
+	ret = adxcvr_query_ref_rate();
+	if (ret) {
+		return ret;
+	}
 
 	ret = adxcvr_configure(&adxcvr_tx);
 	if (ret) {

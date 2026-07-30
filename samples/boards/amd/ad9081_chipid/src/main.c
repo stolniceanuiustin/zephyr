@@ -8,7 +8,8 @@
  *
  * The sequence below is app.c's, step for step:
  *
- *   app_clock_init()            -> hmc7044_setup_clocks()      (app.c:343)
+ *   app_clock_init()            -> the adi,hmc7044 clock_control
+ *                                  driver's own init()         (app.c:343)
  *   app_jesd_init()             -> axi_adxcvr_configure() +
  *                                  axi_jesd204_configure()     (app.c:347)
  *   ad9081_init()               -> ad9081_setup_datapath()     (app.c:367)
@@ -50,12 +51,13 @@
 
 #include <zephyr/kernel.h>
 #include <zephyr/device.h>
+#include <zephyr/drivers/clock_control.h>
 
 #include <zephyr/logging/log.h>
 LOG_MODULE_REGISTER(main, LOG_LEVEL_INF);
 
 #include "ad9081.h"
-#include "hmc7044.h"
+#include <zephyr/drivers/clock_control/hmc7044.h>
 #include "axi_adxcvr.h"
 #include "axi_jesd204.h"
 #include "axi_tpl.h"
@@ -77,28 +79,87 @@ LOG_MODULE_REGISTER(main, LOG_LEVEL_INF);
 #define DAC_DDS_SAMPLE_RATE  (250 * 1000 * 1000)
 #define DAC_DDS_SCALE_MICRO  (50 * 1000) /* 0.05 of full scale */
 
+/* Which HMC7044 output drives the GT reference clock -- see /aliases/gt-refclk. */
+#define GT_REFCLK_OUT DT_REG_ADDR(DT_ALIAS(gt_refclk))
+
+/*
+ * The HMC7044 is a clock_control driver, so it programmes itself at POST_KERNEL
+ * before main() runs -- there is no hmc7044_probe()/setup_clocks() call to make.
+ * Report what it achieved instead, so the boot log keeps the two lines the
+ * explicit calls used to produce.
+ */
+static int report_clock_tree(const struct device *clk)
+{
+	struct hmc7044_status status;
+	uint32_t refclk_hz;
+	int ret;
+
+	if (!device_is_ready(clk)) {
+		/*
+		 * The driver logged the specific failure during its own init;
+		 * everything downstream needs its clocks, so stop here.
+		 */
+		LOG_ERR("HMC7044 did not initialise -- no clocks, cannot continue");
+		return -ENODEV;
+	}
+
+	ret = hmc7044_get_status(clk, &status);
+	if (ret) {
+		LOG_ERR("could not read HMC7044 status (%d)", ret);
+		return ret;
+	}
+
+	if (!status.pll1_locked || !status.pll2_locked) {
+		/*
+		 * Not fatal here, deliberately: the link cannot come up without
+		 * locked PLLs, but letting the bring-up proceed and fail at the
+		 * phase that actually depends on the clock is more diagnosable
+		 * than bailing with only a lock bit to show for it.
+		 */
+		LOG_WRN("HMC7044 PLLs not locked (PLL1 %s, PLL2 %s) -- "
+			"the JESD204 link will not come up",
+			status.pll1_fsm_state_str,
+			status.pll2_locked ? "locked" : "unlocked");
+	}
+
+	/* The rate axi_adxcvr solves its GT dividers against. */
+	ret = clock_control_get_rate(clk, HMC7044_CLK_OUT(GT_REFCLK_OUT),
+				     &refclk_hz);
+	if (ret) {
+		LOG_ERR("could not read the GT refclk rate (%d)", ret);
+		return ret;
+	}
+
+	/*
+	 * Deliberately not another "SUCCESS: HMC7044 clock tree configured" --
+	 * the driver's init() already emitted that line, byte for byte as the
+	 * pre-driver-model code did, so the boot log stays diffable. This is the
+	 * one genuinely new line: what the clock tree is actually running at.
+	 */
+	LOG_INF("HMC7044 clocks live: PLL1 %s on CLKIN%u, PLL2 %u.%03u GHz, "
+		"GT refclk out%u %u.%03u MHz",
+		status.pll1_fsm_state_str, status.pll1_active_clkin,
+		status.pll2_freq / 1000000000U,
+		(status.pll2_freq / 1000000U) % 1000U,
+		GT_REFCLK_OUT, refclk_hz / 1000000U,
+		(refclk_hz / 1000U) % 1000U);
+
+	return 0;
+}
+
 int main(void)
 {
+	const struct device *clk = DEVICE_DT_GET(DT_NODELABEL(hmc7044));
 	uint16_t prod_id;
 	int ret;
 
 	LOG_INF("=== AD9081/HMC7044 bring-up ===");
 
 	/* Clock chip first (topology order). */
-	ret = hmc7044_probe();
+	ret = report_clock_tree(clk);
 	if (ret) {
-		LOG_ERR("HMC7044 probe failed (%d)", ret);
 		return ret;
 	}
-	LOG_INF("SUCCESS: HMC7044 scratchpad read/write confirmed");
-
-	/* Program the HMC7044 clock tree + SYSREF (PLL1/PLL2 lock). */
-	ret = hmc7044_setup_clocks();
-	if (ret) {
-		LOG_ERR("HMC7044 clock setup failed (%d)", ret);
-		return ret;
-	}
-	LOG_INF("SUCCESS: HMC7044 clock tree configured");
 
 	/* MxFE. */
 	ret = ad9081_probe(&prod_id);

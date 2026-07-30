@@ -55,13 +55,125 @@
 			tx-fifo-depth = <128>;
 			clock-frequency = <100000000>;
 
+			/*
+			 * HMC7044 clock generator, zcu102 + AD9082-FMC-EBZ-A2
+			 * profile. Values are the no-OS PLATFORM_ZYNQMP
+			 * (non-MCS) profile from projects/ad9081/src/
+			 * app_clock.c, which is the ground truth for this
+			 * board: 100 MHz VCXO/XO variant, 3 GHz PLL2.
+			 *
+			 * PLL2 is 3 GHz, so an output divider N gives
+			 * 3000/N MHz. Every rate below is derived that way
+			 * and is queryable at runtime with
+			 * clock_control_get_rate().
+			 */
 			hmc7044: hmc7044@0 {
-				compatible = "adi,hmc7044-probe";
+				compatible = "adi,hmc7044";
 				reg = <0>;
 				/* HMC7044 SPI: mode 0, MSB first.
 				 * 10 MHz is safe for register access.
 				 */
 				spi-max-frequency = <10000000>;
+
+				#clock-cells = <1>;
+				#address-cells = <1>;
+				#size-cells = <0>;
+
+				/* CLKIN0 100 MHz, CLKIN1 10 MHz, CLKIN2/3 unused. */
+				adi,pll1-clkin-frequencies =
+					<100000000 10000000 0 0>;
+				adi,vcxo-frequency = <100000000>;
+				adi,pll2-output-frequency = <3000000000>;
+
+				adi,pll1-loop-bandwidth-hz = <200>;
+				adi,pll1-ref-prio-ctrl = <0xe4>;
+				adi,sysref-timer-divider = <1024>;
+				adi,pulse-generator-mode = <0>;
+				adi,sync-pin-mode = <1>;
+
+				/* 0x07 = AC-coupled diff on CLKIN0/1,
+				 * 0x15 = DC-coupled on OSCIN, CLKIN2/3 off.
+				 */
+				adi,clkin0-buffer-mode = <0x07>;
+				adi,clkin1-buffer-mode = <0x07>;
+				adi,clkin2-buffer-mode = <0x00>;
+				adi,clkin3-buffer-mode = <0x00>;
+				adi,oscin-buffer-mode = <0x15>;
+
+				adi,gpi-controls = <0x00 0x00 0x00 0x00>;
+				adi,gpo-controls = <0x37 0x33 0x00 0x00>;
+
+				/*
+				 * Outputs. Any output without a node here is
+				 * left disabled by the driver, which is how the
+				 * unused half of the 14 are handled.
+				 */
+				hmc7044_c0: channel@0 {
+					reg = <0>;
+					adi,extended-name = "CORE_CLK_RX";
+					adi,divider = <12>;    /* 250 MHz */
+					adi,driver-mode = <2>; /* LVDS */
+				};
+
+				hmc7044_c2: channel@2 {
+					reg = <2>;
+					adi,extended-name = "DEV_REFCLK";
+					adi,divider = <12>;    /* 250 MHz */
+					adi,driver-mode = <2>;
+				};
+
+				hmc7044_c3: channel@3 {
+					reg = <3>;
+					adi,extended-name = "DEV_SYSREF";
+					adi,divider = <1536>;  /* 1.953 MHz */
+					adi,driver-mode = <2>;
+					adi,jesd204-sysref-chan;
+				};
+
+				hmc7044_c6: channel@6 {
+					reg = <6>;
+					adi,extended-name = "CORE_CLK_TX";
+					adi,divider = <12>;    /* 250 MHz */
+					adi,driver-mode = <2>;
+				};
+
+				hmc7044_c8: channel@8 {
+					reg = <8>;
+					adi,extended-name = "CORE_CLK_RX_2";
+					adi,divider = <6>;     /* 500 MHz */
+					adi,driver-mode = <2>;
+				};
+
+				hmc7044_c10: channel@a {
+					reg = <10>;
+					adi,extended-name = "CORE_CLK_RX_ALT";
+					adi,divider = <12>;    /* 250 MHz */
+					adi,driver-mode = <2>;
+				};
+
+				/*
+				 * The GT reference clock. axi_adxcvr queries
+				 * this output's rate for its DRP divider solve
+				 * rather than hardcoding 500 MHz. It finds it
+				 * through the /aliases/gt-refclk entry below,
+				 * because the adxcvr cores are not devicetree
+				 * nodes yet; once they are, this becomes a
+				 * clocks = <&hmc7044 12> phandle on them.
+				 */
+				hmc7044_c12: channel@c {
+					reg = <12>;
+					adi,extended-name = "FPGA_REFCLK";
+					adi,divider = <6>;     /* 500 MHz */
+					adi,driver-mode = <2>;
+				};
+
+				hmc7044_c13: channel@d {
+					reg = <13>;
+					adi,extended-name = "FPGA_SYSREF";
+					adi,divider = <1536>;  /* 1.953 MHz */
+					adi,driver-mode = <2>;
+					adi,jesd204-sysref-chan;
+				};
 			};
 		};
 
@@ -159,5 +271,19 @@
 				status = "okay";
 			};
 		};
+	};
+
+	aliases {
+		/*
+		 * Which HMC7044 output feeds the GT reference clock. axi_adxcvr
+		 * resolves this to query the rate instead of hardcoding
+		 * 500 MHz, so if the clock tree above is ever reprogrammed the
+		 * GT divider math follows rather than silently going wrong.
+		 *
+		 * An alias rather than a phandle only because the adxcvr cores
+		 * are not devicetree nodes yet. When they are converted, they
+		 * gain clocks = <&hmc7044 12> and this alias goes away.
+		 */
+		gt-refclk = &hmc7044_c12;
 	};
 };

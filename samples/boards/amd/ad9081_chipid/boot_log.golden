@@ -1,0 +1,139 @@
+Golden boot log -- zynqmp_apu, default configuration (no fault injection)
+========================================================================
+
+The reference every "boot log identical" acceptance criterion in
+PLAN_driver_model.md §2.1 is diffed against. Captured from the ZCU102 A53
+console, hardware-verified.
+
+Provenance
+----------
+Zephyr build : v4.4.0-7880-g90a9cb34e850
+Commit       : 90a9cb34e85 ("samples: ad9081: add the driver-model conversion
+               plan")
+Tree state   : that commit PLUS the uncommitted conversion of plan steps 1 and
+               6 -- src/spi_mmio_fixup.c consolidating the SPI mapping hooks
+               (§1.5), and hmc7044 as an adi,hmc7044 clock_control driver
+               (§1.3). The version string above therefore names HEAD, not the
+               exact tree; do not read it as "this is plain 90a9cb34e85".
+
+               Captured while that driver still lived in the sample's src/. It
+               has since moved to drivers/clock_control/clock_control_hmc7044.c
+               with no functional change -- same registers, same log lines, and
+               a byte-identical zephyr.bin size -- so this log remains the
+               correct reference. The move is not reflected in the output
+               because it does not alter any.
+Board        : ZCU102, AD9082 (prod_id 0x9082, grade 0x2, rev 0x3)
+Bitstream    : zcu102_ad9081_m8_l4 -- M8/L4/F4/K32/S1/NP16, TX link-mode 9,
+               RX link-mode 10, 8B10B subclass 1
+Config       : prj.conf only (CONFIG_AD9081_FAULT_INJECTION=n)
+
+How to capture a comparable log
+-------------------------------
+    west build -p always -b zynqmp_apu samples/boards/amd/ad9081_chipid
+    # flash the PL bitstream, then from u-boot:
+    #   go <load addr>    (with zephyr.bin -- not bootelf)
+    # console on the ZCU102 USB-UART
+
+Reading a diff against this file
+--------------------------------
+Timestamps and addresses vary run to run and are not part of the comparison.
+What matters is that every line is present, in this order, with the same
+content. Three specific things a future step is likely to perturb, called out
+so they are not mistaken for noise:
+
+  * The two "SUCCESS: HMC7044 ..." lines appear BEFORE the
+    "*** Booting Zephyr OS ***" banner. That is correct as of step 6: the
+    HMC7044 is a clock_control driver and programmes itself at POST_KERNEL,
+    before main() runs. Any block converted to the driver model will migrate
+    its own log lines above the banner the same way.
+
+  * "GT refclk from hmc7044@0 out12: 500000 kHz" is a queried rate, not a
+    constant. If the HMC7044 devicetree changes, this and the two
+    "GT dividers programmed for ... @ N kHz ref" lines change with it, and
+    axi_adxcvr additionally logs a warning that the bitstream was synthesised
+    for 500000 kHz.
+
+  * The first console line ("Starting application at ...") is u-boot's, with a
+    truncated final character -- the UART is still switching over. It is not
+    Zephyr output and carries no information.
+
+  * The TPL clk_freq values alternate between 0x00027fff and 0x00028000 across
+    otherwise identical runs -- a measured ratio, off by one LSB depending on
+    where the counter is sampled. Either value on either TPL line is fine.
+
+Known-good values worth checking explicitly
+-------------------------------------------
+  PLL1 N1=10 R1=1 PFD1=10000 kHz          PLL1 locked on CLKIN0 @ 100 MHz
+  PLL2 N2=15 R2=1 doubler=1 VCO=high      PLL2 locked @ 3000.000000 MHz
+  GT refclk 500000 kHz, lane rate 10000000 kHz
+  jesd204-tx status 0x00000013 [DATA]     jesd204-rx status 0x00000003 [DATA]
+  all 4 RX lanes in sync
+  chip JTX (framer) 0x007d                chip JRX (deframer) 0x000f
+
+This file covers the default build only. The fault-injection configuration has
+its own reference: boot_log_fi.golden, whose bring-up prefix matches this one
+line for line before the FI checks begin.
+
+------------------------------- console output -------------------------------
+
+## Starting application at 0x000010?
+[00:00:00.009,000] <inf> adi_axi_dmac: AXI DMAC v4.5.e — DEV_TO_MEM, max_len=16777216, src_w=16, dest_w=16, cyclic=sw-only
+[00:00:00.015,000] <inf> adi_axi_dmac: AXI DMAC v4.5.e — MEM_TO_DEV, max_len=16777216, src_w=16, dest_w=16, cyclic=hw
+[00:00:00.026,000] <inf> hmc7044: HMC7044 scratchpad probe over spi@ff050000
+[00:00:00.034,000] <inf> hmc7044: scratchpad readback = 0xad (wrote 0xad)
+[00:00:00.041,000] <inf> hmc7044: SUCCESS: HMC7044 scratchpad read/write confirmed
+[00:00:00.049,000] <inf> hmc7044: HMC7044 clock setup over spi@ff050000
+[00:00:00.056,000] <inf> hmc7044: PLL1 N1=10 R1=1 PFD1=10000 kHz; PLL2 N2=15 R2=1 doubler=1 VCO=high
+[00:00:00.123,000] <inf> hmc7044: PLL1: Locked, CLKIN0 @ 100000000 Hz, PFD: 10000 kHz - PLL2: Locked @ 3000.000000 MHz
+[00:00:00.128,000] <inf> hmc7044: SUCCESS: HMC7044 clock tree configured
+*** Booting Zephyr OS build v4.4.0-7880-g90a9cb34e850 ***
+[00:00:00.141,000] <inf> main: === AD9081/HMC7044 bring-up ===
+[00:00:00.147,000] <inf> main: HMC7044 clocks live: PLL1 Locked on CLKIN0, PLL2 3.000 GHz, GT refclk out12 500.000 MHz
+[00:00:00.158,000] <inf> ad9081: AD9081 probe via ADI API lib over spi@ff040000
+[00:00:01.266,000] <inf> ad9081: chip_type=0x0f prod_id=0x9082 grade=0x2 rev=0x3
+[00:00:01.268,000] <inf> main: SUCCESS: AD9082 detected over SPI
+[00:00:01.275,000] <inf> ad9081: AD9081 datapath setup (DAC 12G / ADC 4G, ref 250M)
+[00:00:01.327,000] <inf> ad9081: device CLK PLL locked (status=0x3)
+[00:00:01.714,000] <inf> ad9081: TX datapath up: interp 6x8, JRX deframer mode 9 (M8 L4 F4)
+[00:00:01.939,000] <inf> ad9081: RX datapath up: decim 4/4, JTX framer mode 10 (M8 L4 F4)
+[00:00:01.942,000] <inf> main: SUCCESS: AD9082 datapath configured (chip JESD links ready)
+[00:00:01.951,000] <inf> axi_adxcvr: GT refclk from hmc7044@0 out12: 500000 kHz
+[00:00:01.959,000] <inf> axi_adxcvr: tx_adxcvr @ 0x84b60000: PCORE v17.5.97, 4 lanes, type=8, TX
+[00:00:01.968,000] <inf> axi_adxcvr: tx_adxcvr: CONTROL=0x0035 (sysclk=3 outclk=5 lpm=0) enc=8b/10b
+[00:00:02.017,000] <inf> axi_adxcvr: tx_adxcvr: GT dividers programmed for 10000000 kHz lane @ 500000 kHz ref
+[00:00:02.021,000] <inf> axi_adxcvr: rx_adxcvr @ 0x84a60000: PCORE v17.5.97, 4 lanes, type=8, RX
+[00:00:02.031,000] <inf> axi_adxcvr: rx_adxcvr: CONTROL=0x1005 (sysclk=0 outclk=5 lpm=1) enc=8b/10b
+[00:00:02.106,000] <inf> axi_adxcvr: rx_adxcvr: GT dividers programmed for 10000000 kHz lane @ 500000 kHz ref
+[00:00:02.111,000] <inf> main: SUCCESS: GT transceivers configured (TX QPLL0 / RX CPLL)
+[00:00:02.119,000] <inf> axi_jesd204: jesd204-tx @ 0x84b90000: PCORE v1.6, 4 lanes, dpw=4 tpl_dpw=4
+[00:00:02.129,000] <inf> axi_jesd204: jesd204-tx: configured (M8 L4 F4 K32 NP16 subclass1), link held disabled
+[00:00:02.139,000] <inf> axi_jesd204: jesd204-rx @ 0x84a90000: PCORE v1.7, 4 lanes, dpw=4 tpl_dpw=4
+[00:00:02.148,000] <inf> axi_jesd204: jesd204-rx: configured (M8 L4 F4 K32 NP16 subclass1), link held disabled
+[00:00:02.159,000] <inf> main: SUCCESS: JESD204 link cores configured (M8/L4/F4/K32)
+[00:00:02.167,000] <inf> axi_tpl: adc-tpl @ 0x84a10000: pcore v10, 8 channels armed (signext|format|enable)
+[00:00:02.177,000] <inf> axi_tpl: dac-tpl @ 0x84b10000: pcore v9, 8 channels -> DMA source, synced
+[00:00:02.187,000] <inf> main: SUCCESS: TPL transport cores configured (8 converters)
+[00:00:02.195,000] <inf> main: === all blocks configured, running JESD204 bring-up ===
+[00:00:02.203,000] <inf> jesd204_fsm: --- JESD204 FSM: bring-up (3 devices, link 0) ---
+[00:00:02.212,000] <inf> jesd204_fsm: phase clk_sync_stage1  : ok
+[00:00:02.218,000] <inf> jesd204_fsm: phase clk_sync_stage2  : ok
+[00:00:02.227,000] <inf> axi_adxcvr: tx_adxcvr: lane clock up (status=0x1)
+[00:00:02.234,000] <inf> axi_adxcvr: rx_adxcvr: lane clock up (status=0x1)
+[00:00:02.239,000] <inf> jesd_fsm: chip JESD PLL status = 0x1
+[00:00:02.696,000] <inf> jesd204_fsm: phase clocks_enable    : ok
+[00:00:02.707,000] <inf> jesd204_fsm: phase link_enable      : ok
+[00:00:02.708,000] <inf> jesd_fsm: chip JTX (framer)   link status = 0x007d
+[00:00:02.715,000] <inf> jesd_fsm: chip JRX (deframer) link status = 0x000f
+[00:00:02.726,000] <inf> axi_jesd204: jesd204-tx: link enabled, status=0x00000013 [DATA]
+[00:00:02.731,000] <inf> axi_jesd204: jesd204-rx: link enabled, status=0x00000003 [DATA]
+[00:00:02.739,000] <inf> axi_tpl: adc-tpl: status=0x00000005 clk_freq=0x00027fff clk_ratio=0x00000001
+[00:00:02.749,000] <inf> axi_tpl: dac-tpl: status=0x00000001 clk_freq=0x00028000 clk_ratio=0x00000001
+[00:00:02.759,000] <inf> jesd204_fsm: phase link_running     : ok
+[00:00:02.765,000] <inf> jesd_fsm: === JESD204B LINK UP (both ends carrying DATA) ===
+[00:00:02.773,000] <inf> main: SUCCESS: JESD204B link up
+[00:00:02.779,000] <inf> axi_jesd204: jesd204-rx: all 4 lanes in sync
+[00:00:02.786,000] <inf> axi_jesd204: jesd204-tx: link enabled, status=0x00000013 [DATA]
+[00:00:02.794,000] <inf> axi_jesd204: jesd204-rx: link enabled, status=0x00000003 [DATA]
+[00:00:02.803,000] <inf> axi_tpl: dac-tpl: DDS tone armed, 3000000 Hz at 250000000 SPS (incr 0x0312), scale 0x0333 (5.00% FS)
+[00:00:02.815,000] <inf> main: SUCCESS: DAC emitting a 3 MHz DDS tone at 5% full scale
+[00:00:02.823,000] <inf> main: === bring-up complete ===

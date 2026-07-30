@@ -20,9 +20,6 @@
 #include <zephyr/device.h>
 #include <zephyr/drivers/spi.h>
 #include <zephyr/drivers/gpio.h>
-#include <zephyr/init.h>
-#include <zephyr/kernel/mm.h>
-#include <zephyr/sys/device_mmio.h>
 #include <string.h>
 
 #include <zephyr/logging/log.h>
@@ -32,31 +29,11 @@ LOG_MODULE_REGISTER(ad9081, LOG_LEVEL_INF);
 #include "adi_ad9081.h"
 
 /*
- * The arm64 A53 SoC MMU table does not map the PS SPI register region, and the
- * Cadence SPI driver accesses its base address directly (no DEVICE_MMIO). Map
- * the SPI0 page 1:1 as non-cached device memory at PRE_KERNEL_1, i.e. before
- * the SPI driver initialises at POST_KERNEL. device_map() with
- * CONFIG_KERNEL_DIRECT_MAP=y returns virt == phys, so the driver's DT_REG_ADDR
- * base still works unchanged.
+ * The SPI0 register page is mapped 1:1 by spi_mmio_fixup.c at PRE_KERNEL_1,
+ * working around the upstream Cadence SPI driver not using DEVICE_MMIO. That is
+ * a board-level wart, documented there, and deliberately not this file's
+ * business.
  */
-#define AD9081_SPI0_BASE 0xff040000UL
-#define AD9081_SPI0_SIZE 0x1000UL
-
-static int ad9081_map_spi0(void)
-{
-	mm_reg_t virt;
-
-	device_map(&virt, AD9081_SPI0_BASE, AD9081_SPI0_SIZE, K_MEM_CACHE_NONE);
-
-	if (virt != AD9081_SPI0_BASE) {
-		LOG_ERR("SPI0 not identity-mapped: virt=0x%lx phys=0x%lx",
-			(unsigned long)virt, AD9081_SPI0_BASE);
-		return -EIO;
-	}
-	return 0;
-}
-
-SYS_INIT(ad9081_map_spi0, PRE_KERNEL_1, 0);
 
 /* The AD9081 and AD9082 are the same MxFE family and share this driver / SPI
  * map; the ADI library accepts either PROD_ID.
@@ -66,8 +43,7 @@ SYS_INIT(ad9081_map_spi0, PRE_KERNEL_1, 0);
 
 static const struct spi_dt_spec ad9081_spi = SPI_DT_SPEC_GET(
 	DT_NODELABEL(ad9081),
-	SPI_WORD_SET(8) | SPI_TRANSFER_MSB | SPI_OP_MODE_MASTER,
-	0);
+	SPI_WORD_SET(8) | SPI_TRANSFER_MSB | SPI_OP_MODE_MASTER);
 
 static const struct gpio_dt_spec ad9081_reset =
 	GPIO_DT_SPEC_GET_OR(DT_NODELABEL(ad9081), reset_gpios, {0});

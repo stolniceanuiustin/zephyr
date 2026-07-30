@@ -4,9 +4,11 @@ Supersedes the analysis in `HANDOFF_driver_model.md`, which surveyed the options
 This picks among them and sequences the work. Where it departs from the handoff,
 it says so and why.
 
-Baseline: the sample works. Bring-up in ~2.83 s, all four fault-injection faults
-pass, 8/8 checks. Step 0 (delete `axi_jesd.c`) is **done** — that is the only
-completed step.
+Baseline: the sample works. Bring-up in ~2.57 s, all four fault-injection faults
+pass, 10/10 checks. (Earlier revisions of this plan said 8/8; that predates the
+`teardown-effect` and `watchdog-no-false-positive` checks.) Both baselines are
+now committed as `boot_log.golden` and `boot_log_fi.golden`. Steps 0, 1 and 6 are
+**done and hardware-verified**.
 
 ---
 
@@ -52,12 +54,30 @@ step, and defer the directory decision until step 8 reveals whether ADXCVR /
 link / TPL become a subsystem or stay `misc` (§1.2.1). This decouples steps 2–6 from
 subsystem placement entirely.
 
+**Amended for `hmc7044` only.** Its placement was never in doubt — it is a
+`clock_control` driver and that subsystem already exists, so there was nothing
+for step 8 to reveal. It has therefore been moved in-tree already, ahead of the
+rest:
+
+| | |
+|---|---|
+| driver | `drivers/clock_control/clock_control_hmc7044.c` |
+| extension API | `include/zephyr/drivers/clock_control/hmc7044.h` |
+| binding | `dts/bindings/clock/adi,hmc7044.yaml` |
+| Kconfig | `drivers/clock_control/Kconfig.hmc7044` |
+
+`CLOCK_CONTROL_HMC7044` defaults to `y` on `DT_HAS_ADI_HMC7044_ENABLED`, so the
+sample enables it by having the devicetree node plus `CONFIG_CLOCK_CONTROL=y`;
+it no longer names the driver in `target_sources()`. The reasoning above still
+holds for steps 2–5 and 7: those blocks have no obvious subsystem, so they stay
+sample-local until step 8 decides.
+
 ### 1.2 Placement, per block
 
 | Block | Lines | Placement | Why |
 |---|---|---|---|
 | `xilinx_transceiver.c` | 2169 | moves verbatim | vendor divider math; only 2 functions touch hardware |
-| `hmc7044.c` | 1001 | `clock_control` | it *is* a clock controller — §1.3 |
+| `hmc7044.c` | 1001 | `clock_control` — **moved in-tree**, see §1.3 outcome | it *is* a clock controller — §1.3 |
 | `axi_adxcvr.c` | 685 | sample-local, `misc` **provisionally** | placeholder for a JESD204 subsystem — §1.2.1 |
 | `axi_jesd204.c` | 440 | sample-local, split RX/TX, `misc` **provisionally** | two different cores, two register maps |
 | `ad9081.c` | 421 | `misc/ad9081/` + custom API header | the in-tree ADI precedent — §1.4 |
@@ -158,6 +178,35 @@ Note: no `drivers/clock_control/*.c` currently contains `spi_dt_spec` or
 `i2c_dt_spec` — every driver there is an SoC-internal register block. An
 SPI-attached clock generator would be the first of its kind.
 
+**Outcome (step 6, hardware-verified; now in-tree — paths in §1.1).** Implemented as designed above: `on`,
+`off`, `get_rate`, `get_status` real; `set_rate`, `async_on`, `configure` left
+NULL. The chip's configuration moved out of C arrays into the `adi,hmc7044`
+binding using ADI's Linux property names, so a DTS written for ADI Linux ports
+with syntax changes only. Both POST_KERNEL constraints are documented where this
+section asked for them, plus a `BUILD_ASSERT` that the init priority exceeds
+`CONFIG_SPI_INIT_PRIORITY`. `hmc7044_sysref_request()` and `hmc7044_get_status()`
+live in the extension header.
+
+The load-bearing op paid off exactly as argued: `axi_adxcvr.c` no longer defines
+`ADXCVR_REF_CLK_KHZ 500000`. It queries the output that drives the GT and solves
+the dividers against the answer — `GT refclk from hmc7044@0 out12: 500000 kHz`,
+then `GT dividers programmed for 10000000 kHz lane @ 500000 kHz ref` on both
+transceivers. 500 MHz survives only as a sanity check that warns when the tree
+disagrees with what the bitstream was synthesised for.
+
+Two implementation details worth recording, neither anticipated here:
+
+- **Output 0 collides with `CLOCK_CONTROL_SUBSYS_ALL`**, which is `NULL`. The
+  subsystem handle is therefore the output number biased by one —
+  `HMC7044_CLK_OUT(n)`. `SUBSYS_ALL` is given the one defensible whole-chip
+  meaning: `get_rate` returns the PLL2 VCO frequency every output divides down
+  from.
+- **`get_status` gates `ON` on PLL lock, not just the output enable bit.** A
+  divider running off an unlocked PLL2 is producing *something*, but not the rate
+  `get_rate()` reports — returning `ON` there would lie in precisely the case a
+  caller is checking for. Unlocked-but-transient maps to `STATUS_STARTING`; an
+  unverifiable read/write path maps to `STATUS_UNKNOWN`.
+
 ### 1.4 AD9081 → `misc/` with a custom API, and drop the vendor-handle leak
 
 ADI already set this precedent in-tree: `max2221x` ships a custom API at
@@ -198,6 +247,12 @@ fine. (The handoff's "board-level SYS_INIT" has nowhere to live: there is no A53
 zcu102 board in tree — only `boards/amd/zcu102_r5` — and `zynqmp_a53.dtsi`
 carries no `spi@` or `gpio@` nodes at all, which is why the overlay defines
 them.)
+
+**This became a prerequisite, not a nicety.** Once `hmc7044` moved to
+`drivers/clock_control/`, an in-tree driver could not have kept a mapping hook
+for a ZynqMP SPI controller inside it — it would have been unshippable. Doing
+§1.5 first is what made the driver's own move possible. `spi_mmio_fixup.c` stays
+sample-local permanently and disappears when the upstream fix below lands.
 
 If it is ever worth fixing properly, it is a ~10-line standalone PR against
 `spi_cdns.c` (`DEVICE_MMIO_ROM`/`DEVICE_MMIO_RAM` + `DEVICE_MMIO_MAP` in
@@ -310,32 +365,48 @@ accept that step 5 goes last among 3–7.
 
 ## 2. Sequencing
 
-### 2.0 Blocker: capture a baseline first
+### 2.0 Baseline: captured — `boot_log.golden`, `boot_log_fi.golden`
 
-Every step below is verified by diffing a boot log. **There is no committed
-reference boot log in the repo** — searched; nothing. "Boot log identical" would
-otherwise resolve to whatever was last seen in a terminal scrollback, on a branch
-about to accumulate eight refactors.
+Every step below is verified by diffing a boot log, and originally there was no
+committed reference in the repo, so "boot log identical" resolved to whatever was
+last in a terminal scrollback on a branch about to accumulate eight refactors.
 
-Before step 1: boot current `main`, capture the console to a file, commit it
-(`boot_log.golden`), and do the same for the 8/8 fault-injection output. This is
-the cheapest item in the plan and every subsequent acceptance criterion depends
-on it.
+**Resolved.** `boot_log.golden` holds a hardware-captured default-configuration
+boot from the ZCU102, with the provenance, the how-to-recapture recipe, the
+known-good PLL/link values, and the three lines a future step is most likely to
+perturb spelled out so they are not mistaken for noise.
+
+One caveat recorded in the file itself: the baseline was captured from
+`90a9cb34e85` *plus* the then-uncommitted steps 1 and 6, not from a pristine
+commit. It is the post-step-6 reference, which is what steps 2–5 and 7–8 need.
+There is deliberately no pre-conversion baseline — steps 1 and 6 were verified by
+line-by-line comparison against the terminal output of the previous boot, and
+their expected three-line diff is documented in `boot_log.golden`.
+
+**Also resolved:** `boot_log_fi.golden` is the equivalent reference for the
+fault-injection build, hardware-captured with all 10 checks passing. It was taken
+*after* `hmc7044` moved to `drivers/clock_control/`, and its bring-up prefix
+matches `boot_log.golden` line for line — which is the hardware confirmation that
+the in-tree move changed no behaviour. It also documents what varies legitimately
+between runs (the TPL `clk_freq` LSB) and why the `<wrn>`/`<err>` lines under
+FI 1 and FI 4 are the point of those tests rather than a failure.
+
+§2.0 is closed. Both baselines exist.
 
 ### 2.1 Steps
 
 | # | Step | Verify by |
 |---|---|---|
 | **0** | **Delete `axi_jesd.c`** — done, not yet booted | boot log identical minus one `SUCCESS:` line |
-| **A** | **Capture + commit the golden boot log and FI output (§2.0)** | — |
-| 1 | Consolidate the two SPI mapping hooks (§1.5); add `BUILD_ASSERT` for `virt == phys` | boot log identical |
+| **A** | **Capture + commit the golden boot log and FI output (§2.0)** — **done**: `boot_log.golden` + `boot_log_fi.golden`, both hardware-captured | — |
+| 1 | Consolidate the two SPI mapping hooks (§1.5); add `BUILD_ASSERT` for `virt == phys` — **done in `src/spi_mmio_fixup.c`, hardware-verified** | boot log identical |
 | 2 | Move `xilinx_transceiver.c` unchanged; add `dev` to the two `xcvr_shim.h` functions | boot log identical |
 | 3 | Convert `axi_adxcvr` — config already separated, easiest real conversion | GT lines identical; **FI test 4** |
 | 4 | Convert `axi_tpl`; delete dead `axi_tpl_adc_pn_mon()` | TPL status + DDS lines identical |
 | 5 | Convert `axi_jesd204`, split RX/TX compatibles (needs §1.8 settled) | link status identical; **FI test 2** |
-| 6 | Convert `hmc7044` → `clock_control` (§1.3) | PLL lock lines identical |
+| 6 | Convert `hmc7044` → `clock_control` (§1.3) — **done, hardware-verified: PLL1/PLL2 lock lines identical, GT refclk now queried not hardcoded** | PLL lock lines identical |
 | 7 | Convert `ad9081` → `misc` (§1.4), remove `get_device()` leak | chip status identical |
-| 8 | FSM: driver ops + rank check (§1.6) | **FI test 1**; full suite 8/8 |
+| 8 | FSM: driver ops + rank check (§1.6) | **FI test 1**; full suite 10/10 |
 
 Two deletions to fold in while passing through: `axi_adxcvr_enable()` and
 `axi_tpl_adc_pn_mon()` both have zero call sites.
@@ -456,8 +527,12 @@ not lose the attribution.
 
 ## 5. Baseline to diff against
 
-**Verified on hardware:** full bring-up ~2.83 s to `=== bring-up complete ===`;
-all four FI faults, 8/8 checks; link reaches DATA three times in one boot
+Committed as `boot_log.golden` (default) and `boot_log_fi.golden`
+(fault-injection). Diff against those files, not against this prose — they carry
+the per-line diff traps and the values that vary legitimately between runs.
+
+**Verified on hardware:** full bring-up ~2.57 s to `=== bring-up complete ===`;
+all four FI faults, 10/10 checks; link reaches DATA three times in one boot
 (normal, post-teardown, post-GT-restore); watchdog detects a forced desync,
 bounces, recovers in ~120 ms, and leaves a healthy link alone; GT with no refclk
 reports `-ETIMEDOUT` after ~229 ms with `STATUS=0x10`.

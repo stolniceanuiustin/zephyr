@@ -9,8 +9,8 @@ file(GLOB ADI_API_SRCS ${CMAKE_CURRENT_SOURCE_DIR}/src/adi_api/*.c)
 
 target_sources(app PRIVATE
   src/main.c
+  src/spi_mmio_fixup.c
   src/ad9081.c
-  src/hmc7044.c
   src/axi_adxcvr.c
   src/axi_jesd204.c
   src/axi_tpl.c
