@@ -13,6 +13,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+#include <errno.h>
 #include <zephyr/kernel.h>
 
 #include <zephyr/logging/log.h>
@@ -127,9 +128,63 @@ static bool op_wants_sysref(struct jesd204_topology *topology,
 	return false;
 }
 
+/*
+ * Check that the topology's declared visit order is the one the ranks require.
+ * See enum jesd204_dev_rank for why this is a runtime check: the topology is a
+ * file-scope array of pointers to file-scope structs, so the ranks are not
+ * integer constant expressions available to BUILD_ASSERT where the array is
+ * declared.
+ */
+int jesd204_topology_validate(struct jesd204_topology *topology)
+{
+	enum jesd204_dev_rank prev = JESD204_RANK_UNSET;
+
+	if (topology->devs_number == 0 ||
+	    topology->devs_number > JESD204_MAX_DEVS) {
+		LOG_ERR("topology has %u devices (max %d)",
+			topology->devs_number, JESD204_MAX_DEVS);
+		return -EINVAL;
+	}
+
+	for (unsigned int i = 0; i < topology->devs_number; i++) {
+		const struct jesd204_dev *jdev = topology->devs[i];
+
+		if (jdev == NULL || jdev->dev_data == NULL) {
+			LOG_ERR("topology slot %u is incomplete", i);
+			return -EINVAL;
+		}
+
+		if (jdev->rank == JESD204_RANK_UNSET) {
+			LOG_ERR("%s: no rank declared (see enum jesd204_dev_rank)",
+				jdev->name);
+			return -EINVAL;
+		}
+
+		/*
+		 * Equal is allowed -- see the enum comment. Only a decrease means
+		 * the array contradicts a dependency someone wrote down.
+		 */
+		if (jdev->rank < prev) {
+			LOG_ERR("topology misordered: %s (rank %d) after rank %d",
+				jdev->name, (int)jdev->rank, (int)prev);
+			return -EINVAL;
+		}
+
+		prev = jdev->rank;
+	}
+
+	return 0;
+}
+
 int jesd204_fsm_start(struct jesd204_topology *topology)
 {
 	int total_failures = 0;
+	int ret;
+
+	ret = jesd204_topology_validate(topology);
+	if (ret < 0) {
+		return ret;
+	}
 
 	LOG_INF("--- JESD204 FSM: bring-up (%u devices, link %u) ---",
 		topology->devs_number, topology->link.link_id);
@@ -166,6 +221,16 @@ int jesd204_fsm_start(struct jesd204_topology *topology)
 int jesd204_fsm_stop(struct jesd204_topology *topology)
 {
 	int total_failures = 0;
+	int ret;
+
+	/*
+	 * Same check as the forward walk. A reverse walk over a misordered
+	 * topology unwinds in the wrong order just as surely.
+	 */
+	ret = jesd204_topology_validate(topology);
+	if (ret < 0) {
+		return ret;
+	}
 
 	LOG_INF("--- JESD204 FSM: teardown ---");
 

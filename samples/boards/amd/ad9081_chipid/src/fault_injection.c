@@ -9,11 +9,14 @@
  * link failure -- and both were found by reading, not by running. These tests
  * run it.
  *
- * Four faults, in increasing order of how much they disturb the link:
+ * Five faults, in increasing order of how much they disturb the link:
  *
  *   1. FSM failure accounting. A synthetic topology whose callbacks fail on
  *      purpose, to check the framework counts and attributes failures correctly
  *      and does not abort the walk. Touches no hardware.
+ *  1b. Topology rank validation. Malformed topologies -- ranks decreasing, and a
+ *      device with no rank -- must be refused with -EINVAL before any callback
+ *      runs, while the real board topology still passes. Touches no hardware.
  *   2. Lane desync + watchdog restart. Force the watchdog to read a desynced
  *      LANE_STATUS and confirm it bounces the link, returns -EAGAIN, and that
  *      the link renegotiates to DATA afterwards.
@@ -166,13 +169,21 @@ static const struct jesd204_dev_data fi_good_data = {
 	},
 };
 
+/*
+ * Both synthetic devices share JESD204_RANK_TEST. Equal ranks are legal and mean
+ * the order between them is not load-bearing, which is true here: neither touches
+ * hardware, so what this topology exercises is the walker's failure accounting,
+ * not a dependency.
+ */
 static struct jesd204_dev fi_bad_dev = {
 	.name = "fi-bad",
+	.rank = JESD204_RANK_TEST,
 	.dev_data = &fi_bad_data,
 };
 
 static struct jesd204_dev fi_good_dev = {
 	.name = "fi-good",
+	.rank = JESD204_RANK_TEST,
 	.dev_data = &fi_good_data,
 };
 
@@ -216,6 +227,111 @@ static void fi_test_fsm_accounting(void)
 		fi_fail("fsm-reverse-walk", "UNINIT should have been clean");
 	} else {
 		fi_pass("fsm-reverse-walk", "reverse walk clean");
+	}
+}
+
+/*
+ * The rank check is itself a failure path, so it gets injected like any other.
+ * Two malformed topologies, both of which used to be silently walkable:
+ *
+ *   - ranks decreasing, which is the bug that actually happened once (the chip
+ *     listed ahead of the GT, moving its JESD PLL check before the reset-release)
+ *   - a device with no .rank at all, the omission JESD204_RANK_UNSET exists for
+ *
+ * Both must be refused with -EINVAL before any callback runs. That "before" is
+ * the part worth testing: a walk that started and then bailed would leave
+ * hardware half-configured, which is exactly what refusing up front avoids. It is
+ * checked via fi_late_phase_ran, so these devices register fi_cb_late rather than
+ * fi_good_data's fi_cb_ok -- fi_cb_ok sets no flag, which would make the
+ * assertion vacuously true whether the walk ran or not.
+ */
+static const struct jesd204_dev_data fi_ranked_data = {
+	.state_ops = {
+		[JESD204_OP_LINK_INIT] = {
+			.per_link = fi_cb_late,
+		},
+	},
+};
+
+static struct jesd204_dev fi_ranked_low = {
+	.name = "fi-rank-low",
+	.rank = JESD204_RANK_PHY,
+	.dev_data = &fi_ranked_data,
+};
+
+static struct jesd204_dev fi_ranked_high = {
+	.name = "fi-rank-high",
+	.rank = JESD204_RANK_LINK,
+	.dev_data = &fi_ranked_data,
+};
+
+/* .rank deliberately omitted -- defaults to JESD204_RANK_UNSET (0). */
+static struct jesd204_dev fi_unranked = {
+	.name = "fi-rank-unset",
+	.dev_data = &fi_ranked_data,
+};
+
+static struct jesd204_topology fi_misordered_topology = {
+	/* LINK before PHY: rank decreases across the array. */
+	.devs = { &fi_ranked_high, &fi_ranked_low },
+	.devs_number = 2,
+	.link = { .link_id = 98, .is_transmit = false },
+};
+
+static struct jesd204_topology fi_unranked_topology = {
+	.devs = { &fi_ranked_low, &fi_unranked },
+	.devs_number = 2,
+	.link = { .link_id = 97, .is_transmit = false },
+};
+
+static void fi_test_topology_ranks(void)
+{
+	int ret;
+
+	LOG_INF("--- FI 1b: topology rank validation ---");
+
+	fi_late_phase_ran = false;
+	ret = jesd204_fsm_start(&fi_misordered_topology);
+	if (ret != -EINVAL) {
+		LOG_ERR("misordered topology returned %d, expected -EINVAL", ret);
+		fi_fail("rank-misordered", "misordering was not refused");
+	} else if (fi_late_phase_ran) {
+		fi_fail("rank-misordered", "refused, but only after walking");
+	} else {
+		fi_pass("rank-misordered", "-EINVAL before any callback ran");
+	}
+
+	fi_late_phase_ran = false;
+	ret = jesd204_fsm_start(&fi_unranked_topology);
+	if (ret != -EINVAL) {
+		LOG_ERR("unranked device returned %d, expected -EINVAL", ret);
+		fi_fail("rank-unset", "missing rank was not refused");
+	} else if (fi_late_phase_ran) {
+		fi_fail("rank-unset", "refused, but only after walking");
+	} else {
+		fi_pass("rank-unset", "-EINVAL before any callback ran");
+	}
+
+	/*
+	 * The reverse walk validates too, so teardown of a misordered topology is
+	 * refused the same way. Checked because an unwind in the wrong order is as
+	 * damaging as a bring-up in the wrong order.
+	 */
+	ret = jesd204_fsm_stop(&fi_misordered_topology);
+	if (ret != -EINVAL) {
+		LOG_ERR("misordered teardown returned %d, expected -EINVAL", ret);
+		fi_fail("rank-misordered-stop", "teardown did not validate ranks");
+	} else {
+		fi_pass("rank-misordered-stop", "teardown refused with -EINVAL");
+	}
+
+	/* The real topology must of course still pass. */
+	ret = jesd204_bringup_topology_is_valid();
+	if (ret < 0) {
+		LOG_ERR("real topology rejected (%d)", ret);
+		fi_fail("rank-real-topology", "the working topology failed the check");
+	} else {
+		fi_pass("rank-real-topology", "board topology ranks ascend");
 	}
 }
 
@@ -375,16 +491,17 @@ int jesd204_fault_injection_run(void)
 {
 	fi_failures = 0;
 
-	LOG_INF("=== JESD204 fault injection: 4 faults ===");
+	LOG_INF("=== JESD204 fault injection: 5 faults ===");
 
 	/*
-	 * Order matters: least disruptive first. Test 1 touches no hardware,
+	 * Order matters: least disruptive first. Tests 1 and 1b touch no hardware,
 	 * test 2 bounces the link core, test 3 stops the chip's deframer, test 4
 	 * takes the GT down. Each restores the link before the next, so a failure
 	 * that leaves the link down is attributable to the test that caused it
 	 * rather than to whatever ran before.
 	 */
 	fi_test_fsm_accounting();
+	fi_test_topology_ranks();
 	fi_test_lane_desync();
 	fi_test_teardown_rebringup();
 	fi_test_gt_refclk_lost();

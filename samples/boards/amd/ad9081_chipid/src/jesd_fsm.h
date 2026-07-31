@@ -45,4 +45,15 @@ int jesd204_bringup(void);
  */
 int jesd204_teardown(void);
 
+/*
+ * Validate the board topology's device ranks without walking any phase. Returns
+ * 0 if the visit order matches the declared jesd204_dev_rank ordering, -EINVAL
+ * otherwise.
+ *
+ * Exists for the fault-injection suite: the rank check is only observable through
+ * jesd204_fsm_start()'s return value, and calling that on the real topology to
+ * test the check would disturb a live link. This exposes the verdict alone.
+ */
+int jesd204_bringup_topology_is_valid(void);
+
 #endif /* JESD_FSM_H_ */

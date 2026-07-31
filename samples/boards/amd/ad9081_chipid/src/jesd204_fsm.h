@@ -120,21 +120,58 @@ struct jesd204_dev_data {
 };
 
 /*
- * A participating device. `name` is for logging; `dev_data` is its phase table.
- * Devices are static here, so there is no separate registration call -- the
- * topology just points at them.
+ * Visit order within a phase, as a declared property of the device rather than
+ * of its position in the topology array.
+ *
+ * Ranks encode the hardware dependency: the GT must leave reset before the link
+ * cores' lane clocks are enabled (no-OS jesd204_clk.c:48-64), and the chip's
+ * JESD PLL check must come after the GT reset-release. That constraint used to
+ * live only in the order the topology array happened to be written in, and it
+ * was a real bug once -- an earlier version listed the chip first, silently
+ * moving its PLL check ahead of the reset-release.
+ *
+ * jesd204_fsm_start() validates that ranks do not decrease across the topology
+ * and refuses to walk if they do, so misordering is a startup refusal instead of
+ * a link that comes up wrong. Gaps of 10 leave room to insert a device without
+ * renumbering.
+ *
+ * Equal ranks are allowed and mean "order between these two is not
+ * load-bearing" -- an explicit statement, not an oversight.
+ *
+ * Zero is deliberately not a valid rank. A struct jesd204_dev is a static
+ * initialiser, so a forgotten .rank would otherwise default to whichever device
+ * class happened to be numbered 0 and read as intentional. Reserving 0 means the
+ * omission is rejected wherever it appears in the array, not only when the
+ * device happens not to be first.
+ */
+enum jesd204_dev_rank {
+	JESD204_RANK_UNSET = 0,  /* .rank not initialised -- rejected */
+	JESD204_RANK_CLOCK = 10, /* hmc7044, if it ever registers */
+	JESD204_RANK_PHY = 20,   /* adxcvr -- GT reset-release */
+	JESD204_RANK_CHIP = 30,  /* ad9082 -- JESD PLL check, 204C cal */
+	JESD204_RANK_LINK = 40,  /* axi-jesd204 -- lane clocks, DATA poll */
+
+	/* Synthetic devices in the fault-injection tests. No real hardware. */
+	JESD204_RANK_TEST = 100,
+};
+
+/*
+ * A participating device. `name` is for logging; `dev_data` is its phase table;
+ * `rank` is its visit order (above). Devices are static here, so there is no
+ * separate registration call -- the topology just points at them.
  */
 struct jesd204_dev {
 	const char *name;
+	enum jesd204_dev_rank rank;
 	const struct jesd204_dev_data *dev_data;
 };
 
 /*
  * The set of devices taking part, in visit order, plus the link they serve.
  *
- * Visit order matters: within a single phase, devices run in this order. It is
- * the one thing the table format does not make self-evident, so it is chosen to
- * match the order no-OS drives these blocks in.
+ * Visit order matters: within a single phase, devices run in this order. The
+ * array order is what the walker uses; `rank` is what makes that order checkable
+ * rather than merely conventional.
  */
 #define JESD204_MAX_DEVS 8
 
@@ -153,6 +190,11 @@ struct jesd204_topology {
  * broken phase and aborting there would hide the state of everything
  * downstream. Failures are counted and logged per phase; the return value is
  * the number of failed callbacks, so 0 means a clean walk.
+ *
+ * The one thing that does abort is a malformed topology: returns -EINVAL,
+ * without walking, if the devices' ranks decrease across topology->devs[] (see
+ * enum jesd204_dev_rank). That is a programming error in the topology, not a
+ * hardware failure, so there is no downstream state worth exposing.
  */
 int jesd204_fsm_start(struct jesd204_topology *topology);
 
@@ -173,5 +215,16 @@ int jesd204_fsm_stop(struct jesd204_topology *topology);
  * legitimately want to re-align an already-running link.
  */
 int jesd204_sysref_async(struct jesd204_topology *topology);
+
+/*
+ * The rank/shape check both walks run first, on its own. Returns 0 if every
+ * device declares a rank and ranks do not decrease across topology->devs[],
+ * -EINVAL otherwise.
+ *
+ * Exposed so the verdict can be obtained without walking a phase -- the
+ * fault-injection suite checks the real topology this way rather than starting
+ * an FSM over a live link.
+ */
+int jesd204_topology_validate(struct jesd204_topology *topology);
 
 #endif /* JESD204_FSM_H_ */

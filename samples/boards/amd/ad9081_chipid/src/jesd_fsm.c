@@ -249,6 +249,7 @@ static const struct jesd204_dev_data ad9081_jesd204_data = {
 
 static struct jesd204_dev ad9081_jdev = {
 	.name = "ad9082",
+	.rank = JESD204_RANK_CHIP,
 	.dev_data = &ad9081_jesd204_data,
 };
 
@@ -298,6 +299,7 @@ static const struct jesd204_dev_data adxcvr_jesd204_data = {
 
 static struct jesd204_dev adxcvr_jdev = {
 	.name = "adxcvr",
+	.rank = JESD204_RANK_PHY,
 	.dev_data = &adxcvr_jesd204_data,
 };
 
@@ -393,25 +395,22 @@ static const struct jesd204_dev_data axi_jesd204_jesd204_data = {
 
 static struct jesd204_dev axi_jesd204_jdev = {
 	.name = "axi-jesd204",
+	.rank = JESD204_RANK_LINK,
 	.dev_data = &axi_jesd204_jesd204_data,
 };
 
 /* ---------------------------------------------------------------- driver --- */
 
 /*
- * Device visit order within each phase.
+ * Device visit order within each phase. PHY -> CHIP -> LINK; the ranks on each
+ * device carry the dependency and jesd204_fsm_start() refuses to walk if this
+ * array contradicts them, so the order is checked rather than merely intended.
  *
- * This order is chosen to reproduce exactly the step order that was verified
- * working on this board, which the phase tables alone do not determine. Inside
- * CLOCKS_ENABLE it yields: GT TX/RX reset-release, then the chip's JESD PLL
- * check and 204C calibration, then the FPGA lane clocks. adxcvr before
- * axi-jesd204 is additionally what no-OS does in jesd204_clk_enable()
- * (jesd204_clk.c:48-64).
- *
- * The CLK_SYNC phases are unaffected -- ad9082 is the only device registered
- * for them. In LINK_RUNNING, ad9082 precedes axi-jesd204, which only affects
- * log order: the chip's status read is diagnostic and the FPGA core's is the
- * one that gates.
+ * What the ranks do not record, and this does: the two phases where the order is
+ * observable but not load-bearing. The CLK_SYNC phases are unaffected -- ad9082
+ * is the only device registered for them. In LINK_RUNNING, ad9082 preceding
+ * axi-jesd204 only affects log order, since the chip's status read is diagnostic
+ * and the FPGA core's is the one that gates.
  */
 static struct jesd204_topology topology = {
 	.devs = {
@@ -453,4 +452,9 @@ int jesd204_teardown(void)
 		return -ENODEV;
 	}
 	return jesd204_fsm_stop(&topology);
+}
+
+int jesd204_bringup_topology_is_valid(void)
+{
+	return jesd204_topology_validate(&topology);
 }
