@@ -35,6 +35,9 @@ LOG_MODULE_REGISTER(ad9081, LOG_LEVEL_INF);
 
 #include "ad9081.h"
 #include "adi_ad9081.h"
+/* hal + bf: the deframer buf-protect op writes one bitfield by name. */
+#include "adi_ad9081_hal.h"
+#include "adi_ad9081_bf_ad9081.h"
 #include "jesd204_geometry.h"
 
 /*
@@ -291,17 +294,6 @@ int ad9081_probe(const struct device *dev, uint16_t *prod_id)
 	return 0;
 }
 
-void *ad9081_get_device(const struct device *dev)
-{
-	struct ad9081_data *data;
-
-	if (dev == NULL) {
-		return NULL;
-	}
-	data = dev->data;
-	return &data->dev;
-}
-
 /*
  * ------------------------- MxFE datapath configuration ------------------------
  *
@@ -404,6 +396,138 @@ int ad9081_setup_datapath(const struct device *dev)
 
 	return 0;
 }
+
+/*
+ * ------------------------- bring-up ops --------------------------------------
+ *
+ * The chip-side half of the JESD204 bring-up, one op per thing the FSM does.
+ * jesd_fsm.c used to reach adi_ad9081_* directly through an ad9081_get_device()
+ * accessor; these are the same calls, moved behind dev->api so the FSM no longer
+ * names this part.
+ *
+ * The vendor API returns API_CMS_ERROR_* (0 = OK, negative otherwise) and every
+ * one of these is a register access, so the errno is uniformly -EIO. Logging
+ * stays at the call site: which failure is worth a warning and which is fatal is
+ * the FSM's judgement, not the driver's.
+ */
+
+/* Chip-side link select: this profile is single-link, so link 0 on both ends. */
+#define AD9081_LINK AD9081_LINK_0
+
+static int ad9081_op_sync_oneshot(const struct device *dev)
+{
+	struct ad9081_data *data = dev->data;
+
+	/*
+	 * Subclass comes from the link geometry rather than from a literal here:
+	 * it is the same number the FPGA link cores advertise in ILAS, and it is
+	 * already in the profile from adi,subclass on the TX link node.
+	 */
+	if (adi_ad9081_jesd_oneshot_sync(
+		    &data->dev,
+		    (adi_cms_jesd_subclass_e)data->profile.tx_jesd_param
+			    .jesd_subclass)) {
+		return -EIO;
+	}
+	return 0;
+}
+
+static int ad9081_op_sync_nco(const struct device *dev)
+{
+	struct ad9081_data *data = dev->data;
+
+	if (adi_ad9081_device_nco_sync_post(&data->dev)) {
+		return -EIO;
+	}
+	return 0;
+}
+
+static int ad9081_op_jesd_pll_status_get(const struct device *dev,
+					 uint8_t *status)
+{
+	struct ad9081_data *data = dev->data;
+
+	if (adi_ad9081_jesd_pll_lock_status_get(&data->dev, status)) {
+		return -EIO;
+	}
+	return 0;
+}
+
+static int ad9081_op_deframer_calibrate(const struct device *dev,
+					bool force_reset, uint8_t boost_mask,
+					bool run_bg_cal)
+{
+	struct ad9081_data *data = dev->data;
+
+	if (adi_ad9081_jesd_rx_calibrate_204c(&data->dev, force_reset,
+					      boost_mask, run_bg_cal)) {
+		return -EIO;
+	}
+	return 0;
+}
+
+static int ad9081_op_deframer_buf_protect_disable(const struct device *dev)
+{
+	struct ad9081_data *data = dev->data;
+
+	/*
+	 * JRX_TPL_1 (0x4A1) bit6 BUF_PROTECT_EN. A bitfield write rather than an
+	 * op with a bool, because there is nothing to be gained from being able
+	 * to turn it back on: it resets to 1 and this is the only thing that ever
+	 * touches it.
+	 */
+	if (adi_ad9081_hal_bf_set(&data->dev, REG_JRX_TPL_1_ADDR,
+				  BF_JRX_TPL_BUF_PROTECT_EN_INFO, 0)) {
+		return -EIO;
+	}
+	return 0;
+}
+
+static int ad9081_op_deframer_enable(const struct device *dev, bool enable)
+{
+	struct ad9081_data *data = dev->data;
+
+	if (adi_ad9081_jesd_rx_link_enable_set(&data->dev, AD9081_LINK,
+					       enable ? 1 : 0)) {
+		return -EIO;
+	}
+	return 0;
+}
+
+static int ad9081_op_framer_status_get(const struct device *dev,
+				       uint16_t *status)
+{
+	struct ad9081_data *data = dev->data;
+
+	if (adi_ad9081_jesd_tx_link_status_get(&data->dev, AD9081_LINK,
+					       status)) {
+		return -EIO;
+	}
+	return 0;
+}
+
+static int ad9081_op_deframer_status_get(const struct device *dev,
+					 uint16_t *status)
+{
+	struct ad9081_data *data = dev->data;
+
+	if (adi_ad9081_jesd_rx_link_status_get(&data->dev, AD9081_LINK,
+					       status)) {
+		return -EIO;
+	}
+	return 0;
+}
+
+static const struct ad9081_driver_api ad9081_api = {
+	.sync_oneshot = ad9081_op_sync_oneshot,
+	.sync_nco = ad9081_op_sync_nco,
+	.jesd_pll_status_get = ad9081_op_jesd_pll_status_get,
+	.deframer_calibrate = ad9081_op_deframer_calibrate,
+	.deframer_buf_protect_disable = ad9081_op_deframer_buf_protect_disable,
+	.deframer_enable = ad9081_op_deframer_enable,
+	.framer_status_get = ad9081_op_framer_status_get,
+	.deframer_status_get = ad9081_op_deframer_status_get,
+};
 
 /*
  * init() only exists so device_is_ready() means something. The real work is the
@@ -645,7 +769,7 @@ static int ad9081_init(const struct device *dev)
 									       \
 	DEVICE_DT_INST_DEFINE(n, ad9081_init, NULL, &ad9081_data_##n,          \
 			      &ad9081_config_##n, POST_KERNEL,                 \
-			      CONFIG_AD9081_MXFE_INIT_PRIORITY, NULL);
+			      CONFIG_AD9081_MXFE_INIT_PRIORITY, &ad9081_api);
 
 DT_INST_FOREACH_STATUS_OKAY(AD9081_DEFINE)
 

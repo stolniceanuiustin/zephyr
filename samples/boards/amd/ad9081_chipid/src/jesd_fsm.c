@@ -52,13 +52,6 @@ LOG_MODULE_REGISTER(jesd_fsm, LOG_LEVEL_INF);
 #include "axi_tpl.h"
 #include "jesd204_fsm.h"
 
-#include "adi_ad9081.h"
-#include "adi_ad9081_hal.h"
-#include "adi_ad9081_bf_ad9081.h"
-
-/* Chip-side link select: the deframer (JRX) link 0. */
-#define AD9081_JRX_LINK AD9081_LINK_0
-
 /*
  * Every callback returns JESD204_STATE_CHANGE_DONE on success and a negative
  * errno on failure, as in no-OS. On UNINIT most of them have nothing to undo:
@@ -69,13 +62,15 @@ LOG_MODULE_REGISTER(jesd_fsm, LOG_LEVEL_INF);
 /* ---------------------------------------------------------------- AD9082 --- */
 
 /*
- * The vendor handle for the one AD9081 node. Still reached through the
- * get_device() leak, which is what welds this file to this one chip -- replaced
- * by driver ops in a following commit.
+ * The converter, reached only through the ad9081_*() ops in ad9081.h. This file
+ * used to hold the vendor handle and call adi_ad9081_* on it directly; nothing
+ * here names the part's registers or vendor enums any more, so the phase
+ * callbacks below describe what a converter does at each phase rather than how
+ * this one does it.
  */
-static adi_ad9081_device_t *chip(void)
+static const struct device *chip(void)
 {
-	return ad9081_get_device(DEVICE_DT_GET(DT_NODELABEL(ad9081)));
+	return DEVICE_DT_GET(DT_NODELABEL(ad9081));
 }
 
 static int ad9081_fsm_oneshot_sync(struct jesd204_dev *jdev,
@@ -87,7 +82,8 @@ static int ad9081_fsm_oneshot_sync(struct jesd204_dev *jdev,
 		return JESD204_STATE_CHANGE_DONE;
 	}
 
-	if (adi_ad9081_jesd_oneshot_sync(chip(), JESD_SUBCLASS_1)) {
+	/* Subclass is not passed: the op takes it from the link geometry. */
+	if (ad9081_sync_oneshot(chip())) {
 		return -EIO;
 	}
 	return JESD204_STATE_CHANGE_DONE;
@@ -102,7 +98,7 @@ static int ad9081_fsm_nco_sync(struct jesd204_dev *jdev,
 		return JESD204_STATE_CHANGE_DONE;
 	}
 
-	if (adi_ad9081_device_nco_sync_post(chip())) {
+	if (ad9081_sync_nco(chip())) {
 		return -EIO;
 	}
 	return JESD204_STATE_CHANGE_DONE;
@@ -121,7 +117,7 @@ static int ad9081_fsm_clks_enable(struct jesd204_dev *jdev,
 		return JESD204_STATE_CHANGE_DONE;
 	}
 
-	if (adi_ad9081_jesd_pll_lock_status_get(chip(), &pll_status)) {
+	if (ad9081_jesd_pll_status_get(chip(), &pll_status)) {
 		LOG_ERR("chip JESD PLL status read failed");
 		return -EIO;
 	}
@@ -130,8 +126,8 @@ static int ad9081_fsm_clks_enable(struct jesd204_dev *jdev,
 		return -EIO;
 	}
 
-	/* 204C background calibration on the deframer (force reset, no boost). */
-	if (adi_ad9081_jesd_rx_calibrate_204c(chip(), 1, 0, 1)) {
+	/* Deframer serdes calibration: force reset, no lane boost, run background. */
+	if (ad9081_deframer_calibrate(chip(), true, 0, true)) {
 		LOG_WRN("chip JRX 204C calibration failed");
 		return -EIO;
 	}
@@ -147,8 +143,7 @@ static int ad9081_fsm_link_enable(struct jesd204_dev *jdev,
 	ARG_UNUSED(lnk);
 
 	if (reason == JESD204_STATE_OP_REASON_UNINIT) {
-		if (adi_ad9081_jesd_rx_link_enable_set(chip(), AD9081_JRX_LINK,
-						       0)) {
+		if (ad9081_deframer_enable(chip(), false)) {
 			return -EIO;
 		}
 		return JESD204_STATE_CHANGE_DONE;
@@ -173,8 +168,7 @@ static int ad9081_fsm_link_enable(struct jesd204_dev *jdev,
 	 * because inheriting a reset default the reference code clears is worth
 	 * not doing, not because it fixes anything.
 	 */
-	if (adi_ad9081_hal_bf_set(chip(), REG_JRX_TPL_1_ADDR,
-				  BF_JRX_TPL_BUF_PROTECT_EN_INFO, 0)) {
+	if (ad9081_deframer_buf_protect_disable(chip())) {
 		LOG_WRN("chip JRX buf-protect clear failed");
 		return -EIO;
 	}
@@ -183,7 +177,7 @@ static int ad9081_fsm_link_enable(struct jesd204_dev *jdev,
 	 * Enable the chip's JRX deframer. The JTX framer runs once its digital
 	 * reset is released (done inside startup_rx) and SYSREF arrives.
 	 */
-	if (adi_ad9081_jesd_rx_link_enable_set(chip(), AD9081_JRX_LINK, 1)) {
+	if (ad9081_deframer_enable(chip(), true)) {
 		return -EIO;
 	}
 
@@ -207,16 +201,14 @@ static int ad9081_fsm_link_running(struct jesd204_dev *jdev,
 		return JESD204_STATE_CHANGE_DONE;
 	}
 
-	if (adi_ad9081_jesd_tx_link_status_get(chip(), AD9081_LINK_0,
-					       &tx_status)) {
-		LOG_WRN("chip jesd_tx_link_status_get failed");
+	if (ad9081_framer_status_get(chip(), &tx_status)) {
+		LOG_WRN("chip framer status read failed");
 	} else {
 		LOG_INF("chip JTX (framer)   link status = 0x%04x", tx_status);
 	}
 
-	if (adi_ad9081_jesd_rx_link_status_get(chip(), AD9081_JRX_LINK,
-					       &rx_status)) {
-		LOG_WRN("chip jesd_rx_link_status_get failed");
+	if (ad9081_deframer_status_get(chip(), &rx_status)) {
+		LOG_WRN("chip deframer status read failed");
 	} else {
 		LOG_INF("chip JRX (deframer) link status = 0x%04x", rx_status);
 	}
@@ -449,7 +441,13 @@ int jesd204_bringup(void)
 {
 	int failures;
 
-	if (chip() == NULL) {
+	/*
+	 * device_is_ready(), not a NULL check: DEVICE_DT_GET() resolves at build
+	 * time and can never be NULL, so the old `chip() == NULL` guard here could
+	 * not fire. This one can -- it fails if the node is disabled or its init()
+	 * returned an error, which is what the message has always claimed to mean.
+	 */
+	if (!device_is_ready(chip())) {
 		LOG_ERR("AD9081 device not initialised");
 		return -ENODEV;
 	}
@@ -468,7 +466,7 @@ int jesd204_bringup(void)
 
 int jesd204_teardown(void)
 {
-	if (chip() == NULL) {
+	if (!device_is_ready(chip())) {
 		return -ENODEV;
 	}
 	return jesd204_fsm_stop(&topology);

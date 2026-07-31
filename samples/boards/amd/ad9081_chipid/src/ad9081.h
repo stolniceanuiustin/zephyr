@@ -10,6 +10,7 @@
 #ifndef AD9081_H_
 #define AD9081_H_
 
+#include <stdbool.h>
 #include <stdint.h>
 
 #include <zephyr/device.h>
@@ -37,14 +38,123 @@ int ad9081_probe(const struct device *dev, uint16_t *prod_id);
 int ad9081_setup_datapath(const struct device *dev);
 
 /*
- * Accessor for the ADI device handle (adi_ad9081_device_t *), so the JESD204
- * bring-up sequence can drive the chip-side link enable / status APIs. Returned
- * as void * to keep the heavy ADI headers out of this interface; the FSM casts
- * it back. NULL if dev is NULL. Valid after ad9081_probe().
+ * ------------------------- bring-up ops --------------------------------------
  *
- * A leak, and going away: it welds jesd_fsm.c to this one chip. Replaced by
- * driver ops in a following commit -- do not add call sites.
+ * What the JESD204 bring-up sequence needs from the chip, as driver ops rather
+ * than as the raw vendor handle. Before this, jesd_fsm.c reached the handle
+ * through an ad9081_get_device() accessor and called adi_ad9081_* directly,
+ * which meant the FSM included the vendor headers and named this part's register
+ * bits -- so a second converter, or a different MxFE, could not be dropped in
+ * behind the same FSM.
+ *
+ * Everything here is a *chip-side link* operation: the FPGA transceiver and link
+ * cores have their own drivers. The ops are deliberately narrow -- one per thing
+ * the FSM actually does, no pass-through of vendor enums -- so this interface
+ * says what a converter has to be able to do, not which library implements it.
+ *
+ * All return 0 on success and a negative errno on failure. Valid after
+ * ad9081_probe(); the link ops additionally need ad9081_setup_datapath(),
+ * because the vendor API requires its startup_tx()/startup_rx() first.
  */
-void *ad9081_get_device(const struct device *dev);
+struct ad9081_driver_api {
+	/*
+	 * One-shot SYNC. Subclass comes from the link node's adi,subclass, so
+	 * the caller does not restate it.
+	 */
+	int (*sync_oneshot)(const struct device *dev);
+
+	/* NCO sync, after SYNC. */
+	int (*sync_nco)(const struct device *dev);
+
+	/*
+	 * JESD PLL lock status. Non-zero means locked; the raw value is passed
+	 * out because it is logged.
+	 */
+	int (*jesd_pll_status_get)(const struct device *dev, uint8_t *status);
+
+	/*
+	 * Deframer serdes calibration. force_reset must be true for the first
+	 * calibration after boot; boost_mask is one bit per lane for high-boost
+	 * mode (insertion loss above ~10 dB).
+	 */
+	int (*deframer_calibrate)(const struct device *dev, bool force_reset,
+				  uint8_t boost_mask, bool run_bg_cal);
+
+	/*
+	 * Clear the deframer's transport-layer elastic-buffer protection. Resets
+	 * to enabled and nothing else clears it on a 204B link -- see the call
+	 * site in jesd_fsm.c for why this is done and what it did not fix.
+	 */
+	int (*deframer_buf_protect_disable)(const struct device *dev);
+
+	/* Enable or disable the chip's deframer link. */
+	int (*deframer_enable)(const struct device *dev, bool enable);
+
+	/* Link status words, diagnostic only -- the FPGA cores gate on theirs. */
+	int (*framer_status_get)(const struct device *dev, uint16_t *status);
+	int (*deframer_status_get)(const struct device *dev, uint16_t *status);
+};
+
+/*
+ * Plain `const struct`, not DEVICE_API(): that macro puts the API in an iterable
+ * linker section whose start/end symbols are generated from the __subsystem tags
+ * parse_syscalls.py finds, and it only scans include/, drivers/ and subsys/net.
+ * A sample-local API class would get no section and fail to link. dev->api works
+ * either way -- the section is only what DEVICE_API_IS() needs, and nothing here
+ * type-checks a device at runtime. This becomes DEVICE_API() when the driver
+ * moves in-tree and this header moves to include/zephyr/drivers/.
+ */
+#define AD9081_API(dev) ((const struct ad9081_driver_api *)(dev)->api)
+
+/*
+ * Wrappers, so call sites read as ad9081_*() rather than as api dereferences.
+ * Every op is mandatory, so none of them is NULL-checked -- a driver that omits
+ * one is a build-time hole, not a runtime one.
+ */
+static inline int ad9081_sync_oneshot(const struct device *dev)
+{
+	return AD9081_API(dev)->sync_oneshot(dev);
+}
+
+static inline int ad9081_sync_nco(const struct device *dev)
+{
+	return AD9081_API(dev)->sync_nco(dev);
+}
+
+static inline int ad9081_jesd_pll_status_get(const struct device *dev,
+					     uint8_t *status)
+{
+	return AD9081_API(dev)->jesd_pll_status_get(dev, status);
+}
+
+static inline int ad9081_deframer_calibrate(const struct device *dev,
+					    bool force_reset, uint8_t boost_mask,
+					    bool run_bg_cal)
+{
+	return AD9081_API(dev)->deframer_calibrate(dev, force_reset, boost_mask,
+						   run_bg_cal);
+}
+
+static inline int ad9081_deframer_buf_protect_disable(const struct device *dev)
+{
+	return AD9081_API(dev)->deframer_buf_protect_disable(dev);
+}
+
+static inline int ad9081_deframer_enable(const struct device *dev, bool enable)
+{
+	return AD9081_API(dev)->deframer_enable(dev, enable);
+}
+
+static inline int ad9081_framer_status_get(const struct device *dev,
+					   uint16_t *status)
+{
+	return AD9081_API(dev)->framer_status_get(dev, status);
+}
+
+static inline int ad9081_deframer_status_get(const struct device *dev,
+					     uint16_t *status)
+{
+	return AD9081_API(dev)->deframer_status_get(dev, status);
+}
 
 #endif /* AD9081_H_ */
