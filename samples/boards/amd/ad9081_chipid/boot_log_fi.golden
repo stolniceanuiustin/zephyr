@@ -105,8 +105,7 @@ Known-good values worth checking explicitly
 
 ------------------------------- console output -------------------------------
 
-## Starting application at 0x00001?
-[00:00:00.009,000] <inf> adi_axi_dmac: AXI DMAC v4.5.e — DEV_TO_MEM, max_len=16777216, src_w=16, dest_w=16, cyclic=sw-only
+## Starting application at 0x00▒[00:00:00.009,000] <inf> adi_axi_dmac: AXI DMAC v4.5.e — DEV_TO_MEM, max_len=16777216, src_w=16, dest_w=16, cyclic=sw-only
 [00:00:00.015,000] <inf> adi_axi_dmac: AXI DMAC v4.5.e — MEM_TO_DEV, max_len=16777216, src_w=16, dest_w=16, cyclic=hw
 [00:00:00.026,000] <inf> hmc7044: HMC7044 scratchpad probe over spi@ff050000
 [00:00:00.034,000] <inf> hmc7044: scratchpad readback = 0xad (wrote 0xad)
@@ -115,7 +114,7 @@ Known-good values worth checking explicitly
 [00:00:00.056,000] <inf> hmc7044: PLL1 N1=10 R1=1 PFD1=10000 kHz; PLL2 N2=15 R2=1 doubler=1 VCO=high
 [00:00:00.123,000] <inf> hmc7044: PLL1: Locked, CLKIN0 @ 100000000 Hz, PFD: 10000 kHz - PLL2: Locked @ 3000.000000 MHz
 [00:00:00.128,000] <inf> hmc7044: SUCCESS: HMC7044 clock tree configured
-*** Booting Zephyr OS build v4.4.0-7880-g90a9cb34e850 ***
+*** Booting Zephyr OS build v4.4.0-7882-g10a3665aeb68 ***
 [00:00:00.141,000] <inf> main: === AD9081/HMC7044 bring-up ===
 [00:00:00.147,000] <inf> main: HMC7044 clocks live: PLL1 Locked on CLKIN0, PLL2 3.000 GHz, GT refclk out12 500.000 MHz
 [00:00:00.158,000] <inf> ad9081: AD9081 probe via ADI API lib over spi@ff040000
@@ -131,9 +130,9 @@ Known-good values worth checking explicitly
 [00:00:01.968,000] <inf> axi_adxcvr: tx_adxcvr: CONTROL=0x0035 (sysclk=3 outclk=5 lpm=0) enc=8b/10b
 [00:00:02.017,000] <inf> axi_adxcvr: tx_adxcvr: GT dividers programmed for 10000000 kHz lane @ 500000 kHz ref
 [00:00:02.021,000] <inf> axi_adxcvr: rx_adxcvr @ 0x84a60000: PCORE v17.5.97, 4 lanes, type=8, RX
-[00:00:02.030,000] <inf> axi_adxcvr: rx_adxcvr: CONTROL=0x1005 (sysclk=0 outclk=5 lpm=1) enc=8b/10b
+[00:00:02.031,000] <inf> axi_adxcvr: rx_adxcvr: CONTROL=0x1005 (sysclk=0 outclk=5 lpm=1) enc=8b/10b
 [00:00:02.106,000] <inf> axi_adxcvr: rx_adxcvr: GT dividers programmed for 10000000 kHz lane @ 500000 kHz ref
-[00:00:02.110,000] <inf> main: SUCCESS: GT transceivers configured (TX QPLL0 / RX CPLL)
+[00:00:02.111,000] <inf> main: SUCCESS: GT transceivers configured (TX QPLL0 / RX CPLL)
 [00:00:02.119,000] <inf> axi_jesd204: jesd204-tx @ 0x84b90000: PCORE v1.6, 4 lanes, dpw=4 tpl_dpw=4
 [00:00:02.128,000] <inf> axi_jesd204: jesd204-tx: configured (M8 L4 F4 K32 NP16 subclass1), link held disabled
 [00:00:02.139,000] <inf> axi_jesd204: jesd204-rx @ 0x84a90000: PCORE v1.7, 4 lanes, dpw=4 tpl_dpw=4
@@ -149,13 +148,13 @@ Known-good values worth checking explicitly
 [00:00:02.227,000] <inf> axi_adxcvr: tx_adxcvr: lane clock up (status=0x1)
 [00:00:02.234,000] <inf> axi_adxcvr: rx_adxcvr: lane clock up (status=0x1)
 [00:00:02.239,000] <inf> jesd_fsm: chip JESD PLL status = 0x1
-[00:00:02.445,000] <inf> jesd204_fsm: phase clocks_enable    : ok
-[00:00:02.456,000] <inf> jesd204_fsm: phase link_enable      : ok
-[00:00:02.457,000] <inf> jesd_fsm: chip JTX (framer)   link status = 0x007d
+[00:00:02.446,000] <inf> jesd204_fsm: phase clocks_enable    : ok
+[00:00:02.457,000] <inf> jesd204_fsm: phase link_enable      : ok
+[00:00:02.458,000] <inf> jesd_fsm: chip JTX (framer)   link status = 0x007d
 [00:00:02.465,000] <inf> jesd_fsm: chip JRX (deframer) link status = 0x000f
 [00:00:02.476,000] <inf> axi_jesd204: jesd204-tx: link enabled, status=0x00000013 [DATA]
 [00:00:02.481,000] <inf> axi_jesd204: jesd204-rx: link enabled, status=0x00000003 [DATA]
-[00:00:02.489,000] <inf> axi_tpl: adc-tpl: status=0x00000005 clk_freq=0x00028000 clk_ratio=0x00000001
+[00:00:02.489,000] <inf> axi_tpl: adc-tpl: status=0x00000005 clk_freq=0x00027fff clk_ratio=0x00000001
 [00:00:02.499,000] <inf> axi_tpl: dac-tpl: status=0x00000001 clk_freq=0x00028000 clk_ratio=0x00000001
 [00:00:02.508,000] <inf> jesd204_fsm: phase link_running     : ok
 [00:00:02.515,000] <inf> jesd_fsm: === JESD204B LINK UP (both ends carrying DATA) ===
@@ -166,7 +165,7 @@ Known-good values worth checking explicitly
 [00:00:02.553,000] <inf> axi_tpl: dac-tpl: DDS tone armed, 3000000 Hz at 250000000 SPS (incr 0x0312), scale 0x0333 (5.00% FS)
 [00:00:02.564,000] <inf> main: SUCCESS: DAC emitting a 3 MHz DDS tone at 5% full scale
 [00:00:02.573,000] <inf> main: === bring-up complete ===
-[00:00:02.578,000] <inf> fault_injection: === JESD204 fault injection: 4 faults ===
+[00:00:02.579,000] <inf> fault_injection: === JESD204 fault injection: 4 faults ===
 [00:00:02.587,000] <inf> fault_injection: --- FI 1: FSM failure accounting (synthetic topology) ---
 [00:00:02.596,000] <inf> jesd204_fsm: --- JESD204 FSM: bring-up (2 devices, link 99) ---
 [00:00:02.605,000] <wrn> jesd204_fsm: fi-bad: link_init (per-device) failed (-5)
@@ -182,15 +181,15 @@ Known-good values worth checking explicitly
 [00:00:02.686,000] <inf> fault_injection: lane 0 actual status = 0x00000032
 [00:00:02.694,000] <inf> fault_injection: lane 1 actual status = 0x00000032
 [00:00:02.701,000] <inf> fault_injection: lane 2 actual status = 0x00000032
-[00:00:02.708,000] <inf> fault_injection: lane 3 actual status = 0x00000032
+[00:00:02.709,000] <inf> fault_injection: lane 3 actual status = 0x00000032
 [00:00:02.716,000] <wrn> axi_jesd204: jesd204-rx: lane 0 desynced (status 0x00000030, 0 errors), restarting link
 [00:00:02.727,000] <wrn> axi_jesd204: jesd204-rx: lane 1 desynced (status 0x00000030, 0 errors), restarting link
-[00:00:02.737,000] <wrn> axi_jesd204: jesd204-rx: lane 2 desynced (status 0x00000030, 0 errors), restarting link
+[00:00:02.738,000] <wrn> axi_jesd204: jesd204-rx: lane 2 desynced (status 0x00000030, 0 errors), restarting link
 [00:00:02.748,000] <wrn> axi_jesd204: jesd204-rx: lane 3 desynced (status 0x00000030, 0 errors), restarting link
 [00:00:02.859,000] <inf> fault_injection: FI PASS  lane-desync              watchdog detected desync and bounced the link
 [00:00:02.869,000] <inf> fault_injection: FI PASS  lane-desync-recovery     link renegotiated to DATA
 [00:00:02.875,000] <inf> axi_jesd204: jesd204-rx: all 4 lanes in sync
-[00:00:02.881,000] <inf> fault_injection: FI PASS  watchdog-no-false-positive healthy link left alone
+[00:00:02.882,000] <inf> fault_injection: FI PASS  watchdog-no-false-positive healthy link left alone
 [00:00:02.891,000] <inf> fault_injection: --- FI 3: teardown, then bring-up again ---
 [00:00:02.899,000] <inf> jesd204_fsm: --- JESD204 FSM: teardown ---
 [00:00:02.906,000] <inf> fault_injection: FI PASS  teardown                 teardown walk clean
@@ -199,18 +198,18 @@ Known-good values worth checking explicitly
 [00:00:02.948,000] <inf> jesd204_fsm: phase clk_sync_stage1  : ok
 [00:00:02.955,000] <inf> jesd204_fsm: phase clk_sync_stage2  : ok
 [00:00:02.963,000] <inf> axi_adxcvr: tx_adxcvr: lane clock up (status=0x1)
-[00:00:02.970,000] <inf> axi_adxcvr: rx_adxcvr: lane clock up (status=0x1)
+[00:00:02.971,000] <inf> axi_adxcvr: rx_adxcvr: lane clock up (status=0x1)
 [00:00:02.976,000] <inf> jesd_fsm: chip JESD PLL status = 0x1
 [00:00:03.432,000] <inf> jesd204_fsm: phase clocks_enable    : ok
 [00:00:03.443,000] <inf> jesd204_fsm: phase link_enable      : ok
 [00:00:03.444,000] <inf> jesd_fsm: chip JTX (framer)   link status = 0x007d
-[00:00:03.451,000] <inf> jesd_fsm: chip JRX (deframer) link status = 0x000f
+[00:00:03.452,000] <inf> jesd_fsm: chip JRX (deframer) link status = 0x000f
 [00:00:03.463,000] <inf> axi_jesd204: jesd204-tx: link enabled, status=0x00000013 [DATA]
 [00:00:03.467,000] <inf> axi_jesd204: jesd204-rx: link enabled, status=0x00000003 [DATA]
 [00:00:03.476,000] <inf> axi_tpl: adc-tpl: status=0x00000005 clk_freq=0x00028000 clk_ratio=0x00000001
 [00:00:03.485,000] <inf> axi_tpl: dac-tpl: status=0x00000001 clk_freq=0x00027fff clk_ratio=0x00000001
 [00:00:03.495,000] <inf> jesd204_fsm: phase link_running     : ok
-[00:00:03.501,000] <inf> jesd_fsm: === JESD204B LINK UP (both ends carrying DATA) ===
+[00:00:03.502,000] <inf> jesd_fsm: === JESD204B LINK UP (both ends carrying DATA) ===
 [00:00:03.510,000] <inf> fault_injection: FI PASS  teardown-rebringup       second bring-up reached DATA
 [00:00:03.520,000] <inf> fault_injection: --- FI 4: RX GT reference clock lost ---
 [00:00:03.528,000] <wrn> axi_adxcvr: FI: rx_adxcvr sysclk forced to QPLL1 (undriven), CONTROL=0x1025
@@ -225,15 +224,15 @@ Known-good values worth checking explicitly
 [00:00:03.885,000] <inf> axi_adxcvr: tx_adxcvr: lane clock up (status=0x1)
 [00:00:03.892,000] <inf> axi_adxcvr: rx_adxcvr: lane clock up (status=0x1)
 [00:00:03.897,000] <inf> jesd_fsm: chip JESD PLL status = 0x1
-[00:00:04.354,000] <inf> jesd204_fsm: phase clocks_enable    : ok
-[00:00:04.365,000] <inf> jesd204_fsm: phase link_enable      : ok
-[00:00:04.366,000] <inf> jesd_fsm: chip JTX (framer)   link status = 0x007d
-[00:00:04.373,000] <inf> jesd_fsm: chip JRX (deframer) link status = 0x000f
-[00:00:04.384,000] <inf> axi_jesd204: jesd204-tx: link enabled, status=0x00000013 [DATA]
-[00:00:04.389,000] <inf> axi_jesd204: jesd204-rx: link enabled, status=0x00000003 [DATA]
-[00:00:04.397,000] <inf> axi_tpl: adc-tpl: status=0x00000005 clk_freq=0x00028000 clk_ratio=0x00000001
-[00:00:04.407,000] <inf> axi_tpl: dac-tpl: status=0x00000001 clk_freq=0x00028000 clk_ratio=0x00000001
-[00:00:04.417,000] <inf> jesd204_fsm: phase link_running     : ok
-[00:00:04.423,000] <inf> jesd_fsm: === JESD204B LINK UP (both ends carrying DATA) ===
-[00:00:04.431,000] <inf> fault_injection: FI PASS  gt-refclk-restore        link rebuilt after refclk restored
-[00:00:04.442,000] <inf> fault_injection: === fault injection: all checks behaved as documented ===
+[00:00:04.104,000] <inf> jesd204_fsm: phase clocks_enable    : ok
+[00:00:04.115,000] <inf> jesd204_fsm: phase link_enable      : ok
+[00:00:04.116,000] <inf> jesd_fsm: chip JTX (framer)   link status = 0x007d
+[00:00:04.123,000] <inf> jesd_fsm: chip JRX (deframer) link status = 0x000f
+[00:00:04.135,000] <inf> axi_jesd204: jesd204-tx: link enabled, status=0x00000013 [DATA]
+[00:00:04.139,000] <inf> axi_jesd204: jesd204-rx: link enabled, status=0x00000003 [DATA]
+[00:00:04.147,000] <inf> axi_tpl: adc-tpl: status=0x00000005 clk_freq=0x00027fff clk_ratio=0x00000001
+[00:00:04.157,000] <inf> axi_tpl: dac-tpl: status=0x00000001 clk_freq=0x00027fff clk_ratio=0x00000001
+[00:00:04.167,000] <inf> jesd204_fsm: phase link_running     : ok
+[00:00:04.173,000] <inf> jesd_fsm: === JESD204B LINK UP (both ends carrying DATA) ===
+[00:00:04.181,000] <inf> fault_injection: FI PASS  gt-refclk-restore        link rebuilt after refclk restored
+[00:00:04.192,000] <inf> fault_injection: === fault injection: all checks behaved as documented ===
