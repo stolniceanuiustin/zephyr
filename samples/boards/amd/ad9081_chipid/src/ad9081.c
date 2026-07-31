@@ -251,12 +251,31 @@ static int64_t tx_chan_shift[8] = { 0 };
 static uint16_t tx_chan_gain[8] = { 1024, 1024, 1024, 1024, 0, 0, 0, 0 };
 static uint8_t tx_logical_lane_map[8] = { 0, 2, 7, 7, 1, 7, 7, 3 };
 
+/*
+ * HD is not a free parameter: it is 1 only when a single sample is split across
+ * lanes, which the rest of the geometry decides. Here
+ *
+ *	total octets/frame = M*S*NP/8 = 8*1*16/8 = 16
+ *	per lane           = 16/L = 4 = F  -> 32 bits
+ *	32 bits / NP(16)   = 2 whole samples per lane per frame
+ *
+ * so nothing splits and HD must be 0. It also has to agree with JESD_HD in
+ * axi_jesd204.c, which is what the FPGA link core advertises in ILAS word 3 and
+ * folds into the ILAS checksum -- a chip configured for HD=1 against a core
+ * advertising 0 is a self-inconsistent link.
+ *
+ * no-OS's zcu102_ad9081_m8_l4 profile says AD9081_TX_JESD_HD 1 (app_config.h:61)
+ * and that is where the 1 here came from. It is wrong, and harmlessly so: with
+ * F=4 no sample splits regardless of the bit, so it never manifests on this
+ * profile. Do not "restore" it to match no-OS -- see tools/check_profile.py,
+ * which derives HD from the geometry rather than copying the reference.
+ */
 static adi_cms_jesd_param_t tx_jesd_param = {
 	.jesd_l = 4,
 	.jesd_f = 4,
 	.jesd_m = 8,
 	.jesd_s = 1,
-	.jesd_hd = 1,
+	.jesd_hd = 0,
 	.jesd_k = 32,
 	.jesd_n = 16,
 	.jesd_np = 16,
@@ -290,7 +309,8 @@ static adi_cms_jesd_param_t rx_jesd_param[2] = {
 		.jesd_f = 4,
 		.jesd_m = 8,
 		.jesd_s = 1,
-		.jesd_hd = 1,
+		/* 0, not 1 -- same derivation as tx_jesd_param above. */
+		.jesd_hd = 0,
 		.jesd_k = 32,
 		.jesd_n = 16,
 		.jesd_np = 16,
