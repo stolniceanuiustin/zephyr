@@ -376,7 +376,8 @@ static int axi_jesd204_fsm_link_running(struct jesd204_dev *jdev,
 	 * failure would report the wrong thing. This matches the behaviour before
 	 * the FSM was table-driven.
 	 */
-	if (axi_tpl_enable()) {
+	if (axi_tpl_enable(DEVICE_DT_GET(DT_NODELABEL(rx_tpl)),
+			   DEVICE_DT_GET(DT_NODELABEL(tx_tpl)))) {
 		LOG_WRN("TPL post-link verify failed (link is up regardless)");
 	}
 

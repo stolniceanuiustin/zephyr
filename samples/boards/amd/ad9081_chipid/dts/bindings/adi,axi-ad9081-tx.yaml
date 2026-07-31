@@ -1,0 +1,70 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# ADI AXI-AD9081 TX transport core (the JESD204 "TPL", deframer side).
+#
+# Same IP family as adi,axi-ad9081-rx-1.0 and the same register offsets for
+# VERSION/RSTN/CLK_FREQ/CLK_RATIO/STATUS, but a different per-channel register
+# map (data-source select and DDS instead of sample format), so ADI gives it its
+# own compatible and its own driver: the of_match entry is
+# drivers/iio/frequency/cf_axi_dds.c:2234, and the node in ADI's overlay for
+# this board is zynqmp-zcu102-rev10-ad9081-m8-l4-overlay.dts
+# (axi_ad9081_core_tx).
+#
+# Deliberately two compatibles here as well, rather than one node type with a
+# direction flag: the direction is not configuration, it is which IP core this
+# is, and splitting it lets each side's properties be required where they apply.
+#
+# NOT ported from the Linux node, and why:
+#   dmas / dma-names / adi,axi-data-offload-connected / adi,axi-pl-fifo-enable
+#     -- the DAC is driven from this core's internal DDS, so the DMA and
+#     data-offload cores are not in the datapath at all. See the long comment
+#     in src/axi_tpl.c on axi_tpl_tx_dds().
+#   clocks / clock-names ("sampl_clk") -- Linux takes the sample clock from the
+#     converter through the Common Clock Framework, to compute DDS phase
+#     increments. This port has no clock provider for the chip's sample clock;
+#     the rate is passed to axi_tpl_tx_dds() by the caller instead.
+#   spibus-connected, jesd204-* -- as for the RX binding.
+
+description: |
+  ADI AXI-AD9081 TX transport core: maps converter samples to JESD204 link
+  octets and owns the per-converter transmit datapath (data-source select and
+  the internal DDS tone generators).
+
+  Configure-only at boot -- the core's STATUS/CLK_FREQ registers only read
+  valid once the link and sample clocks are running, so that check is deferred
+  to the bring-up sequence.
+
+compatible: "adi,axi-ad9081-tx-1.0"
+
+include: base.yaml
+
+properties:
+  reg:
+    required: true
+    description: |
+      A full 64 KiB page, not ADI's 0x4000. The register block is smaller, but
+      this is what gets device_map()ed and the MMU granularity here is a page.
+
+  label:
+    description: |
+      Deliberately used here, despite the general deprecation. Every log line
+      this driver emits is prefixed with the device name and the boot log is
+      diffed against a reference captured from hardware; "dac-tpl" keeps those
+      lines byte-identical to what the pre-devicetree code produced, where the
+      node name "axi-ad9081-tx@84b10000" would not.
+
+  adi,num-channels:
+    type: int
+    required: true
+    description: |
+      Number of converter datapath channels in the core. Must equal the link's
+      M -- see the RX binding for why this is not an ADI property and not free.
+
+  adi,pcore-version-min-major:
+    type: int
+    description: |
+      Reject the core if its PCORE major version is below this. Omit to accept
+      any version, which is what this board does: the TX core reports v9 and
+      no-OS axi_dac_init() does not version-check it at all, unlike the ADC
+      core. The property exists so the check is expressible rather than
+      hardcoded per direction.

@@ -214,12 +214,16 @@ int main(void)
 	LOG_INF("SUCCESS: JESD204 link cores configured (M8/L4/F4/K32)");
 
 	/* TPL transport cores: datapath sample-format (RX) + data-source (TX). */
-	ret = axi_tpl_configure();
+	ret = axi_tpl_configure(DEVICE_DT_GET(DT_NODELABEL(rx_tpl)));
+	if (ret == 0) {
+		ret = axi_tpl_configure(DEVICE_DT_GET(DT_NODELABEL(tx_tpl)));
+	}
 	if (ret) {
 		LOG_ERR("AXI TPL transport config failed (%d)", ret);
 		return ret;
 	}
-	LOG_INF("SUCCESS: TPL transport cores configured (8 converters)");
+	LOG_INF("SUCCESS: TPL transport cores configured (%d converters)",
+		DT_PROP(DT_NODELABEL(rx_tpl), adi_num_channels));
 
 	LOG_INF("=== all blocks configured, running JESD204 bring-up ===");
 
@@ -258,7 +262,8 @@ int main(void)
 	 * no-OS example emits: 3 MHz at 0.05 full scale, upconverted by the chip's
 	 * +2 GHz main NCO. Scope the DAC output to see it.
 	 */
-	ret = axi_tpl_tx_dds(DAC_DDS_TONE_HZ, DAC_DDS_SAMPLE_RATE,
+	ret = axi_tpl_tx_dds(DEVICE_DT_GET(DT_NODELABEL(tx_tpl)),
+			     DAC_DDS_TONE_HZ, DAC_DDS_SAMPLE_RATE,
 			     DAC_DDS_SCALE_MICRO, true);
 	if (ret) {
 		LOG_ERR("could not arm the DAC DDS tone (%d)", ret);

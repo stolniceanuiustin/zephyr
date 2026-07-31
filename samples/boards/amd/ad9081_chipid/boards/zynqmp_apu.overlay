@@ -263,6 +263,53 @@
 			adi,use-lpm-enable;
 		};
 
+		/*
+		 * JESD204 transport ("TPL") cores, one per direction. These sit
+		 * between the link cores and the DMA, mapping link octets to and
+		 * from converter samples. Addresses from the on-board bitstream
+		 * (system.hwh); node names and compatibles match ADI's Linux
+		 * overlay for this board
+		 * (zynqmp-zcu102-rev10-ad9081-m8-l4-overlay.dts, axi_ad9081_core_rx
+		 * / axi_ad9081_core_tx).
+		 *
+		 * As with the adxcvr nodes, reg covers a full 64 KiB page rather
+		 * than ADI's 0x8000/0x4000: the register block is smaller, but this
+		 * is what gets device_map()ed and MMU granularity here is a page.
+		 */
+		rx_tpl: axi-ad9081-rx@84a10000 {
+			compatible = "adi,axi-ad9081-rx-1.0";
+			reg = <0x0 0x84a10000 0x0 0x10000>;
+			status = "okay";
+
+			/*
+			 * Kept so the driver's log lines stay byte-identical to
+			 * the pre-devicetree code's, which the golden boot log
+			 * was captured from.
+			 */
+			label = "adc-tpl";
+
+			/* One channel per converter: M8. */
+			adi,num-channels = <8>;
+
+			/* no-OS axi_adc_init() requires PCORE major >= 9. */
+			adi,pcore-version-min-major = <9>;
+		};
+
+		tx_tpl: axi-ad9081-tx@84b10000 {
+			compatible = "adi,axi-ad9081-tx-1.0";
+			reg = <0x0 0x84b10000 0x0 0x10000>;
+			status = "okay";
+			label = "dac-tpl";
+
+			adi,num-channels = <8>;
+
+			/*
+			 * No adi,pcore-version-min-major: this core reports v9
+			 * and no-OS axi_dac_init() does not version-check the
+			 * DAC side at all, unlike the ADC side.
+			 */
+		};
+
 		psgpio: gpio@ff0a0000 {
 			compatible = "xlnx,ps-gpio";
 			status = "okay";
