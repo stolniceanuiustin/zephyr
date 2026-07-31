@@ -68,9 +68,14 @@ LOG_MODULE_REGISTER(jesd_fsm, LOG_LEVEL_INF);
 
 /* ---------------------------------------------------------------- AD9082 --- */
 
+/*
+ * The vendor handle for the one AD9081 node. Still reached through the
+ * get_device() leak, which is what welds this file to this one chip -- replaced
+ * by driver ops in a following commit.
+ */
 static adi_ad9081_device_t *chip(void)
 {
-	return ad9081_get_device();
+	return ad9081_get_device(DEVICE_DT_GET(DT_NODELABEL(ad9081)));
 }
 
 static int ad9081_fsm_oneshot_sync(struct jesd204_dev *jdev,
@@ -444,7 +449,7 @@ int jesd204_bringup(void)
 {
 	int failures;
 
-	if (ad9081_get_device() == NULL) {
+	if (chip() == NULL) {
 		LOG_ERR("AD9081 device not initialised");
 		return -ENODEV;
 	}
@@ -463,7 +468,7 @@ int jesd204_bringup(void)
 
 int jesd204_teardown(void)
 {
-	if (ad9081_get_device() == NULL) {
+	if (chip() == NULL) {
 		return -ENODEV;
 	}
 	return jesd204_fsm_stop(&topology);

@@ -18,6 +18,21 @@ config AD9081_FAULT_INJECTION
 	  The tests deliberately break a working link and then rebuild it, so
 	  do not leave this on in a normal build.
 
+config AD9081_MXFE_INIT_PRIORITY
+	int "AD9081/AD9082 MxFE init priority"
+	default 60
+	help
+	  Initialisation priority of the AD9081 MxFE driver, within POST_KERNEL.
+
+	  Must be above CONFIG_SPI_INIT_PRIORITY (default 50): the chip is
+	  SPI-attached, and Zephyr SPI controllers initialise at POST_KERNEL.
+	  There is a BUILD_ASSERT in ad9081.c for it.
+
+	  Nothing more is required, because init() only marks the device ready --
+	  the chip is programmed by explicit ad9081_probe() /
+	  ad9081_setup_datapath() calls from the bring-up sequence, which run
+	  from main() and therefore after every driver here.
+
 config AD9081_ADXCVR_INIT_PRIORITY
 	int "AXI-ADXCVR (GT transceiver) init priority"
 	default 65

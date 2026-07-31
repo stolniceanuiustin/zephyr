@@ -28,7 +28,7 @@
 			clock-frequency = <100000000>;
 
 			ad9081: ad9081@0 {
-				compatible = "adi,ad9081-probe";
+				compatible = "adi,ad9081";
 				reg = <0>;
 				/* AD9081/AD9082 SPI: mode 0, MSB first.
 				 * 10 MHz is safe for register access.

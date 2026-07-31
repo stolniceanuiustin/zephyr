@@ -155,6 +155,7 @@ static int report_clock_tree(const struct device *clk)
 int main(void)
 {
 	const struct device *clk = DEVICE_DT_GET(DT_NODELABEL(hmc7044));
+	const struct device *mxfe = DEVICE_DT_GET(DT_NODELABEL(ad9081));
 	uint16_t prod_id;
 	int ret;
 
@@ -167,7 +168,7 @@ int main(void)
 	}
 
 	/* MxFE. */
-	ret = ad9081_probe(&prod_id);
+	ret = ad9081_probe(mxfe, &prod_id);
 	if (ret) {
 		LOG_ERR("AD9081 probe failed (%d)", ret);
 		return ret;
@@ -180,7 +181,7 @@ int main(void)
 	 * JESD links are configured but not enabled -- the FSM enables them with
 	 * the FPGA cores.
 	 */
-	ret = ad9081_setup_datapath();
+	ret = ad9081_setup_datapath(mxfe);
 	if (ret) {
 		LOG_ERR("AD9081 datapath setup failed (%d)", ret);
 		return ret;

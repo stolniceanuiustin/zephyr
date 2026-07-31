@@ -1,23 +1,31 @@
 /*
- * AD9081/AD9082 MxFE -- Zephyr HAL shim for the ADI API library.
+ * AD9081/AD9082 MxFE -- Zephyr driver over the ADI API library.
  *
  * The ADI API library (src/adi_api/, copied verbatim from no-OS) is fully
  * hardware-abstracted: it reaches the chip only through the function pointers in
  * adi_ad9081_device_t.hal_info. This file implements those callbacks against
- * Zephyr SPI/GPIO and drives the library to init the device and read its ID.
+ * Zephyr SPI/GPIO and drives the library to init the device, read its ID and
+ * configure the converter datapath.
  *
  * Callbacks implemented (of the AD9081 HAL set):
- *   spi_xfer       -> spi_transceive_dt (SPI0)
+ *   spi_xfer       -> spi_transceive_dt
  *   delay_us       -> k_busy_wait
  *   reset_pin_ctrl -> gpio_pin_set_dt (RSTB, active low)
  *   log_write      -> LOG_*
  *   hw_open/close  -> no-op (bus is brought up by Zephyr already)
  *
+ * One instance per devicetree node. hal_info.user_data carries the
+ * `const struct device *`, which is how each callback finds its own instance's
+ * SPI and GPIO handles -- the library passes it back unchanged.
+ *
  * SPDX-License-Identifier: Apache-2.0
  */
 
+#define DT_DRV_COMPAT adi_ad9081
+
 #include <zephyr/kernel.h>
 #include <zephyr/device.h>
+#include <zephyr/devicetree.h>
 #include <zephyr/drivers/spi.h>
 #include <zephyr/drivers/gpio.h>
 #include <string.h>
@@ -29,7 +37,7 @@ LOG_MODULE_REGISTER(ad9081, LOG_LEVEL_INF);
 #include "adi_ad9081.h"
 
 /*
- * The SPI0 register page is mapped 1:1 by spi_mmio_fixup.c at PRE_KERNEL_1,
+ * The SPI register page is mapped 1:1 by spi_mmio_fixup.c at PRE_KERNEL_1,
  * working around the upstream Cadence SPI driver not using DEVICE_MMIO. That is
  * a board-level wart, documented there, and deliberately not this file's
  * business.
@@ -41,17 +49,24 @@ LOG_MODULE_REGISTER(ad9081, LOG_LEVEL_INF);
 #define AD9081_CHIPID 0x9081
 #define AD9082_CHIPID 0x9082
 
-static const struct spi_dt_spec ad9081_spi = SPI_DT_SPEC_GET(
-	DT_NODELABEL(ad9081),
-	SPI_WORD_SET(8) | SPI_TRANSFER_MSB | SPI_OP_MODE_MASTER);
+/* Devicetree configuration -- ROM, one per node. */
+struct ad9081_config {
+	struct spi_dt_spec spi;
+	/* .port == NULL when the node has no reset-gpios. */
+	struct gpio_dt_spec reset;
+};
 
-static const struct gpio_dt_spec ad9081_reset =
-	GPIO_DT_SPEC_GET_OR(DT_NODELABEL(ad9081), reset_gpios, {0});
+/* Per-instance state -- RAM. The ADI library's device handle, which also holds
+ * the HAL binding and every register-shadow the library keeps.
+ */
+struct ad9081_data {
+	adi_ad9081_device_t dev;
+};
 
 /*
  * ------------------------- ADI HAL callbacks ---------------------------------
- * All take the void *user_data we install as hal_info.user_data (unused here --
- * the SPI/GPIO handles are file-static). Return API_CMS_ERROR_* codes.
+ * All take the void *user_data we install as hal_info.user_data, which is the
+ * `const struct device *` of the instance. Return API_CMS_ERROR_* codes.
  */
 
 /*
@@ -63,14 +78,15 @@ static const struct gpio_dt_spec ad9081_reset =
 static int32_t hal_spi_xfer(void *user_data, uint8_t *in_data,
 			    uint8_t *out_data, uint32_t size_bytes)
 {
-	ARG_UNUSED(user_data);
+	const struct device *dev = user_data;
+	const struct ad9081_config *cfg = dev->config;
 	uint32_t n = size_bytes & 0xFF;
 	const struct spi_buf txb = { .buf = in_data, .len = n };
 	const struct spi_buf rxb = { .buf = out_data, .len = n };
 	const struct spi_buf_set txs = { .buffers = &txb, .count = 1 };
 	const struct spi_buf_set rxs = { .buffers = &rxb, .count = 1 };
 
-	if (spi_transceive_dt(&ad9081_spi, &txs, &rxs) != 0) {
+	if (spi_transceive_dt(&cfg->spi, &txs, &rxs) != 0) {
 		return API_CMS_ERROR_SPI_XFER;
 	}
 	return API_CMS_ERROR_OK;
@@ -89,11 +105,13 @@ static int32_t hal_delay_us(void *user_data, uint32_t us)
  */
 static int32_t hal_reset_pin_ctrl(void *user_data, uint8_t enable)
 {
-	ARG_UNUSED(user_data);
-	if (ad9081_reset.port == NULL) {
+	const struct device *dev = user_data;
+	const struct ad9081_config *cfg = dev->config;
+
+	if (cfg->reset.port == NULL) {
 		return API_CMS_ERROR_OK; /* no reset line wired */
 	}
-	gpio_pin_set_dt(&ad9081_reset, enable ? 0 : 1);
+	gpio_pin_set_dt(&cfg->reset, enable ? 0 : 1);
 	return API_CMS_ERROR_OK;
 }
 
@@ -133,13 +151,16 @@ static int32_t hal_hw_close(void *user_data)
 
 /* -------------------------------------------------------------------------- */
 
-static adi_ad9081_device_t ad9081_dev;
-
-static int ad9081_hal_bind(void)
+static void ad9081_hal_bind(const struct device *dev)
 {
-	adi_ad9081_hal_t *hal = &ad9081_dev.hal_info;
+	struct ad9081_data *data = dev->data;
+	adi_ad9081_hal_t *hal = &data->dev.hal_info;
 
-	hal->user_data = NULL;
+	/*
+	 * What every callback above receives back from the library. This is the
+	 * only channel the vendor code offers for per-instance context.
+	 */
+	hal->user_data = (void *)dev;
 
 	/* SPI interface: 4-wire (SDO active), MSB first, auto address inc --
 	 * matches the SPI_INTFCONFA=0x3C we set by hand before.
@@ -155,47 +176,54 @@ static int ad9081_hal_bind(void)
 	hal->hw_open = hal_hw_open;
 	hal->hw_close = hal_hw_close;
 	hal->tx_en_pin_ctrl = NULL; /* not wired for chip-ID bring-up */
-
-	return 0;
 }
 
-int ad9081_probe(uint16_t *prod_id)
+int ad9081_probe(const struct device *dev, uint16_t *prod_id)
 {
+	const struct ad9081_config *cfg;
+	struct ad9081_data *data;
 	adi_cms_chip_id_t chip_id = { 0 };
 	int32_t err;
 
-	LOG_INF("AD9081 probe via ADI API lib over %s", ad9081_spi.bus->name);
+	if (!device_is_ready(dev)) {
+		LOG_ERR("device not ready");
+		return -ENODEV;
+	}
+	cfg = dev->config;
+	data = dev->data;
 
-	if (!spi_is_ready_dt(&ad9081_spi)) {
-		LOG_ERR("SPI bus %s not ready", ad9081_spi.bus->name);
+	LOG_INF("AD9081 probe via ADI API lib over %s", cfg->spi.bus->name);
+
+	if (!spi_is_ready_dt(&cfg->spi)) {
+		LOG_ERR("SPI bus %s not ready", cfg->spi.bus->name);
 		return -ENODEV;
 	}
 
-	if (ad9081_reset.port != NULL) {
-		if (!gpio_is_ready_dt(&ad9081_reset)) {
+	if (cfg->reset.port != NULL) {
+		if (!gpio_is_ready_dt(&cfg->reset)) {
 			LOG_ERR("reset GPIO not ready");
 			return -ENODEV;
 		}
 		/* Configure de-asserted; the library pulses it via
 		 * reset_pin_ctrl during device_reset (HARD_RESET).
 		 */
-		gpio_pin_configure_dt(&ad9081_reset, GPIO_OUTPUT_INACTIVE);
+		gpio_pin_configure_dt(&cfg->reset, GPIO_OUTPUT_INACTIVE);
 	}
 
-	ad9081_hal_bind();
+	ad9081_hal_bind(dev);
 
 	/*
 	 * Hard reset (pulses RSTB via reset_pin_ctrl) then init. The _AND_INIT
 	 * variant calls adi_ad9081_device_init() internally: SPI config +
 	 * 8-bit reg access check + power-status check. No PLL boot yet.
 	 */
-	err = adi_ad9081_device_reset(&ad9081_dev, AD9081_HARD_RESET_AND_INIT);
+	err = adi_ad9081_device_reset(&data->dev, AD9081_HARD_RESET_AND_INIT);
 	if (err != API_CMS_ERROR_OK) {
 		LOG_ERR("adi_ad9081_device_reset failed (%d)", err);
 		return -EIO;
 	}
 
-	err = adi_ad9081_device_chip_id_get(&ad9081_dev, &chip_id);
+	err = adi_ad9081_device_chip_id_get(&data->dev, &chip_id);
 	if (err != API_CMS_ERROR_OK) {
 		LOG_ERR("adi_ad9081_device_chip_id_get failed (%d)", err);
 		return -EIO;
@@ -218,9 +246,15 @@ int ad9081_probe(uint16_t *prod_id)
 	return 0;
 }
 
-void *ad9081_get_device(void)
+void *ad9081_get_device(const struct device *dev)
 {
-	return &ad9081_dev;
+	struct ad9081_data *data;
+
+	if (dev == NULL) {
+		return NULL;
+	}
+	data = dev->data;
+	return &data->dev;
 }
 
 /*
@@ -348,16 +382,24 @@ static void ad9081_fill_conv_sel(void)
 	s->virtual_converterf_index = rx_link_converter_select[15];
 }
 
-int ad9081_setup_datapath(void)
+int ad9081_setup_datapath(const struct device *dev)
 {
-	adi_ad9081_device_t *dev = &ad9081_dev;
+	struct ad9081_data *data;
+	adi_ad9081_device_t *chip;
 	uint8_t pll_status;
 	int32_t err;
+
+	if (!device_is_ready(dev)) {
+		LOG_ERR("device not ready");
+		return -ENODEV;
+	}
+	data = dev->data;
+	chip = &data->dev;
 
 	LOG_INF("AD9081 datapath setup (DAC 12G / ADC 4G, ref 250M)");
 
 	/* On-chip CLK PLL: ref (250M) != dac (12G), so the PLL is engaged. */
-	err = adi_ad9081_device_clk_config_set(dev, AD9081_DAC_CLK_HZ,
+	err = adi_ad9081_device_clk_config_set(chip, AD9081_DAC_CLK_HZ,
 					       AD9081_ADC_CLK_HZ,
 					       AD9081_REF_CLK_HZ);
 	if (err != API_CMS_ERROR_OK) {
@@ -365,7 +407,7 @@ int ad9081_setup_datapath(void)
 		return -EIO;
 	}
 
-	err = adi_ad9081_device_clk_pll_lock_status_get(dev, &pll_status);
+	err = adi_ad9081_device_clk_pll_lock_status_get(chip, &pll_status);
 	if (err != API_CMS_ERROR_OK) {
 		LOG_ERR("clk_pll_lock_status_get failed (%d)", err);
 		return -EIO;
@@ -377,10 +419,10 @@ int ad9081_setup_datapath(void)
 	LOG_INF("device CLK PLL locked (status=0x%x)", pll_status);
 
 	/* TX deframer (JRX): install chip-side lane map, start the TX datapath. */
-	memcpy(dev->serdes_info.des_settings.lane_mapping[0],
+	memcpy(chip->serdes_info.des_settings.lane_mapping[0],
 	       tx_logical_lane_map, sizeof(tx_logical_lane_map));
 
-	err = adi_ad9081_device_startup_tx(dev, AD9081_TX_MAIN_INTERP,
+	err = adi_ad9081_device_startup_tx(chip, AD9081_TX_MAIN_INTERP,
 					   AD9081_TX_CHAN_INTERP,
 					   tx_dac_chan_xbar, tx_main_shift,
 					   tx_chan_shift, &tx_jesd_param);
@@ -389,7 +431,7 @@ int ad9081_setup_datapath(void)
 		return -EIO;
 	}
 
-	err = adi_ad9081_dac_duc_nco_gains_set(dev, tx_chan_gain);
+	err = adi_ad9081_dac_duc_nco_gains_set(chip, tx_chan_gain);
 	if (err != API_CMS_ERROR_OK) {
 		LOG_ERR("dac_duc_nco_gains_set failed (%d)", err);
 		return -EIO;
@@ -398,11 +440,11 @@ int ad9081_setup_datapath(void)
 		AD9081_TX_MAIN_INTERP, AD9081_TX_CHAN_INTERP);
 
 	/* RX framer (JTX): install chip-side lane map + converter select. */
-	memcpy(dev->serdes_info.ser_settings.lane_mapping[0],
+	memcpy(chip->serdes_info.ser_settings.lane_mapping[0],
 	       rx_logical_lane_map, sizeof(rx_logical_lane_map));
 	ad9081_fill_conv_sel();
 
-	err = adi_ad9081_device_startup_rx(dev, rx_cddc_select, rx_fddc_select,
+	err = adi_ad9081_device_startup_rx(chip, rx_cddc_select, rx_fddc_select,
 					   rx_cddc_shift, rx_fddc_shift,
 					   rx_cddc_dcm, rx_fddc_dcm, rx_cc2r_en,
 					   rx_fc2r_en, rx_jesd_param,
@@ -415,3 +457,43 @@ int ad9081_setup_datapath(void)
 
 	return 0;
 }
+
+/*
+ * init() only exists so device_is_ready() means something. The real work is the
+ * explicit ad9081_probe() / ad9081_setup_datapath() pair from the bring-up
+ * sequence, in the order relative to the clock chip and the PL cores that it
+ * needs -- init-level ordering cannot express that, and probing here would put a
+ * ~1.1 s hard reset plus PLL boot inside POST_KERNEL.
+ *
+ * Same shape as the PL core drivers here (axi_tpl.c, axi_jesd204.c), and
+ * deliberately unlike the HMC7044, which does program itself at init because
+ * everything downstream needs its clocks before anything else can run.
+ */
+static int ad9081_init(const struct device *dev)
+{
+	ARG_UNUSED(dev);
+	return 0;
+}
+
+#define AD9081_DEFINE(n)                                                       \
+	static struct ad9081_data ad9081_data_##n;                             \
+									       \
+	static const struct ad9081_config ad9081_config_##n = {                \
+		.spi = SPI_DT_SPEC_INST_GET(n, SPI_WORD_SET(8) |                \
+						      SPI_TRANSFER_MSB |       \
+						      SPI_OP_MODE_MASTER),     \
+		.reset = GPIO_DT_SPEC_INST_GET_OR(n, reset_gpios, { 0 }),       \
+	};                                                                     \
+									       \
+	DEVICE_DT_INST_DEFINE(n, ad9081_init, NULL, &ad9081_data_##n,          \
+			      &ad9081_config_##n, POST_KERNEL,                 \
+			      CONFIG_AD9081_MXFE_INIT_PRIORITY, NULL);
+
+DT_INST_FOREACH_STATUS_OKAY(AD9081_DEFINE)
+
+/*
+ * The chip is SPI-attached, so it cannot be ready before its bus controller.
+ * Same constraint the HMC7044 driver asserts for itself.
+ */
+BUILD_ASSERT(CONFIG_AD9081_MXFE_INIT_PRIORITY > CONFIG_SPI_INIT_PRIORITY,
+	     "The AD9081 is SPI-attached, so it must initialise after its SPI controller");

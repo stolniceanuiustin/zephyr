@@ -1,0 +1,44 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# ADI AD9081/AD9082 MxFE (mixed-signal front end): 4 DAC + 4 ADC with an
+# on-chip JESD204 framer (JTX) and deframer (JRX).
+#
+# Property names follow ADI's Linux binding for this part (the node axi_ad9081
+# in zynqmp-zcu102-rev10-ad9081-m8-l4-overlay.dts). The compatible is
+# "adi,ad9081" for both parts, as ADI's driver does: they are the same family
+# behind one register map, and the difference is a PROD_ID the driver reads back
+# and reports.
+#
+# NOT ported from the Linux node, and why:
+#   clocks / clock-names -- Linux takes the device REFCLK as a phandle to the
+#     HMC7044. The datapath profile (clock rates, interpolation, NCO shifts,
+#     lane maps) is still C constants in ad9081.c; moving it to devicetree,
+#     including this phandle, is the next commit.
+#   jesd204-device / #jesd204-cells / jesd204-inputs -- the FSM topology is
+#     still expressed in C (jesd_fsm.c). Moving it to devicetree is PLAN step 8,
+#     and these are the properties it will use.
+
+description: |
+  ADI AD9081/AD9082 MxFE.
+
+  init() only marks the device ready. The chip is brought up by explicit
+  ad9081_probe() / ad9081_setup_datapath() calls from the bring-up sequence,
+  which configure the converter datapath and both JESD204 links but hold the
+  links disabled -- activating them has to happen together with the FPGA
+  transceiver and link cores, which init-level ordering cannot express.
+
+compatible: "adi,ad9081"
+
+include:
+  - name: spi-device.yaml
+
+properties:
+  reset-gpios:
+    type: phandle-array
+    description: |
+      AD9081 hardware reset (RSTB), active low. Optional: without it the
+      vendor API's hard-reset path degrades to a register-write soft reset.
+
+      No `label` property, unlike the PL core nodes here: this driver's log
+      lines carry the LOG_MODULE_REGISTER(ad9081) prefix rather than
+      dev->name, so the node name never reaches the boot log.
