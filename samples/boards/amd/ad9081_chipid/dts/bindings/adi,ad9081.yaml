@@ -9,11 +9,24 @@
 # behind one register map, and the difference is a PROD_ID the driver reads back
 # and reports.
 #
+# Rates are in kHz, not Hz. Zephyr's `type: int` is a single 32-bit cell -- a
+# /bits/ 64 value is rejected by dtlib -- and the DAC runs at 12 GHz. kHz keeps
+# every rate exact (12 GHz = 12000000 kHz) in one cell, and matches the local
+# adi,lane-rate-khz precedent and no-OS's own kHz spellings.
+#
 # NOT ported from the Linux node, and why:
 #   clocks / clock-names -- Linux takes the device REFCLK as a phandle to the
-#     HMC7044. The datapath profile (clock rates, interpolation, NCO shifts,
-#     lane maps) is still C constants in ad9081.c; moving it to devicetree,
-#     including this phandle, is the next commit.
+#     HMC7044 output that drives it. Stated as a rate here instead: the REFCLK
+#     output (DEV_REFCLK, out2) is not the one this port queries, and adding a
+#     second consumer of the HMC7044 would reorder init against a driver whose
+#     rates are already verified. adi,ref-clk-frequency-khz must equal that
+#     output's rate -- tools/check_profile.py cross-checks the two.
+#   adi,jesd-* geometry (M, L, F, K, N, NP, CS, S, subclass) -- deliberately
+#     absent. Those numbers already live in the tx_jesd/rx_jesd link-core nodes,
+#     one per direction, and restating them here would make a third copy of the
+#     same link description for the drift to happen between. The chip node
+#     points at the two cores with adi,jesd-tx-link / adi,jesd-rx-link and the
+#     driver reads the geometry from whichever one describes that direction.
 #   jesd204-device / #jesd204-cells / jesd204-inputs -- the FSM topology is
 #     still expressed in C (jesd_fsm.c). Moving it to devicetree is PLAN step 8,
 #     and these are the properties it will use.
@@ -42,3 +55,179 @@ properties:
       No `label` property, unlike the PL core nodes here: this driver's log
       lines carry the LOG_MODULE_REGISTER(ad9081) prefix rather than
       dev->name, so the node name never reaches the boot log.
+
+  # ---------------------------------------------------------------- clocks ---
+
+  adi,dac-frequency-khz:
+    type: int
+    required: true
+    description: |
+      DAC sample rate. Not free: the TX interpolation factors divide it down to
+      the JESD204 sample rate the link carries, so it must equal
+      adc-frequency-khz * (TX interp product) / (RX decim product) for a link
+      that runs both directions at one rate.
+
+  adi,adc-frequency-khz:
+    type: int
+    required: true
+    description: ADC sample rate.
+
+  adi,ref-clk-frequency-khz:
+    type: int
+    required: true
+    description: |
+      Device REFCLK at the chip's pin, from the HMC7044's DEV_REFCLK output.
+      The on-chip CLK PLL is engaged whenever this differs from the DAC rate,
+      which the driver leaves to the vendor API to decide.
+
+  # ------------------------------------------------------- link references ---
+
+  adi,jesd-tx-link:
+    type: phandle
+    required: true
+    description: |
+      The link core describing the TX (DAC) direction, which the chip's JRX
+      deframer terminates. The driver takes M, L, F, K, N, NP, CS, S and
+      subclass from this node rather than from its own properties, so one link
+      is described in one place.
+
+      ADI names both ends of a link by datapath direction, so this is the
+      tx_jesd core and the chip's *receiving* deframer -- not a crossover.
+
+  adi,jesd-rx-link:
+    type: phandle
+    required: true
+    description: |
+      The link core describing the RX (ADC) direction, which the chip's JTX
+      framer sources. Geometry is read from it as for the TX link.
+
+  adi,tx-jesd-mode-id:
+    type: int
+    required: true
+    description: |
+      Vendor link-mode index for the deframer (9 for M8/L4/F4 on this profile).
+      Redundant with the geometry in principle -- the vendor API uses it to
+      select an internal table -- but the API takes it as an input and there is
+      no exported mapping to derive it from, so it is stated and cross-checked.
+
+  adi,rx-jesd-mode-id:
+    type: int
+    required: true
+    description: Vendor link-mode index for the framer (10 on this profile).
+
+  # ------------------------------------------------------------- TX (JRX) ---
+
+  adi,tx-main-interpolation:
+    type: int
+    required: true
+    description: Coarse (main datapath) interpolation factor.
+
+  adi,tx-channel-interpolation:
+    type: int
+    required: true
+    description: Fine (per-channel) interpolation factor.
+
+  adi,tx-dac-channel-crossbar:
+    type: array
+    required: true
+    description: |
+      Per-DAC bitmask of which channelisers feed it, one entry per DAC (4).
+      Board wiring, from the no-OS profile.
+
+  adi,tx-main-nco-shift-hz:
+    type: array
+    required: true
+    description: |
+      Main (coarse) DAC NCO frequency shift, one entry per DAC (4), in Hz.
+      Signed. Hz rather than kHz here because these are exact in one cell at
+      the values this chip supports and the vendor API takes Hz.
+
+  adi,tx-channel-nco-shift-hz:
+    type: array
+    required: true
+    description: Fine (per-channel) DAC NCO shift, one entry per channel (8), Hz.
+
+  adi,tx-channel-gains:
+    type: array
+    required: true
+    description: |
+      Per-channel digital gain, one entry per channel (8). 1024 is unity in the
+      vendor API's 1.10 fixed-point format; 0 disables the channel.
+
+  adi,tx-logical-lane-mapping:
+    type: array
+    required: true
+    description: |
+      Deframer lane crossbar: for each of the 8 physical lanes, which logical
+      link lane it carries. 7 marks a lane that is not connected. Board wiring
+      (which SERDES pin goes to which FMC lane), so it comes from the no-OS
+      profile and is not derivable.
+
+      "-mapping", not "-map": edtlib treats any property ending in "-map" as a
+      specifier map (like gpio-map) and demands a matching #<name>-cells. It is
+      also no-OS's own field name (logical_lane_mapping, ad9081.h:147).
+
+  # ------------------------------------------------------------- RX (JTX) ---
+
+  adi,rx-coarse-ddc-select:
+    type: int
+    required: true
+    description: Bitmask of enabled coarse DDCs (0xF = all 4).
+
+  adi,rx-fine-ddc-select:
+    type: int
+    required: true
+    description: Bitmask of enabled fine DDCs (0x33 = DDCs 0, 1, 4, 5).
+
+  adi,rx-coarse-decimation:
+    type: array
+    required: true
+    description: |
+      Coarse DDC decimation ratio, one entry per coarse DDC (4). Stated as the
+      ratio (4), not the vendor register code -- the codes are not monotonic
+      (AD9081_CDDC_DCM_4 is 0x1, DCM_2 is 0x0) so a raw code in devicetree
+      would be unreadable and unreviewable. The driver maps ratio -> code and
+      rejects a ratio the part does not offer.
+
+  adi,rx-fine-decimation:
+    type: array
+    required: true
+    description: |
+      Fine DDC decimation ratio, one entry per fine DDC (8), as above. 0 marks
+      a disabled fine DDC, matching the no-OS profile's spelling.
+
+  adi,rx-coarse-nco-shift-hz:
+    type: array
+    required: true
+    description: Coarse DDC NCO shift, one entry per coarse DDC (4), in Hz. Signed.
+
+  adi,rx-fine-nco-shift-hz:
+    type: array
+    required: true
+    description: Fine DDC NCO shift, one entry per fine DDC (8), in Hz. Signed.
+
+  adi,rx-coarse-complex-to-real:
+    type: array
+    description: |
+      Per-coarse-DDC complex-to-real conversion enable (4 entries). Omit for
+      all-zero, which is this profile: the link carries complex samples.
+
+  adi,rx-fine-complex-to-real:
+    type: array
+    description: Per-fine-DDC complex-to-real conversion enable (8 entries).
+
+  adi,rx-logical-lane-mapping:
+    type: array
+    required: true
+    description: |
+      Framer lane crossbar, same meaning and provenance as
+      adi,tx-logical-lane-mapping. Not the same values: transmit and receive are
+      wired independently on this board.
+
+  adi,rx-link-converter-select:
+    type: array
+    required: true
+    description: |
+      Which physical converter each of the 16 virtual converters on the link
+      carries. Only the first M (8) entries are meaningful; the rest are
+      padding the vendor struct requires.

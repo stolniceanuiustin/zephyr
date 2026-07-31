@@ -29,7 +29,7 @@
  *
  * The geometry the two nodes must agree on is checked at build time
  * (BUILD_ASSERTs at the bottom of axi_jesd204.c), and HD is derived from
- * M/S/NP/L rather than being a property at all -- see the derivation there.
+ * M/S/NP/L rather than being a property at all -- see jesd204_geometry.h.
  */
 int axi_jesd204_configure(const struct device *dev);
 

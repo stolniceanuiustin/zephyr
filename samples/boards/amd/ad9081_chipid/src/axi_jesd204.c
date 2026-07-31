@@ -38,6 +38,7 @@
 LOG_MODULE_REGISTER(axi_jesd204, LOG_LEVEL_INF);
 
 #include "axi_jesd204.h"
+#include "jesd204_geometry.h"
 
 /*
  * Every sys_read32/sys_write32 below uses the physical address straight out of
@@ -87,40 +88,6 @@ BUILD_ASSERT(IS_ENABLED(CONFIG_KERNEL_DIRECT_MAP),
 	(((major) << 16) | ((minor) << 8) | (patch))
 #define PCORE_VER_MAJOR(x) (((x) >> 16) & 0xff)
 #define PCORE_VER_MINOR(x) (((x) >> 8) & 0xff)
-
-/*
- * Not devicetree properties, because they are not configuration of this board:
- *
- *   JESD204_VERSION_B  8B/10B line coding, i.e. JESD204B. Synthesised into the
- *                      PL (make JESD_MODE=8B10B) and load-bearing in two places
- *                      that look unrelated -- ILAS word 2 bits [31:29], and the
- *                      lane-status polarity the watchdog reads. A 204C link
- *                      would be a different driver, not a different property.
- *                      ADI's Linux drivers likewise hardcode it
- *                      (axi_jesd204_tx.c:394, axi_jesd204_rx.c:602).
- *   JESD204_SCRAMBLING scrambling is always on. Also hardcoded in ADI's Linux
- *                      drivers (axi_jesd204_tx.c:392) and in no-OS.
- */
-#define JESD204_VERSION_B   1
-#define JESD204_SCRAMBLING  1
-
-/*
- * HD ("high density") is 1 only when a single converter sample is spread over
- * more than one lane, which the frame geometry decides on its own:
- *
- *     bits per lane per frame = M * S * NP / L
- *     a sample splits iff that is not a whole number of NP-bit samples
- *
- * So HD is derived, never chosen -- which is why neither binding has an
- * adi,high-density property, despite ADI's Linux binding offering one. no-OS's
- * profile for this board carries HD=1 for a geometry that requires 0 (harmless
- * at F=4, since nothing splits either way); a settable property is how that
- * value would get copied back in.
- *
- * For this link: 8 * 1 * 16 / 4 = 32 bits/lane, 32 / 16 = 2 whole samples, so
- * HD = 0.
- */
-#define JESD204_DERIVE_HD(m, s, np, l) ((((m) * (s) * (np) / (l)) % (np)) != 0)
 
 /* Devicetree configuration -- ROM, one per node. */
 struct axi_jesd204_config {
@@ -649,4 +616,5 @@ BUILD_ASSERT(JESD204_DERIVE_HD(
 			     adi_samples_per_converter_per_frame),
 		     DT_PROP(DT_NODELABEL(tx_jesd), adi_bits_per_sample),
 		     DT_PROP(DT_NODELABEL(tx_jesd), adi_lanes_per_device)) == 0,
-	     "HD derives to 1: ad9081.c's jesd_hd literals must be updated too");
+	     "HD derives to 1: both ends take it from JESD204_DERIVE_HD, so this "
+	     "assert and its two users have to be re-checked together");

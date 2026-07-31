@@ -27,6 +27,25 @@
 			tx-fifo-depth = <128>;
 			clock-frequency = <100000000>;
 
+			/*
+			 * AD9082 MxFE. Every value below is the no-OS
+			 * zcu102_ad9081_m8_l4 profile
+			 * (projects/ad9081/profiles/zcu102_ad9081_m8_l4/
+			 * app_config.h), which is the ground truth for this
+			 * board's wiring, cross-checked by
+			 * tools/check_profile.py.
+			 *
+			 * Rates are in kHz: Zephyr's `type: int` is one 32-bit
+			 * cell and the DAC runs at 12 GHz. NCO shifts stay in
+			 * Hz -- they fit, and the vendor API takes Hz.
+			 *
+			 * Deliberately NOT here: the link geometry (M, L, F, K,
+			 * N, NP, CS, S, subclass). It already lives in the
+			 * tx_jesd/rx_jesd nodes below, once per direction, and
+			 * a copy here is a third place for it to drift. The
+			 * adi,jesd-{tx,rx}-link phandles point at those nodes
+			 * and the driver reads it from them.
+			 */
 			ad9081: ad9081@0 {
 				compatible = "adi,ad9081";
 				reg = <0>;
@@ -41,6 +60,77 @@
 				 * Active low.
 				 */
 				reset-gpios = <&psgpio_bank4 23 GPIO_ACTIVE_LOW>;
+
+				/*
+				 * DAC 12 GHz, ADC 4 GHz, device REFCLK
+				 * 250 MHz. REFCLK != DAC, so the vendor API
+				 * engages the on-chip CLK PLL. The 250 MHz is
+				 * the HMC7044's DEV_REFCLK (out2, divider 12
+				 * off 3 GHz PLL2) above -- check_profile.py
+				 * cross-checks the two.
+				 */
+				adi,dac-frequency-khz = <12000000>;
+				adi,adc-frequency-khz = <4000000>;
+				adi,ref-clk-frequency-khz = <250000>;
+
+				adi,jesd-tx-link = <&tx_jesd>;
+				adi,jesd-rx-link = <&rx_jesd>;
+
+				/* Vendor link-mode table indices. */
+				adi,tx-jesd-mode-id = <9>;
+				adi,rx-jesd-mode-id = <10>;
+
+				/*
+				 * TX (chip JRX / deframer). 6 * 8 = 48x total
+				 * interpolation: 12 GHz DAC / 48 = 250 MSPS,
+				 * the link's sample rate.
+				 */
+				adi,tx-main-interpolation = <6>;
+				adi,tx-channel-interpolation = <8>;
+				adi,tx-dac-channel-crossbar =
+					<0x1 0x2 0x4 0x8>;
+				/* +2 GHz main NCO on all four DACs. */
+				adi,tx-main-nco-shift-hz =
+					<2000000000 2000000000
+					 2000000000 2000000000>;
+				adi,tx-channel-nco-shift-hz =
+					<0 0 0 0 0 0 0 0>;
+				/* 1024 = unity in the API's 1.10 format. */
+				adi,tx-channel-gains =
+					<1024 1024 1024 1024 0 0 0 0>;
+				/* Board SERDES wiring; 7 = unconnected. */
+				adi,tx-logical-lane-mapping = <0 2 7 7 1 7 7 3>;
+
+				/*
+				 * RX (chip JTX / framer). 4 * 4 = 16x total
+				 * decimation: 4 GHz ADC / 16 = 250 MSPS, the
+				 * same link rate from the other side.
+				 */
+				adi,rx-coarse-ddc-select = <0xf>;
+				adi,rx-fine-ddc-select = <0x33>;
+				adi,rx-coarse-decimation = <4 4 4 4>;
+				/* 0 marks a fine DDC the select mask disables. */
+				adi,rx-fine-decimation = <4 4 0 0 4 4 0 0>;
+				adi,rx-coarse-nco-shift-hz =
+					<2000000000 2000000000
+					 2000000000 2000000000>;
+				adi,rx-fine-nco-shift-hz =
+					<0 0 0 0 0 0 0 0>;
+				adi,rx-logical-lane-mapping = <2 0 7 7 7 7 3 1>;
+				/*
+				 * Virtual converter -> physical converter. Only
+				 * the first M (8) entries are meaningful; the
+				 * rest pad the vendor struct.
+				 */
+				adi,rx-link-converter-select =
+					<0 1 2 3 8 9 10 11
+					 0 0 0 0 0 0 0 0>;
+
+				/*
+				 * No adi,rx-{coarse,fine}-complex-to-real: the
+				 * link carries complex samples, so both are
+				 * all-zero and the driver defaults them.
+				 */
 			};
 		};
 

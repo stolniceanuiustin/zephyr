@@ -35,6 +35,7 @@ LOG_MODULE_REGISTER(ad9081, LOG_LEVEL_INF);
 
 #include "ad9081.h"
 #include "adi_ad9081.h"
+#include "jesd204_geometry.h"
 
 /*
  * The SPI register page is mapped 1:1 by spi_mmio_fixup.c at PRE_KERNEL_1,
@@ -54,6 +55,49 @@ struct ad9081_config {
 	struct spi_dt_spec spi;
 	/* .port == NULL when the node has no reset-gpios. */
 	struct gpio_dt_spec reset;
+
+	/* Hz, from the kHz properties. The vendor API takes Hz. */
+	uint64_t dac_freq_hz;
+	uint64_t adc_freq_hz;
+	uint64_t ref_freq_hz;
+
+	uint8_t tx_main_interp;
+	uint8_t tx_chan_interp;
+
+	uint8_t rx_cddc_select;
+	uint8_t rx_fddc_select;
+
+	/*
+	 * Decimation as ratios. The register codes the vendor API wants are
+	 * derived from these at build time (see AD9081_PROFILE below); these
+	 * are kept because the boot log reports the ratio, not the code.
+	 */
+	uint8_t rx_cddc_decim[4];
+	uint8_t rx_fddc_decim[8];
+};
+
+/*
+ * The datapath profile, in RAM because every vendor entry point takes these by
+ * non-const pointer. Statically initialised from devicetree, one per node --
+ * nothing here is computed at runtime.
+ */
+struct ad9081_profile {
+	uint8_t tx_dac_chan_xbar[4];
+	int64_t tx_main_shift[4];
+	int64_t tx_chan_shift[8];
+	uint16_t tx_chan_gain[8];
+	uint8_t tx_lane_map[8];
+	adi_cms_jesd_param_t tx_jesd_param;
+
+	int64_t rx_cddc_shift[4];
+	int64_t rx_fddc_shift[8];
+	uint8_t rx_cddc_dcm[4]; /* register codes, not ratios */
+	uint8_t rx_fddc_dcm[8];
+	uint8_t rx_cc2r_en[4];
+	uint8_t rx_fc2r_en[8];
+	uint8_t rx_lane_map[8];
+	adi_cms_jesd_param_t rx_jesd_param[2];
+	adi_ad9081_jtx_conv_sel_t rx_conv_sel[2];
 };
 
 /* Per-instance state -- RAM. The ADI library's device handle, which also holds
@@ -61,6 +105,7 @@ struct ad9081_config {
  */
 struct ad9081_data {
 	adi_ad9081_device_t dev;
+	struct ad9081_profile profile;
 };
 
 /*
@@ -260,130 +305,16 @@ void *ad9081_get_device(const struct device *dev)
 /*
  * ------------------------- MxFE datapath configuration ------------------------
  *
- * Parameters are the zcu102_ad9081_m8_l4 profile (no-OS
- * projects/ad9081/profiles/zcu102_ad9081_m8_l4/app_config.h), driven through the
- * ADI API exactly as no-OS ad9081_setup()/setup_tx()/setup_rx().
- *
- *   DAC 12 GHz, ADC 4 GHz, device REFCLK 250 MHz (on-chip CLK PLL used).
- *   TX: main interp 6, chan interp 8; JRX deframer mode 9, M8 L4 F4 K32 NP16.
- *   RX: coarse/fine decim 4/4; JTX framer mode 10, M8 L4 F4 K32 NP16.
+ * Every parameter now comes from devicetree (see boards/zynqmp_apu.overlay and
+ * dts/bindings/adi,ad9081.yaml); the values there are the no-OS
+ * zcu102_ad9081_m8_l4 profile. This function drives the ADI API in the same
+ * order as no-OS ad9081_setup()/setup_tx()/setup_rx().
  */
-
-/* Clocks. */
-#define AD9081_DAC_CLK_HZ 12000000000ULL
-#define AD9081_ADC_CLK_HZ 4000000000ULL
-#define AD9081_REF_CLK_HZ 250000000ULL
-
-/* TX (JRX / deframer) datapath. */
-#define AD9081_TX_MAIN_INTERP 6
-#define AD9081_TX_CHAN_INTERP 8
-
-static uint8_t tx_dac_chan_xbar[4] = { 0x1, 0x2, 0x4, 0x8 };
-static int64_t tx_main_shift[4] = { 2000000000, 2000000000, 2000000000,
-				    2000000000 };
-static int64_t tx_chan_shift[8] = { 0 };
-static uint16_t tx_chan_gain[8] = { 1024, 1024, 1024, 1024, 0, 0, 0, 0 };
-static uint8_t tx_logical_lane_map[8] = { 0, 2, 7, 7, 1, 7, 7, 3 };
-
-/*
- * HD is not a free parameter: it is 1 only when a single sample is split across
- * lanes, which the rest of the geometry decides. Here
- *
- *	total octets/frame = M*S*NP/8 = 8*1*16/8 = 16
- *	per lane           = 16/L = 4 = F  -> 32 bits
- *	32 bits / NP(16)   = 2 whole samples per lane per frame
- *
- * so nothing splits and HD must be 0. It also has to agree with JESD_HD in
- * axi_jesd204.c, which is what the FPGA link core advertises in ILAS word 3 and
- * folds into the ILAS checksum -- a chip configured for HD=1 against a core
- * advertising 0 is a self-inconsistent link.
- *
- * no-OS's zcu102_ad9081_m8_l4 profile says AD9081_TX_JESD_HD 1 (app_config.h:61)
- * and that is where the 1 here came from. It is wrong, and harmlessly so: with
- * F=4 no sample splits regardless of the bit, so it never manifests on this
- * profile. Do not "restore" it to match no-OS -- see tools/check_profile.py,
- * which derives HD from the geometry rather than copying the reference.
- */
-static adi_cms_jesd_param_t tx_jesd_param = {
-	.jesd_l = 4,
-	.jesd_f = 4,
-	.jesd_m = 8,
-	.jesd_s = 1,
-	.jesd_hd = 0,
-	.jesd_k = 32,
-	.jesd_n = 16,
-	.jesd_np = 16,
-	.jesd_cs = 0,
-	.jesd_subclass = 1,
-	.jesd_scr = 1,
-	.jesd_duallink = 0,
-	.jesd_jesdv = 1,
-	.jesd_mode_id = 9,
-};
-
-/* RX (JTX / framer) datapath. */
-static uint8_t rx_cddc_select = 0xF;  /* all 4 coarse DDCs */
-static uint8_t rx_fddc_select = 0x33; /* fine DDCs 0,1,4,5 */
-static int64_t rx_cddc_shift[4] = { 2000000000, 2000000000, 2000000000,
-				    2000000000 };
-static int64_t rx_fddc_shift[8] = { 0 };
-static uint8_t rx_cddc_dcm[4] = { AD9081_CDDC_DCM_4, AD9081_CDDC_DCM_4,
-				  AD9081_CDDC_DCM_4, AD9081_CDDC_DCM_4 };
-static uint8_t rx_fddc_dcm[8] = { AD9081_FDDC_DCM_4, AD9081_FDDC_DCM_4, 0, 0,
-				  AD9081_FDDC_DCM_4, AD9081_FDDC_DCM_4, 0, 0 };
-static uint8_t rx_cc2r_en[4] = { 0 };
-static uint8_t rx_fc2r_en[8] = { 0 };
-static uint8_t rx_logical_lane_map[8] = { 2, 0, 7, 7, 7, 7, 3, 1 };
-static uint8_t rx_link_converter_select[16] = { 0, 1, 2, 3, 8, 9, 10, 11,
-						0, 0, 0, 0, 0,  0, 0,  0 };
-
-static adi_cms_jesd_param_t rx_jesd_param[2] = {
-	[0] = {
-		.jesd_l = 4,
-		.jesd_f = 4,
-		.jesd_m = 8,
-		.jesd_s = 1,
-		/* 0, not 1 -- same derivation as tx_jesd_param above. */
-		.jesd_hd = 0,
-		.jesd_k = 32,
-		.jesd_n = 16,
-		.jesd_np = 16,
-		.jesd_cs = 0,
-		.jesd_subclass = 1,
-		.jesd_scr = 1,
-		.jesd_duallink = 0,
-		.jesd_jesdv = 1,
-		.jesd_mode_id = 10,
-	},
-};
-
-static adi_ad9081_jtx_conv_sel_t rx_jesd_conv_sel[2];
-
-/* Map the flat converter-select array into the ADI per-virtual-converter struct. */
-static void ad9081_fill_conv_sel(void)
-{
-	adi_ad9081_jtx_conv_sel_t *s = &rx_jesd_conv_sel[0];
-
-	s->virtual_converter0_index = rx_link_converter_select[0];
-	s->virtual_converter1_index = rx_link_converter_select[1];
-	s->virtual_converter2_index = rx_link_converter_select[2];
-	s->virtual_converter3_index = rx_link_converter_select[3];
-	s->virtual_converter4_index = rx_link_converter_select[4];
-	s->virtual_converter5_index = rx_link_converter_select[5];
-	s->virtual_converter6_index = rx_link_converter_select[6];
-	s->virtual_converter7_index = rx_link_converter_select[7];
-	s->virtual_converter8_index = rx_link_converter_select[8];
-	s->virtual_converter9_index = rx_link_converter_select[9];
-	s->virtual_convertera_index = rx_link_converter_select[10];
-	s->virtual_converterb_index = rx_link_converter_select[11];
-	s->virtual_converterc_index = rx_link_converter_select[12];
-	s->virtual_converterd_index = rx_link_converter_select[13];
-	s->virtual_convertere_index = rx_link_converter_select[14];
-	s->virtual_converterf_index = rx_link_converter_select[15];
-}
 
 int ad9081_setup_datapath(const struct device *dev)
 {
+	const struct ad9081_config *cfg;
+	struct ad9081_profile *p;
 	struct ad9081_data *data;
 	adi_ad9081_device_t *chip;
 	uint8_t pll_status;
@@ -393,15 +324,20 @@ int ad9081_setup_datapath(const struct device *dev)
 		LOG_ERR("device not ready");
 		return -ENODEV;
 	}
+	cfg = dev->config;
 	data = dev->data;
+	p = &data->profile;
 	chip = &data->dev;
 
-	LOG_INF("AD9081 datapath setup (DAC 12G / ADC 4G, ref 250M)");
+	LOG_INF("AD9081 datapath setup (DAC %uG / ADC %uG, ref %uM)",
+		(unsigned int)(cfg->dac_freq_hz / 1000000000ULL),
+		(unsigned int)(cfg->adc_freq_hz / 1000000000ULL),
+		(unsigned int)(cfg->ref_freq_hz / 1000000ULL));
 
 	/* On-chip CLK PLL: ref (250M) != dac (12G), so the PLL is engaged. */
-	err = adi_ad9081_device_clk_config_set(chip, AD9081_DAC_CLK_HZ,
-					       AD9081_ADC_CLK_HZ,
-					       AD9081_REF_CLK_HZ);
+	err = adi_ad9081_device_clk_config_set(chip, cfg->dac_freq_hz,
+					       cfg->adc_freq_hz,
+					       cfg->ref_freq_hz);
 	if (err != API_CMS_ERROR_OK) {
 		LOG_ERR("clk_config_set failed (%d)", err);
 		return -EIO;
@@ -419,41 +355,52 @@ int ad9081_setup_datapath(const struct device *dev)
 	LOG_INF("device CLK PLL locked (status=0x%x)", pll_status);
 
 	/* TX deframer (JRX): install chip-side lane map, start the TX datapath. */
-	memcpy(chip->serdes_info.des_settings.lane_mapping[0],
-	       tx_logical_lane_map, sizeof(tx_logical_lane_map));
+	memcpy(chip->serdes_info.des_settings.lane_mapping[0], p->tx_lane_map,
+	       sizeof(p->tx_lane_map));
 
-	err = adi_ad9081_device_startup_tx(chip, AD9081_TX_MAIN_INTERP,
-					   AD9081_TX_CHAN_INTERP,
-					   tx_dac_chan_xbar, tx_main_shift,
-					   tx_chan_shift, &tx_jesd_param);
+	err = adi_ad9081_device_startup_tx(chip, cfg->tx_main_interp,
+					   cfg->tx_chan_interp,
+					   p->tx_dac_chan_xbar, p->tx_main_shift,
+					   p->tx_chan_shift, &p->tx_jesd_param);
 	if (err != API_CMS_ERROR_OK) {
 		LOG_ERR("device_startup_tx failed (%d)", err);
 		return -EIO;
 	}
 
-	err = adi_ad9081_dac_duc_nco_gains_set(chip, tx_chan_gain);
+	err = adi_ad9081_dac_duc_nco_gains_set(chip, p->tx_chan_gain);
 	if (err != API_CMS_ERROR_OK) {
 		LOG_ERR("dac_duc_nco_gains_set failed (%d)", err);
 		return -EIO;
 	}
-	LOG_INF("TX datapath up: interp %ux%u, JRX deframer mode 9 (M8 L4 F4)",
-		AD9081_TX_MAIN_INTERP, AD9081_TX_CHAN_INTERP);
+	LOG_INF("TX datapath up: interp %ux%u, JRX deframer mode %u (M%u L%u F%u)",
+		(unsigned int)cfg->tx_main_interp,
+		(unsigned int)cfg->tx_chan_interp,
+		(unsigned int)p->tx_jesd_param.jesd_mode_id,
+		(unsigned int)p->tx_jesd_param.jesd_m,
+		(unsigned int)p->tx_jesd_param.jesd_l,
+		(unsigned int)p->tx_jesd_param.jesd_f);
 
 	/* RX framer (JTX): install chip-side lane map + converter select. */
-	memcpy(chip->serdes_info.ser_settings.lane_mapping[0],
-	       rx_logical_lane_map, sizeof(rx_logical_lane_map));
-	ad9081_fill_conv_sel();
+	memcpy(chip->serdes_info.ser_settings.lane_mapping[0], p->rx_lane_map,
+	       sizeof(p->rx_lane_map));
 
-	err = adi_ad9081_device_startup_rx(chip, rx_cddc_select, rx_fddc_select,
-					   rx_cddc_shift, rx_fddc_shift,
-					   rx_cddc_dcm, rx_fddc_dcm, rx_cc2r_en,
-					   rx_fc2r_en, rx_jesd_param,
-					   rx_jesd_conv_sel);
+	err = adi_ad9081_device_startup_rx(chip, cfg->rx_cddc_select,
+					   cfg->rx_fddc_select, p->rx_cddc_shift,
+					   p->rx_fddc_shift, p->rx_cddc_dcm,
+					   p->rx_fddc_dcm, p->rx_cc2r_en,
+					   p->rx_fc2r_en, p->rx_jesd_param,
+					   p->rx_conv_sel);
 	if (err != API_CMS_ERROR_OK) {
 		LOG_ERR("device_startup_rx failed (%d)", err);
 		return -EIO;
 	}
-	LOG_INF("RX datapath up: decim 4/4, JTX framer mode 10 (M8 L4 F4)");
+	LOG_INF("RX datapath up: decim %u/%u, JTX framer mode %u (M%u L%u F%u)",
+		(unsigned int)cfg->rx_cddc_decim[0],
+		(unsigned int)cfg->rx_fddc_decim[0],
+		(unsigned int)p->rx_jesd_param[0].jesd_mode_id,
+		(unsigned int)p->rx_jesd_param[0].jesd_m,
+		(unsigned int)p->rx_jesd_param[0].jesd_l,
+		(unsigned int)p->rx_jesd_param[0].jesd_f);
 
 	return 0;
 }
@@ -475,14 +422,225 @@ static int ad9081_init(const struct device *dev)
 	return 0;
 }
 
+/*
+ * Decimation ratio -> vendor register code. The codes are not the ratios and
+ * are not even monotonic in them (CDDC: DCM_2 is 0x0 but DCM_4 is 0x1, DCM_1 is
+ * 0xC), so devicetree carries the ratio and this maps it. ADI's own Linux/no-OS
+ * driver does exactly this -- no-OS drivers/adc/ad9081/ad9081.c:292 and :324 are
+ * the same two switch statements, returning -1 for a ratio the part lacks.
+ *
+ * Unsupported ratios land on 0xFF, which AD9081_ASSERT_DCM below turns into a
+ * build error rather than a silently wrong register write.
+ */
+#define AD9081_DCM_BAD 0xFF
+
+#define AD9081_CDDC_DCM_CODE(r)                                                \
+	((r) == 1  ? AD9081_CDDC_DCM_1  :                                      \
+	 (r) == 2  ? AD9081_CDDC_DCM_2  :                                      \
+	 (r) == 3  ? AD9081_CDDC_DCM_3  :                                      \
+	 (r) == 4  ? AD9081_CDDC_DCM_4  :                                      \
+	 (r) == 6  ? AD9081_CDDC_DCM_6  :                                      \
+	 (r) == 8  ? AD9081_CDDC_DCM_8  :                                      \
+	 (r) == 9  ? AD9081_CDDC_DCM_9  :                                      \
+	 (r) == 12 ? AD9081_CDDC_DCM_12 :                                      \
+	 (r) == 16 ? AD9081_CDDC_DCM_16 :                                      \
+	 (r) == 18 ? AD9081_CDDC_DCM_18 :                                      \
+	 (r) == 24 ? AD9081_CDDC_DCM_24 :                                      \
+	 (r) == 36 ? AD9081_CDDC_DCM_36 : AD9081_DCM_BAD)
+
+/*
+ * 0 is not a ratio -- it is how the no-OS profile spells "this fine DDC is
+ * disabled", for the fine DDCs the select mask leaves out. It maps to 0, which
+ * is what the old hand-written rx_fddc_dcm[] carried in those slots.
+ */
+#define AD9081_FDDC_DCM_CODE(r)                                                \
+	((r) == 0  ? 0                  :                                      \
+	 (r) == 1  ? AD9081_FDDC_DCM_1  :                                      \
+	 (r) == 2  ? AD9081_FDDC_DCM_2  :                                      \
+	 (r) == 3  ? AD9081_FDDC_DCM_3  :                                      \
+	 (r) == 4  ? AD9081_FDDC_DCM_4  :                                      \
+	 (r) == 6  ? AD9081_FDDC_DCM_6  :                                      \
+	 (r) == 8  ? AD9081_FDDC_DCM_8  :                                      \
+	 (r) == 12 ? AD9081_FDDC_DCM_12 :                                      \
+	 (r) == 16 ? AD9081_FDDC_DCM_16 :                                      \
+	 (r) == 24 ? AD9081_FDDC_DCM_24 : AD9081_DCM_BAD)
+
+#define AD9081_CDDC_CODE_ELEM(node_id, prop, idx)                              \
+	AD9081_CDDC_DCM_CODE(DT_PROP_BY_IDX(node_id, prop, idx)),
+#define AD9081_FDDC_CODE_ELEM(node_id, prop, idx)                              \
+	AD9081_FDDC_DCM_CODE(DT_PROP_BY_IDX(node_id, prop, idx)),
+
+#define AD9081_ASSERT_CDDC_ELEM(node_id, prop, idx)                            \
+	BUILD_ASSERT(AD9081_CDDC_DCM_CODE(DT_PROP_BY_IDX(node_id, prop, idx)) !=\
+			     AD9081_DCM_BAD,                                   \
+		     "adi,rx-coarse-decimation: ratio not supported by the part");
+#define AD9081_ASSERT_FDDC_ELEM(node_id, prop, idx)                            \
+	BUILD_ASSERT(AD9081_FDDC_DCM_CODE(DT_PROP_BY_IDX(node_id, prop, idx)) !=\
+			     AD9081_DCM_BAD,                                   \
+		     "adi,rx-fine-decimation: ratio not supported by the part");
+
+/*
+ * One adi_cms_jesd_param_t from a link-core node.
+ *
+ * gnode is the node describing this direction; inode is the node carrying the
+ * ILAS-only fields (N, CS, S), which only the TX core has -- the framer receives
+ * the ILAS it is described in rather than announcing one, so the RX node has no
+ * properties for them and axi_jesd204.c reads them from the TX node too.
+ *
+ * jesd_hd is derived, not stated: see JESD204_DERIVE_HD in jesd204_geometry.h.
+ * That is the same expression the FPGA link core uses for its ILAS, so the two
+ * ends cannot disagree the way they could when this file held a literal.
+ */
+#define AD9081_JESD_PARAM(gnode, inode, mode_id)                               \
+	{                                                                      \
+		.jesd_l = DT_PROP(gnode, adi_lanes_per_device),                 \
+		.jesd_f = DT_PROP(gnode, adi_octets_per_frame),                 \
+		.jesd_m = DT_PROP(gnode, adi_converters_per_device),            \
+		.jesd_s = DT_PROP(inode, adi_samples_per_converter_per_frame),  \
+		.jesd_hd = JESD204_DERIVE_HD(                                  \
+			DT_PROP(gnode, adi_converters_per_device),              \
+			DT_PROP(inode, adi_samples_per_converter_per_frame),    \
+			DT_PROP(gnode, adi_bits_per_sample),                   \
+			DT_PROP(gnode, adi_lanes_per_device)),                 \
+		.jesd_k = DT_PROP(gnode, adi_frames_per_multiframe),            \
+		.jesd_n = DT_PROP(inode, adi_converter_resolution),             \
+		.jesd_np = DT_PROP(gnode, adi_bits_per_sample),                 \
+		.jesd_cs = DT_PROP(inode, adi_control_bits_per_sample),         \
+		.jesd_subclass = DT_PROP(gnode, adi_subclass),                  \
+		.jesd_scr = JESD204_SCRAMBLING,                                 \
+		.jesd_duallink = 0,                                            \
+		.jesd_jesdv = JESD204_VERSION_B,                               \
+		.jesd_mode_id = (mode_id),                                     \
+	}
+
+/* The 16 flat converter-select entries into the vendor's 16 named fields. */
+#define AD9081_CONV_SEL(n)                                                     \
+	{                                                                      \
+		.virtual_converter0_index =                                    \
+			DT_INST_PROP_BY_IDX(n, adi_rx_link_converter_select, 0), \
+		.virtual_converter1_index =                                    \
+			DT_INST_PROP_BY_IDX(n, adi_rx_link_converter_select, 1), \
+		.virtual_converter2_index =                                    \
+			DT_INST_PROP_BY_IDX(n, adi_rx_link_converter_select, 2), \
+		.virtual_converter3_index =                                    \
+			DT_INST_PROP_BY_IDX(n, adi_rx_link_converter_select, 3), \
+		.virtual_converter4_index =                                    \
+			DT_INST_PROP_BY_IDX(n, adi_rx_link_converter_select, 4), \
+		.virtual_converter5_index =                                    \
+			DT_INST_PROP_BY_IDX(n, adi_rx_link_converter_select, 5), \
+		.virtual_converter6_index =                                    \
+			DT_INST_PROP_BY_IDX(n, adi_rx_link_converter_select, 6), \
+		.virtual_converter7_index =                                    \
+			DT_INST_PROP_BY_IDX(n, adi_rx_link_converter_select, 7), \
+		.virtual_converter8_index =                                    \
+			DT_INST_PROP_BY_IDX(n, adi_rx_link_converter_select, 8), \
+		.virtual_converter9_index =                                    \
+			DT_INST_PROP_BY_IDX(n, adi_rx_link_converter_select, 9), \
+		.virtual_convertera_index =                                    \
+			DT_INST_PROP_BY_IDX(n, adi_rx_link_converter_select, 10),\
+		.virtual_converterb_index =                                    \
+			DT_INST_PROP_BY_IDX(n, adi_rx_link_converter_select, 11),\
+		.virtual_converterc_index =                                    \
+			DT_INST_PROP_BY_IDX(n, adi_rx_link_converter_select, 12),\
+		.virtual_converterd_index =                                    \
+			DT_INST_PROP_BY_IDX(n, adi_rx_link_converter_select, 13),\
+		.virtual_convertere_index =                                    \
+			DT_INST_PROP_BY_IDX(n, adi_rx_link_converter_select, 14),\
+		.virtual_converterf_index =                                    \
+			DT_INST_PROP_BY_IDX(n, adi_rx_link_converter_select, 15),\
+	}
+
+#define AD9081_TX_LINK(n) DT_INST_PHANDLE(n, adi_jesd_tx_link)
+#define AD9081_RX_LINK(n) DT_INST_PHANDLE(n, adi_jesd_rx_link)
+
+/* Every array property has one fixed length the vendor API assumes. */
+#define AD9081_ASSERT_LEN(n, prop, want)                                       \
+	BUILD_ASSERT(DT_INST_PROP_LEN(n, prop) == (want),                      \
+		     "adi,ad9081: " #prop " must have " #want " entries");
+
+#define AD9081_ASSERT_LENS(n)                                                  \
+	AD9081_ASSERT_LEN(n, adi_tx_dac_channel_crossbar, 4)                   \
+	AD9081_ASSERT_LEN(n, adi_tx_main_nco_shift_hz, 4)                      \
+	AD9081_ASSERT_LEN(n, adi_tx_channel_nco_shift_hz, 8)                   \
+	AD9081_ASSERT_LEN(n, adi_tx_channel_gains, 8)                          \
+	AD9081_ASSERT_LEN(n, adi_tx_logical_lane_mapping, 8)                       \
+	AD9081_ASSERT_LEN(n, adi_rx_coarse_decimation, 4)                      \
+	AD9081_ASSERT_LEN(n, adi_rx_fine_decimation, 8)                        \
+	AD9081_ASSERT_LEN(n, adi_rx_coarse_nco_shift_hz, 4)                    \
+	AD9081_ASSERT_LEN(n, adi_rx_fine_nco_shift_hz, 8)                      \
+	AD9081_ASSERT_LEN(n, adi_rx_logical_lane_mapping, 8)                       \
+	AD9081_ASSERT_LEN(n, adi_rx_link_converter_select, 16)                 \
+	DT_INST_FOREACH_PROP_ELEM(n, adi_rx_coarse_decimation,                 \
+				  AD9081_ASSERT_CDDC_ELEM)                     \
+	DT_INST_FOREACH_PROP_ELEM(n, adi_rx_fine_decimation,                   \
+				  AD9081_ASSERT_FDDC_ELEM)
+
 #define AD9081_DEFINE(n)                                                       \
-	static struct ad9081_data ad9081_data_##n;                             \
+	AD9081_ASSERT_LENS(n)                                                  \
+									       \
+	/* RAM: every vendor entry point below takes these by non-const	       \
+	 * pointer. Statically initialised -- nothing is computed at runtime.   \
+	 */								       \
+	static struct ad9081_data ad9081_data_##n = {                          \
+		.profile = {                                                   \
+			.tx_dac_chan_xbar =                                    \
+				DT_INST_PROP(n, adi_tx_dac_channel_crossbar),   \
+			.tx_main_shift =                                       \
+				DT_INST_PROP(n, adi_tx_main_nco_shift_hz),      \
+			.tx_chan_shift =                                       \
+				DT_INST_PROP(n, adi_tx_channel_nco_shift_hz),   \
+			.tx_chan_gain = DT_INST_PROP(n, adi_tx_channel_gains),  \
+			.tx_lane_map =                                         \
+				DT_INST_PROP(n, adi_tx_logical_lane_mapping),       \
+			.tx_jesd_param = AD9081_JESD_PARAM(                    \
+				AD9081_TX_LINK(n), AD9081_TX_LINK(n),          \
+				DT_INST_PROP(n, adi_tx_jesd_mode_id)),         \
+									       \
+			.rx_cddc_shift =                                       \
+				DT_INST_PROP(n, adi_rx_coarse_nco_shift_hz),    \
+			.rx_fddc_shift =                                       \
+				DT_INST_PROP(n, adi_rx_fine_nco_shift_hz),      \
+			.rx_cddc_dcm = { DT_INST_FOREACH_PROP_ELEM(            \
+				n, adi_rx_coarse_decimation,                   \
+				AD9081_CDDC_CODE_ELEM) },                      \
+			.rx_fddc_dcm = { DT_INST_FOREACH_PROP_ELEM(            \
+				n, adi_rx_fine_decimation,                     \
+				AD9081_FDDC_CODE_ELEM) },                      \
+			.rx_cc2r_en = DT_INST_PROP_OR(                         \
+				n, adi_rx_coarse_complex_to_real, { 0 }),       \
+			.rx_fc2r_en = DT_INST_PROP_OR(                         \
+				n, adi_rx_fine_complex_to_real, { 0 }),         \
+			.rx_lane_map =                                         \
+				DT_INST_PROP(n, adi_rx_logical_lane_mapping),       \
+			/* [1] stays zero: single link, jesd_duallink = 0. */   \
+			.rx_jesd_param = { [0] = AD9081_JESD_PARAM(            \
+				AD9081_RX_LINK(n), AD9081_TX_LINK(n),          \
+				DT_INST_PROP(n, adi_rx_jesd_mode_id)) },       \
+			.rx_conv_sel = { [0] = AD9081_CONV_SEL(n) },           \
+		},                                                             \
+	};                                                                     \
 									       \
 	static const struct ad9081_config ad9081_config_##n = {                \
 		.spi = SPI_DT_SPEC_INST_GET(n, SPI_WORD_SET(8) |                \
 						      SPI_TRANSFER_MSB |       \
 						      SPI_OP_MODE_MASTER),     \
 		.reset = GPIO_DT_SPEC_INST_GET_OR(n, reset_gpios, { 0 }),       \
+									       \
+		.dac_freq_hz =                                                 \
+			DT_INST_PROP(n, adi_dac_frequency_khz) * 1000ULL,       \
+		.adc_freq_hz =                                                 \
+			DT_INST_PROP(n, adi_adc_frequency_khz) * 1000ULL,       \
+		.ref_freq_hz =                                                 \
+			DT_INST_PROP(n, adi_ref_clk_frequency_khz) * 1000ULL,   \
+									       \
+		.tx_main_interp = DT_INST_PROP(n, adi_tx_main_interpolation),   \
+		.tx_chan_interp =                                              \
+			DT_INST_PROP(n, adi_tx_channel_interpolation),          \
+									       \
+		.rx_cddc_select = DT_INST_PROP(n, adi_rx_coarse_ddc_select),    \
+		.rx_fddc_select = DT_INST_PROP(n, adi_rx_fine_ddc_select),      \
+		.rx_cddc_decim = DT_INST_PROP(n, adi_rx_coarse_decimation),     \
+		.rx_fddc_decim = DT_INST_PROP(n, adi_rx_fine_decimation),       \
 	};                                                                     \
 									       \
 	DEVICE_DT_INST_DEFINE(n, ad9081_init, NULL, &ad9081_data_##n,          \
@@ -497,3 +655,17 @@ DT_INST_FOREACH_STATUS_OKAY(AD9081_DEFINE)
  */
 BUILD_ASSERT(CONFIG_AD9081_MXFE_INIT_PRIORITY > CONFIG_SPI_INIT_PRIORITY,
 	     "The AD9081 is SPI-attached, so it must initialise after its SPI controller");
+
+/*
+ * adi,ref-clk-frequency-khz is a statement about a wire: the HMC7044's
+ * DEV_REFCLK output drives the chip's REFCLK pin. It is a rate here rather than
+ * a phandle (see the binding for why), so the two can drift -- and the failure
+ * mode is the CLK PLL solving for a reference it is not being given. Check them
+ * against each other at build time instead: PLL2 / that output's divider.
+ */
+#define AD9081_HMC7044_DEV_REFCLK DT_NODELABEL(hmc7044_c2)
+
+BUILD_ASSERT(DT_INST_PROP(0, adi_ref_clk_frequency_khz) * 1000ULL ==
+		     DT_PROP(DT_NODELABEL(hmc7044), adi_pll2_output_frequency) /
+			     DT_PROP(AD9081_HMC7044_DEV_REFCLK, adi_divider),
+	     "adi,ref-clk-frequency-khz disagrees with the HMC7044 DEV_REFCLK output rate");
