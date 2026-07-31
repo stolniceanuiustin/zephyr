@@ -1,5 +1,6 @@
 #include <zephyr/dt-bindings/gpio/gpio.h>
 #include <zephyr/dt-bindings/interrupt-controller/arm-gic.h>
+#include <dt-bindings/jesd204/adxcvr.h>
 
 /*
  * Everything this sample needs is defined here in the overlay, so no shared
@@ -152,13 +153,10 @@
 				};
 
 				/*
-				 * The GT reference clock. axi_adxcvr queries
-				 * this output's rate for its DRP divider solve
-				 * rather than hardcoding 500 MHz. It finds it
-				 * through the /aliases/gt-refclk entry below,
-				 * because the adxcvr cores are not devicetree
-				 * nodes yet; once they are, this becomes a
-				 * clocks = <&hmc7044 12> phandle on them.
+				 * The GT reference clock. Both adxcvr nodes
+				 * below take clocks = <&hmc7044 12> and query
+				 * this output's rate for their DRP divider
+				 * solve rather than hardcoding 500 MHz.
 				 */
 				hmc7044_c12: channel@c {
 					reg = <12>;
@@ -204,6 +202,65 @@
 			reg = <0x0 0x9c430000 0x0 0x10000>;
 			#dma-cells = <1>;
 			status = "okay";
+		};
+
+		/*
+		 * GT transceivers (ADI AXI-ADXCVR around Xilinx GTH4), one node
+		 * per JESD204 direction. Addresses from the on-board bitstream
+		 * (system.hwh); node names and property values match ADI's Linux
+		 * overlay for this board
+		 * (zynqmp-zcu102-rev10-ad9081-m8-l4-overlay.dts:434-472) except
+		 * for the two clock-mux selections, which differ deliberately --
+		 * see below.
+		 *
+		 * reg covers a full 64 KiB page, not ADI's 0x1000: the register
+		 * block is smaller, but this is what gets device_map()ed and the
+		 * MMU granularity here is a page.
+		 */
+		tx_adxcvr: adxcvr@84b60000 {
+			compatible = "adi,axi-adxcvr-1.0";
+			reg = <0x0 0x84b60000 0x0 0x10000>;
+			status = "okay";
+
+			/*
+			 * Kept so the driver's log lines stay byte-identical to
+			 * the pre-devicetree code's, which the golden boot log
+			 * was captured from.
+			 */
+			label = "tx_adxcvr";
+
+			clocks = <&hmc7044 12>;
+
+			/*
+			 * QPLL0 + PROGDIV, and 10 Gbps lanes.
+			 *
+			 * This is no-OS's PLATFORM_ZYNQMP configuration
+			 * (app_jesd.c:105-117), not ADI's Linux overlay, which
+			 * has XCVR_QPLL + XCVR_REFCLK_DIV2 for a different
+			 * bitstream. PROGDIV is what this PL was synthesised
+			 * for: with REFCLK_DIV2 the GT output clock does not run
+			 * and RESET_DONE never asserts.
+			 */
+			adi,sys-clk-select = <XCVR_QPLL>;
+			adi,out-clk-select = <XCVR_PROGDIV_CLK>;
+			adi,lane-rate-khz = <10000000>;
+		};
+
+		rx_adxcvr: adxcvr@84a60000 {
+			compatible = "adi,axi-adxcvr-1.0";
+			reg = <0x0 0x84a60000 0x0 0x10000>;
+			status = "okay";
+			label = "rx_adxcvr";
+
+			clocks = <&hmc7044 12>;
+
+			/* CPLL on the receive side (no-OS app_jesd.c:121-129). */
+			adi,sys-clk-select = <XCVR_CPLL>;
+			adi,out-clk-select = <XCVR_PROGDIV_CLK>;
+			adi,lane-rate-khz = <10000000>;
+
+			/* LPM equalisation rather than DFE -- RX only. */
+			adi,use-lpm-enable;
 		};
 
 		psgpio: gpio@ff0a0000 {
@@ -273,17 +330,4 @@
 		};
 	};
 
-	aliases {
-		/*
-		 * Which HMC7044 output feeds the GT reference clock. axi_adxcvr
-		 * resolves this to query the rate instead of hardcoding
-		 * 500 MHz, so if the clock tree above is ever reprogrammed the
-		 * GT divider math follows rather than silently going wrong.
-		 *
-		 * An alias rather than a phandle only because the adxcvr cores
-		 * are not devicetree nodes yet. When they are converted, they
-		 * gain clocks = <&hmc7044 12> and this alias goes away.
-		 */
-		gt-refclk = &hmc7044_c12;
-	};
 };

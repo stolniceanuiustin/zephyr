@@ -443,12 +443,13 @@ static void fi_test_teardown_rebringup(void)
 
 static void fi_test_gt_refclk_lost(void)
 {
+	const struct device *rx = DEVICE_DT_GET(DT_NODELABEL(rx_adxcvr));
 	const char *name = "gt-refclk-lost";
 	int ret;
 
 	LOG_INF("--- FI 4: RX GT reference clock lost ---");
 
-	axi_adxcvr_fi_rx_break_refclk();
+	axi_adxcvr_fi_break_refclk(rx);
 
 	/*
 	 * The real enable path, with a GT that genuinely cannot lock. This takes
@@ -456,9 +457,9 @@ static void fi_test_gt_refclk_lost(void)
 	 * 100 ms. Reaching the -ETIMEDOUT below means the retry loop terminated
 	 * instead of hanging, which is the thing being tested.
 	 */
-	ret = axi_adxcvr_rx_enable();
+	ret = axi_adxcvr_enable(rx);
 	LOG_INF("rx_adxcvr STATUS after failed lock = 0x%08x",
-		axi_adxcvr_fi_rx_status());
+		axi_adxcvr_fi_status(rx));
 
 	if (ret != -ETIMEDOUT) {
 		LOG_ERR("rx_enable returned %d, expected -ETIMEDOUT", ret);
@@ -468,7 +469,7 @@ static void fi_test_gt_refclk_lost(void)
 	}
 
 	/* Put the reference clock back and rebuild the link from the GT up. */
-	ret = axi_adxcvr_fi_rx_restore_refclk();
+	ret = axi_adxcvr_fi_restore_refclk(rx);
 	if (ret) {
 		LOG_ERR("restoring the RX GT failed (%d) -- link is now down",
 			ret);

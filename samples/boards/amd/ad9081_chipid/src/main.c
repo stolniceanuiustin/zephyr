@@ -79,8 +79,13 @@ LOG_MODULE_REGISTER(main, LOG_LEVEL_INF);
 #define DAC_DDS_SAMPLE_RATE  (250 * 1000 * 1000)
 #define DAC_DDS_SCALE_MICRO  (50 * 1000) /* 0.05 of full scale */
 
-/* Which HMC7044 output drives the GT reference clock -- see /aliases/gt-refclk. */
-#define GT_REFCLK_OUT DT_REG_ADDR(DT_ALIAS(gt_refclk))
+/*
+ * Which HMC7044 output drives the GT reference clock. Taken from the transceiver
+ * node's own `clocks` phandle rather than stated again here, so this report and
+ * the rate the adxcvr driver actually solves its dividers against cannot drift
+ * apart.
+ */
+#define GT_REFCLK_OUT DT_CLOCKS_CELL(DT_NODELABEL(tx_adxcvr), output)
 
 /*
  * The HMC7044 is a clock_control driver, so it programmes itself at POST_KERNEL
@@ -188,7 +193,12 @@ int main(void)
 	 * because GT-ready is only meaningful once the link layer and SYSREF are
 	 * up around it -- gating on it standalone times out.
 	 */
-	ret = axi_adxcvr_configure();
+	ret = axi_adxcvr_configure(DEVICE_DT_GET(DT_NODELABEL(tx_adxcvr)));
+	if (ret) {
+		LOG_ERR("AXI adxcvr (GT) config failed (%d)", ret);
+		return ret;
+	}
+	ret = axi_adxcvr_configure(DEVICE_DT_GET(DT_NODELABEL(rx_adxcvr)));
 	if (ret) {
 		LOG_ERR("AXI adxcvr (GT) config failed (%d)", ret);
 		return ret;

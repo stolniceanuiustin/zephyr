@@ -18,4 +18,15 @@ config AD9081_FAULT_INJECTION
 	  The tests deliberately break a working link and then rebuild it, so
 	  do not leave this on in a normal build.
 
+config AD9081_ADXCVR_INIT_PRIORITY
+	int "AXI-ADXCVR (GT transceiver) init priority"
+	default 65
+	help
+	  Initialisation priority of the AXI-ADXCVR driver, within POST_KERNEL.
+
+	  Must be above CONFIG_CLOCK_CONTROL_HMC7044_INIT_PRIORITY: the adxcvr
+	  nodes take `clocks = <&hmc7044 12>`, and Zephyr's init-priority
+	  validation rejects a device that initialises before a devicetree
+	  dependency. There is a BUILD_ASSERT in axi_adxcvr.c for it.
+
 source "Kconfig.zephyr"

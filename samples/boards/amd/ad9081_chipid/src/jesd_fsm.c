@@ -276,12 +276,13 @@ static int adxcvr_fsm_clks_enable(struct jesd204_dev *jdev,
 		return JESD204_STATE_CHANGE_DONE;
 	}
 
-	ret = axi_adxcvr_tx_enable();
+	/* TX before RX -- see the ordering note above. */
+	ret = axi_adxcvr_enable(DEVICE_DT_GET(DT_NODELABEL(tx_adxcvr)));
 	if (ret) {
 		return ret;
 	}
 
-	ret = axi_adxcvr_rx_enable();
+	ret = axi_adxcvr_enable(DEVICE_DT_GET(DT_NODELABEL(rx_adxcvr)));
 	if (ret) {
 		return ret;
 	}

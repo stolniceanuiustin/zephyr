@@ -275,3 +275,12 @@ child-binding:
         link matters, so it is not exposed through clock_control_on()/off();
         see hmc7044_sysref_request() in
         <zephyr/drivers/clock_control/hmc7044.h>.
+
+# Consumers name an output as `clocks = <&hmc7044 N>`, matching ADI's Linux
+# devicetrees for this chip. N is the raw output number 0-13, so it is not the
+# clock_control subsystem handle -- see HMC7044_CLK_OUT() in
+# <zephyr/drivers/clock_control/hmc7044.h>, which biases it by one because
+# output 0 exists and a raw 0 handle would collide with
+# CLOCK_CONTROL_SUBSYS_ALL.
+clock-cells:
+  - output
