@@ -205,13 +205,23 @@ int main(void)
 	}
 	LOG_INF("SUCCESS: GT transceivers configured (TX QPLL0 / RX CPLL)");
 
-	/* JESD204 link cores: program link geometry + ILAS, held disabled. */
-	ret = axi_jesd204_configure();
+	/*
+	 * JESD204 link cores: program link geometry + ILAS, held disabled. TX
+	 * before RX, which is the order the single-call version used.
+	 */
+	ret = axi_jesd204_configure(DEVICE_DT_GET(DT_NODELABEL(tx_jesd)));
+	if (ret == 0) {
+		ret = axi_jesd204_configure(DEVICE_DT_GET(DT_NODELABEL(rx_jesd)));
+	}
 	if (ret) {
 		LOG_ERR("AXI jesd204 link config failed (%d)", ret);
 		return ret;
 	}
-	LOG_INF("SUCCESS: JESD204 link cores configured (M8/L4/F4/K32)");
+	LOG_INF("SUCCESS: JESD204 link cores configured (M%d/L%d/F%d/K%d)",
+		DT_PROP(DT_NODELABEL(tx_jesd), adi_converters_per_device),
+		DT_PROP(DT_NODELABEL(tx_jesd), adi_lanes_per_device),
+		DT_PROP(DT_NODELABEL(tx_jesd), adi_octets_per_frame),
+		DT_PROP(DT_NODELABEL(tx_jesd), adi_frames_per_multiframe));
 
 	/* TPL transport cores: datapath sample-format (RX) + data-source (TX). */
 	ret = axi_tpl_configure(DEVICE_DT_GET(DT_NODELABEL(rx_tpl)));
@@ -245,13 +255,20 @@ int main(void)
 	 * the watchdog bounces the link and returns -EAGAIN. Re-read the status
 	 * afterwards rather than treating that as fatal.
 	 */
-	ret = axi_jesd204_rx_watchdog();
+	ret = axi_jesd204_rx_watchdog(DEVICE_DT_GET(DT_NODELABEL(rx_jesd)));
 	if (ret == -EAGAIN) {
 		LOG_WRN("link was restarted after a lane desync, re-reading status");
 	}
 
-	/* no-OS app.c:450-451 -- the one meaningful link status check. */
-	ret = axi_jesd204_status_read();
+	/*
+	 * no-OS app.c:450-451 -- the one meaningful link status check. Both ends
+	 * are read and logged before either verdict is taken, so a failure on TX
+	 * does not hide RX's state.
+	 */
+	ret = axi_jesd204_status_read(DEVICE_DT_GET(DT_NODELABEL(tx_jesd)));
+	if (axi_jesd204_status_read(DEVICE_DT_GET(DT_NODELABEL(rx_jesd)))) {
+		ret = -EIO;
+	}
 	if (ret) {
 		LOG_ERR("=== link is not carrying DATA ===");
 		return ret;

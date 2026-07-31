@@ -1,0 +1,116 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# ADI AXI-JESD204 RX link core (the JESD204B framer's link layer).
+#
+# Property names follow ADI's Linux binding for this IP
+# (Documentation/devicetree/bindings/iio/jesd204/adi,jesd204-rx.txt); the
+# compatible string is the of_match entry in
+# drivers/iio/jesd204/axi_jesd204_rx.c:1355 and the node in ADI's devicetree for
+# this board is zynqmp-zcu102-rev10-ad9081-default.dtsi (axi_ad9081_rx_jesd).
+#
+# Properties ADI's RX binding lists that are NOT here, and why:
+#   adi,high-density -- HD is meaningful on the deframer only: the framer
+#     RECEIVES the ILAS it is described in, it does not announce one. ADI's Linux
+#     RX driver parses the property into config->high_density and then never
+#     reads it again (axi_jesd204_rx.c:598 is the only occurrence), and no-OS's
+#     RX core struct has no HD field at all. So a shared HD would be the wrong
+#     SHAPE, not just a wrong value. See adi,axi-jesd204-tx.yaml, where HD is
+#     derived rather than settable.
+#   adi,sysref-lmfc-offset -- 0 for this board, which is the driver's behaviour
+#     with the property absent. Nothing here programs a non-zero offset.
+#
+# Properties of ADI's Linux node that are NOT ported, and why:
+#   clocks / clock-names (s_axi_aclk, device_clk, lane_clk) -- this port has no
+#     PL clock provider, and unlike the adxcvr nodes this driver never queries a
+#     rate: the link core is told its geometry, not its clock. A phandle nothing
+#     reads would add an init-ordering constraint to document a wiring fact the
+#     comments already state.
+#   #clock-cells / clock-output-names -- the lane clock this core exports in
+#     Linux is consumed through the Common Clock Framework, which this port does
+#     not have; the lane-clock enable is a direct call from the bring-up
+#     sequence instead.
+#   interrupts -- the driver is polled. No ISR is registered, so the PL
+#     interrupt line is left unconnected on the PS GIC.
+#   jesd204-device / #jesd204-cells / jesd204-inputs -- the FSM topology is
+#     still expressed in C (jesd_fsm.c). Moving it to devicetree is PLAN step 7,
+#     and these are the properties it will use.
+
+description: |
+  ADI AXI-JESD204 RX link core: the receive link layer between the GT
+  transceiver and the RX transport core. Handles code-group sync, lane
+  alignment and descrambling, and reports per-lane sync status.
+
+  Configure-only at boot -- the geometry is programmed with the link held
+  disabled, because a JESD204 link only comes alive when the transceiver, both
+  link cores, SYSREF and the converter are activated together.
+
+compatible: "adi,axi-jesd204-rx-1.0"
+
+include: base.yaml
+
+properties:
+  reg:
+    required: true
+    description: |
+      A full 64 KiB page, not ADI's 0x1000. The register block is smaller, but
+      this is what gets device_map()ed and the MMU granularity here is a page.
+
+  label:
+    description: |
+      Deliberately used here, despite the general deprecation. Every log line
+      this driver emits is prefixed with the device name and the boot log is
+      diffed against a reference captured from hardware; "jesd204-rx" keeps
+      those lines byte-identical to what the pre-devicetree code produced,
+      where the node name "axi-jesd204-rx@84a90000" would not.
+
+  adi,octets-per-frame:
+    type: int
+    required: true
+    description: |
+      Octets per frame (F). Programmed into LINK_CONF0 bits [23:16] as F-1, and
+      with K it gives the octets per multiframe the core aligns on.
+
+  adi,frames-per-multiframe:
+    type: int
+    required: true
+    description: |
+      Frames per multiframe (K). K * F octets per multiframe must be a whole
+      multiple of the core's synthesised data-path width; the driver checks it
+      at runtime, because the width is read from the core rather than declared.
+
+  adi,converters-per-device:
+    type: int
+    required: true
+    description: |
+      Converters per device (M). Not an ADI Linux RX property -- there M is
+      only carried on the TX side, which needs it for ILAS. Here the framer
+      reports it in its "configured" log line so the two cores' geometry is
+      visible side by side in the boot log, and it must equal the TX node's M
+      (BUILD_ASSERT) and the transport core's adi,num-channels.
+
+  adi,bits-per-sample:
+    type: int
+    required: true
+    description: |
+      Bits per sample (NP). As with M, not an ADI Linux RX property; carried
+      here for the identity log line and pinned to the TX node's value.
+
+  adi,lanes-per-device:
+    type: int
+    required: true
+    description: |
+      Lanes per link (L). Not an ADI Linux property for this IP: Linux takes the
+      lane count from the core's own SYNTH_NUM_LANES register. This port states
+      it as well, for two reasons -- the driver warns when the synthesised count
+      disagrees with it (which is how a wrong bitstream is caught), and
+      tools/check_profile.py cross-checks it against the bitstream's
+      RX_JESD_L/TX_JESD_L make parameters.
+
+  adi,subclass:
+    type: int
+    default: 1
+    description: |
+      JESD204B subclass. Subclass 1 (the default, and what this board is) means
+      SYSREF is used for deterministic latency, so the driver leaves
+      SYSREF_DISABLE clear and does not enable buffer-early-release -- both of
+      which no-OS only does for subclass 0.

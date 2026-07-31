@@ -319,12 +319,13 @@ static int axi_jesd204_fsm_clks_enable(struct jesd204_dev *jdev,
 		return JESD204_STATE_CHANGE_DONE;
 	}
 
-	ret = axi_jesd204_rx_lane_clk_enable();
+	/* RX before TX, as no-OS's jesd204_clk_enable() does. */
+	ret = axi_jesd204_lane_clk_enable(DEVICE_DT_GET(DT_NODELABEL(rx_jesd)));
 	if (ret) {
 		return ret;
 	}
 
-	ret = axi_jesd204_tx_lane_clk_enable();
+	ret = axi_jesd204_lane_clk_enable(DEVICE_DT_GET(DT_NODELABEL(tx_jesd)));
 	if (ret) {
 		return ret;
 	}
@@ -336,14 +337,17 @@ static int axi_jesd204_fsm_clks_enable(struct jesd204_dev *jdev,
  * The authoritative link check: both FPGA cores reporting DATA.
  *
  * no-OS polls here rather than assuming -- axi_jesd204_rx.c:818-823 retries the
- * status read 20 times at 4 ms. axi_jesd204_status_read() logs and evaluates
- * both ends in one call, so this retries around it on the same budget.
+ * status read 20 times at 4 ms. Both ends have to be in DATA, so this waits on
+ * the pair and then logs each once.
  */
 static int axi_jesd204_fsm_link_running(struct jesd204_dev *jdev,
 					enum jesd204_state_op_reason reason,
 					struct jesd204_link *lnk)
 {
+	const struct device *tx = DEVICE_DT_GET(DT_NODELABEL(tx_jesd));
+	const struct device *rx = DEVICE_DT_GET(DT_NODELABEL(rx_jesd));
 	bool is_data = false;
+	int ret;
 
 	ARG_UNUSED(jdev);
 	ARG_UNUSED(lnk);
@@ -359,11 +363,20 @@ static int axi_jesd204_fsm_link_running(struct jesd204_dev *jdev,
 	 */
 	for (int attempt = 0; attempt < 20 && !is_data; attempt++) {
 		k_msleep(4);
-		is_data = axi_jesd204_link_is_data();
+		is_data = axi_jesd204_link_is_data(tx) &&
+			  axi_jesd204_link_is_data(rx);
 	}
 
-	/* Log both ends' state regardless of outcome, and take its verdict. */
-	if (axi_jesd204_status_read()) {
+	/*
+	 * Log both ends' state regardless of outcome, and take the verdict from
+	 * the pair. Read RX even when TX already failed: which end is not in DATA
+	 * is the first thing a failure diagnosis needs.
+	 */
+	ret = axi_jesd204_status_read(tx);
+	if (axi_jesd204_status_read(rx)) {
+		ret = -EIO;
+	}
+	if (ret) {
 		return -EIO;
 	}
 

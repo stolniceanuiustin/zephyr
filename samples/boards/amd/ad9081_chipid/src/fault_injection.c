@@ -47,6 +47,16 @@ LOG_MODULE_REGISTER(fault_injection, LOG_LEVEL_INF);
 
 #define JESD204_STATE_CHANGE_DONE 1
 
+/*
+ * The link cores are two devices now, and every check here is about the link as
+ * a whole -- so ask both ends. Silent on purpose: these run inside poll loops.
+ */
+static bool fi_both_ends_in_data(void)
+{
+	return axi_jesd204_link_is_data(DEVICE_DT_GET(DT_NODELABEL(tx_jesd))) &&
+	       axi_jesd204_link_is_data(DEVICE_DT_GET(DT_NODELABEL(rx_jesd)));
+}
+
 /* Test bookkeeping: one line per test, and a tally of mismatches. */
 static int fi_failures;
 
@@ -77,7 +87,7 @@ static bool fi_link_recovered(const char *name)
 	 */
 	for (int attempt = 0; attempt < 250; attempt++) {
 		k_msleep(4);
-		if (axi_jesd204_link_is_data()) {
+		if (fi_both_ends_in_data()) {
 			return true;
 		}
 	}
@@ -340,7 +350,8 @@ static void fi_test_topology_ranks(void)
 static void fi_test_lane_desync(void)
 {
 	const char *name = "lane-desync";
-	uint32_t lanes = axi_jesd204_fi_num_lanes();
+	const struct device *rx = DEVICE_DT_GET(DT_NODELABEL(rx_jesd));
+	uint32_t lanes = axi_jesd204_fi_num_lanes(rx);
 	int ret;
 
 	LOG_INF("--- FI 2: RX lane desync -> watchdog restart ---");
@@ -348,7 +359,7 @@ static void fi_test_lane_desync(void)
 	/* What the hardware really reports, for the record. */
 	for (uint32_t lane = 0; lane < lanes; lane++) {
 		LOG_INF("lane %u actual status = 0x%08x", lane,
-			axi_jesd204_fi_lane_status(lane));
+			axi_jesd204_fi_lane_status(rx, lane));
 	}
 
 	/*
@@ -356,9 +367,9 @@ static void fi_test_lane_desync(void)
 	 * 0x32). 0x30 keeps the upper bits plausible while clearing the state
 	 * field -- what a lane that lost alignment would look like.
 	 */
-	axi_jesd204_fi_force_lane_status(0x30);
-	ret = axi_jesd204_rx_watchdog();
-	axi_jesd204_fi_clear_lane_status();
+	axi_jesd204_fi_force_lane_status(rx, 0x30);
+	ret = axi_jesd204_rx_watchdog(rx);
+	axi_jesd204_fi_clear_lane_status(rx);
 
 	if (ret != -EAGAIN) {
 		LOG_ERR("watchdog returned %d, expected -EAGAIN", ret);
@@ -384,7 +395,7 @@ static void fi_test_lane_desync(void)
 	 * regression test for the inverted-polarity bug: that version reported
 	 * every healthy lane as desynced and bounced a working link.
 	 */
-	ret = axi_jesd204_rx_watchdog();
+	ret = axi_jesd204_rx_watchdog(rx);
 	if (ret != 0) {
 		LOG_ERR("watchdog returned %d on a healthy link", ret);
 		fi_fail("watchdog-no-false-positive", "spurious restart");
@@ -417,7 +428,7 @@ static void fi_test_teardown_rebringup(void)
 	 * it stops the deframer.
 	 */
 	k_msleep(20);
-	if (axi_jesd204_link_is_data()) {
+	if (fi_both_ends_in_data()) {
 		fi_fail("teardown-effect",
 			"link still in DATA -- teardown had no effect");
 	} else {

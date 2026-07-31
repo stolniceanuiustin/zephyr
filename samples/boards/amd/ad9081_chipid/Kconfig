@@ -29,6 +29,19 @@ config AD9081_ADXCVR_INIT_PRIORITY
 	  validation rejects a device that initialises before a devicetree
 	  dependency. There is a BUILD_ASSERT in axi_adxcvr.c for it.
 
+config AD9081_JESD204_INIT_PRIORITY
+	int "AXI-JESD204 link-core init priority"
+	default 65
+	help
+	  Initialisation priority of the AXI-JESD204 RX/TX link-core driver,
+	  within POST_KERNEL.
+
+	  Unconstrained in practice, same as the transport cores: the nodes have
+	  no devicetree dependencies (this port does not model the PL lane and
+	  device clocks, so there is no clocks phandle), and init() only marks
+	  the devices ready. The register work is an explicit
+	  axi_jesd204_configure() call from the bring-up sequence.
+
 config AD9081_TPL_INIT_PRIORITY
 	int "AXI-AD9081 transport-core (TPL) init priority"
 	default 65
