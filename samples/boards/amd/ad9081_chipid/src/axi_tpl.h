@@ -11,19 +11,6 @@
 #include <stdint.h>
 
 /*
- * AXI ADC PN sequence codes for the RX TPL core's PN checker (axi_adc_core.h).
- * These must match the polynomial the chip's ADC test mode is emitting.
- */
-enum axi_tpl_pn_sel {
-	AXI_TPL_PN9   = 0,
-	AXI_TPL_PN23A = 1,
-	AXI_TPL_PN7   = 4,
-	AXI_TPL_PN15  = 5,
-	AXI_TPL_PN23  = 6,
-	AXI_TPL_PN31  = 7,
-};
-
-/*
  * Configure the RX (ADC) and TX (DAC) transport cores: pulse core reset, arm the
  * per-converter datapath (RX sample format/enable, TX data-source select) and
  * latch the TX config. Configure-only -- the STATUS/clock verification (which
@@ -61,14 +48,5 @@ int axi_tpl_enable(void);
  */
 int axi_tpl_tx_dds(uint32_t freq_hz, uint32_t sample_rate_hz,
 		   uint32_t scale_micro, bool enable);
-
-/*
- * Run a PN link-integrity test on the receive path. The caller first puts the
- * chip's ADC datapath into the matching PN test mode; this programs each RX TPL
- * converter's PN checker to the same polynomial, clears the sticky status, waits
- * delay_ms and reports per-converter OOS/ERR. Returns 0 if all converters are
- * clean, -EIO if any shows an out-of-sync or bit error. No DMA/analog involved.
- */
-int axi_tpl_adc_pn_mon(uint32_t pn_sel, uint32_t delay_ms);
 
 #endif /* AXI_TPL_H_ */
