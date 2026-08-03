@@ -27,9 +27,12 @@
 #     same link description for the drift to happen between. The chip node
 #     points at the two cores with adi,jesd-tx-link / adi,jesd-rx-link and the
 #     driver reads the geometry from whichever one describes that direction.
-#   jesd204-device / #jesd204-cells / jesd204-inputs -- the FSM topology is
-#     still expressed in C (jesd_fsm.c). Moving it to devicetree is PLAN step 8,
-#     and these are the properties it will use.
+#   jesd204-device / #jesd204-cells / jesd204-inputs -- Linux's generic JESD204
+#     framework binding. Not ported: this board has one converter and two
+#     fixed links, so the full jesd204-cells indirection is unwarranted
+#     generality. adi,jesd204-devices below is the minimal equivalent this
+#     port actually needs -- see it for what devicetree does and does not
+#     control about the FSM topology.
 
 description: |
   ADI AD9081/AD9082 MxFE.
@@ -114,6 +117,26 @@ properties:
     type: int
     required: true
     description: Vendor link-mode index for the framer (10 on this profile).
+
+  adi,jesd204-devices:
+    type: phandles
+    required: true
+    description: |
+      The FPGA-side devices that take part in this chip's JESD204 bring-up:
+      tx_adxcvr, rx_adxcvr, tx_jesd, rx_jesd, in that fixed order (one entry
+      per role -- jesd_fsm.c indexes this array positionally, not by name).
+
+      This says which devices PARTICIPATE. It does not say in what order they
+      are visited within a bring-up phase, or which phases they participate
+      in -- both of those are hardware dependency order (GT reset-release
+      before the converter's JESD PLL check, etc.) and stay fixed in
+      jesd_fsm.c's board_topology_devs[], not devicetree. Removing a role here
+      (or giving its node status = "disabled") removes it from the topology; a
+      board cannot reorder the remaining roles by editing this property.
+
+      No relation to Linux's jesd204-device / #jesd204-cells framework -- see
+      the note above this property block for why that generality is not
+      ported.
 
   # ------------------------------------------------------------- TX (JRX) ---
 

@@ -76,6 +76,14 @@
 				adi,jesd-tx-link = <&tx_jesd>;
 				adi,jesd-rx-link = <&rx_jesd>;
 
+				/*
+				 * FSM topology participants, fixed order
+				 * (tx_adxcvr, rx_adxcvr, tx_jesd, rx_jesd) --
+				 * see adi,jesd204-devices in adi,ad9081.yaml.
+				 */
+				adi,jesd204-devices =
+					<&tx_adxcvr &rx_adxcvr &tx_jesd &rx_jesd>;
+
 				/* Vendor link-mode table indices. */
 				adi,tx-jesd-mode-id = <9>;
 				adi,rx-jesd-mode-id = <10>;
