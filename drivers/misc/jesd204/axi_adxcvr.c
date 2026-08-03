@@ -38,8 +38,8 @@
 #include <zephyr/logging/log.h>
 LOG_MODULE_REGISTER(axi_adxcvr, LOG_LEVEL_INF);
 
-#include "axi_adxcvr.h"
-#include <dt-bindings/jesd204/adxcvr.h>
+#include <zephyr/drivers/jesd204/axi_adxcvr.h>
+#include <zephyr/dt-bindings/jesd204/adxcvr.h>
 #include <zephyr/drivers/clock_control/hmc7044.h>
 #include "xilinx_transceiver.h"
 
@@ -114,7 +114,7 @@ BUILD_ASSERT(IS_ENABLED(CONFIG_KERNEL_DIRECT_MAP),
 /*
  * sys_clk_sel / out_clk_sel values. These come from devicetree now, where they
  * are spelled XCVR_CPLL / XCVR_QPLL / XCVR_PROGDIV_CLK
- * (<dt-bindings/jesd204/adxcvr.h>) -- the same numbers ADI's Linux devicetrees
+ * (<zephyr/dt-bindings/jesd204/adxcvr.h>) -- the same numbers ADI's Linux devicetrees
  * use, which are the IP's REG_CONTROL field encodings. Kept here only for the
  * two places the driver has to reason about the choice rather than write it.
  */

@@ -1,0 +1,46 @@
+# ADI JESD204 AXI IP cores for FPGA fabric
+#
+# These are the FPGA-side halves of a JESD204 link: the transceiver wrapper,
+# the link (framer/deframer) cores and the transport layer. They are ADI's
+# AXI IP, instantiated in the programmable logic, and are independent of
+# which converter sits on the other end of the link.
+#
+# SPDX-License-Identifier: Apache-2.0
+
+menuconfig JESD204_AXI
+	bool "ADI JESD204 AXI IP core drivers"
+	depends on JESD204
+	help
+	  Drivers for ADI's JESD204 AXI IP cores in FPGA fabric.
+
+if JESD204_AXI
+
+config JESD204_AXI_ADXCVR
+	bool "ADI AXI ADXCVR transceiver wrapper"
+	default y
+	depends on DT_HAS_ADI_AXI_ADXCVR_1_0_ENABLED
+	help
+	  ADI's axi_adxcvr wrapper around the FPGA serial transceivers,
+	  including the Xilinx GTH/GTY divider and DRP programming needed to
+	  hit a given lane rate from a given reference clock.
+
+config JESD204_AXI_LINK
+	bool "ADI AXI JESD204 link cores"
+	default y
+	depends on DT_HAS_ADI_AXI_JESD204_RX_1_0_ENABLED || \
+		   DT_HAS_ADI_AXI_JESD204_TX_1_0_ENABLED
+	help
+	  ADI's axi_jesd204_rx / axi_jesd204_tx link-layer cores: code group
+	  synchronisation, ILAS, lane alignment and link status.
+
+config JESD204_AXI_TPL
+	bool "ADI AXI JESD204 transport layer cores"
+	default y
+	depends on DT_HAS_ADI_AXI_AD9081_RX_1_0_ENABLED || \
+		   DT_HAS_ADI_AXI_AD9081_TX_1_0_ENABLED
+	help
+	  ADI's transport-layer cores, which map JESD204 octets onto
+	  converter samples. Downstream of the link: these are not JESD204
+	  bring-up participants.
+
+endif # JESD204_AXI

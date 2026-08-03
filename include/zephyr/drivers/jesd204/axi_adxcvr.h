@@ -8,8 +8,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-#ifndef AXI_ADXCVR_H_
-#define AXI_ADXCVR_H_
+#ifndef ZEPHYR_INCLUDE_DRIVERS_JESD204_AXI_ADXCVR_H_
+#define ZEPHYR_INCLUDE_DRIVERS_JESD204_AXI_ADXCVR_H_
 
 #include <zephyr/device.h>
 
@@ -63,4 +63,4 @@ int axi_adxcvr_fi_restore_refclk(const struct device *dev);
 uint32_t axi_adxcvr_fi_status(const struct device *dev);
 #endif
 
-#endif /* AXI_ADXCVR_H_ */
+#endif /* ZEPHYR_INCLUDE_DRIVERS_JESD204_AXI_ADXCVR_H_ */

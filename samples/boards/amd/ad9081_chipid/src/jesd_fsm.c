@@ -66,8 +66,8 @@
 LOG_MODULE_REGISTER(jesd_fsm, LOG_LEVEL_INF);
 
 #include "ad9081.h"
-#include "axi_adxcvr.h"
-#include "axi_jesd204.h"
+#include <zephyr/drivers/jesd204/axi_adxcvr.h>
+#include <zephyr/drivers/jesd204/axi_jesd204.h>
 #include <zephyr/jesd204/jesd204.h>
 
 /*

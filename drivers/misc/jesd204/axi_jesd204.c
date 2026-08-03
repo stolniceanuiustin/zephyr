@@ -37,8 +37,8 @@
 #include <zephyr/logging/log.h>
 LOG_MODULE_REGISTER(axi_jesd204, LOG_LEVEL_INF);
 
-#include "axi_jesd204.h"
-#include "jesd204_geometry.h"
+#include <zephyr/drivers/jesd204/axi_jesd204.h>
+#include <zephyr/drivers/jesd204/jesd204_geometry.h>
 
 /*
  * Every sys_read32/sys_write32 below uses the physical address straight out of

@@ -39,7 +39,7 @@
 #include <zephyr/logging/log.h>
 LOG_MODULE_REGISTER(axi_tpl, LOG_LEVEL_INF);
 
-#include "axi_tpl.h"
+#include <zephyr/drivers/jesd204/axi_tpl.h>
 
 /*
  * Every sys_read32/sys_write32 below uses the physical address straight out of

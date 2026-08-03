@@ -11,11 +11,7 @@ target_sources(app PRIVATE
   src/main.c
   src/spi_mmio_fixup.c
   src/ad9081.c
-  src/axi_adxcvr.c
-  src/axi_jesd204.c
-  src/axi_tpl.c
   src/jesd_fsm.c
-  src/xilinx_transceiver.c
 )
 
 # Fault-injection tests: the failure/recovery paths a working board never takes.
@@ -28,8 +24,4 @@ target_sources(app PRIVATE
   ${ADI_API_SRCS}
 )
 
-# `include` holds the dt-bindings headers shared between the devicetree
-# preprocessor and the drivers (e.g. dt-bindings/jesd204/adxcvr.h). The
-# devicetree side gets it for free because the application directory is a
-# DTS_ROOT; the C side needs it stated.
-target_include_directories(app PRIVATE src src/adi_api include)
+target_include_directories(app PRIVATE src src/adi_api)

@@ -1,6 +1,6 @@
 #include <zephyr/dt-bindings/gpio/gpio.h>
 #include <zephyr/dt-bindings/interrupt-controller/arm-gic.h>
-#include <dt-bindings/jesd204/adxcvr.h>
+#include <zephyr/dt-bindings/jesd204/adxcvr.h>
 
 /*
  * Everything this sample needs is defined here in the overlay, so no shared

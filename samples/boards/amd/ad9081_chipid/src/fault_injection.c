@@ -39,8 +39,8 @@
 #include <zephyr/logging/log.h>
 LOG_MODULE_REGISTER(fault_injection, LOG_LEVEL_INF);
 
-#include "axi_adxcvr.h"
-#include "axi_jesd204.h"
+#include <zephyr/drivers/jesd204/axi_adxcvr.h>
+#include <zephyr/drivers/jesd204/axi_jesd204.h>
 #include "fault_injection.h"
 #include <zephyr/jesd204/jesd204.h>
 #include "jesd_fsm.h"
