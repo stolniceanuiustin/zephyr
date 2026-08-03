@@ -23,6 +23,8 @@ manifest:
       url-base: https://github.com/zephyrproject-rtos
     - name: babblesim
       url-base: https://github.com/BabbleSim
+    - name: fork
+      url-base: https://github.com/stolniceanuiustin
 
   group-filter: [-babblesim, -optional, -testing]
 
@@ -147,7 +149,9 @@ manifest:
       groups:
         - fs
     - name: hal_adi
-      revision: 35d874ccfb8fb062ca8bdf096764b8d34c6d608e
+      remote: fork
+      repo-path: hal_adi
+      revision: ad9081-upstream
       path: modules/hal/adi
       groups:
         - hal

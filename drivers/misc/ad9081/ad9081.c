@@ -33,7 +33,7 @@
 #include <zephyr/logging/log.h>
 LOG_MODULE_REGISTER(ad9081, LOG_LEVEL_INF);
 
-#include "ad9081.h"
+#include <zephyr/drivers/misc/ad9081/ad9081.h>
 #include "adi_ad9081.h"
 /* hal + bf: the deframer buf-protect op writes one bitfield by name. */
 #include "adi_ad9081_hal.h"

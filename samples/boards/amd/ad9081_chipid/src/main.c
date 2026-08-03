@@ -56,7 +56,7 @@
 #include <zephyr/logging/log.h>
 LOG_MODULE_REGISTER(main, LOG_LEVEL_INF);
 
-#include "ad9081.h"
+#include <zephyr/drivers/misc/ad9081/ad9081.h>
 #include <zephyr/drivers/clock_control/hmc7044.h>
 #include <zephyr/drivers/misc/jesd204/axi_adxcvr.h>
 #include <zephyr/drivers/misc/jesd204/axi_jesd204.h>
