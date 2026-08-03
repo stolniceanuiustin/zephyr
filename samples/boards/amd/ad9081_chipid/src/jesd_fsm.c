@@ -68,7 +68,6 @@ LOG_MODULE_REGISTER(jesd_fsm, LOG_LEVEL_INF);
 #include "ad9081.h"
 #include "axi_adxcvr.h"
 #include "axi_jesd204.h"
-#include "axi_tpl.h"
 #include "jesd204_fsm.h"
 
 /*
@@ -441,55 +440,18 @@ static struct jesd204_dev tx_jesd_jdev = {
 	.priv = (void *)DEVICE_DT_GET(DT_NODELABEL(tx_jesd)),
 };
 
-/* --------------------------------------------------------- TPL datapath --- */
-
 /*
- * TPL verify + DAC re-sync, once both links are running.
+ * The TPL transport cores are deliberately NOT in this topology.
  *
- * A per_device callback so it runs once, not once per link: axi_tpl_enable()
- * takes both cores together and there is nothing per-link about it. Being
- * per_device on a non-top device, it runs before any link's per_link work in
- * LINK_RUNNING -- which would be too early -- so it sits in
- * OPT_POST_RUNNING_STAGE instead, the phase after. no-OS has no TPL device in
- * its topology at all (it calls axi_dac_init()/axi_adc_init() after the FSM
- * returns, app.c:454-455); this is the same "after everything" position
- * expressed inside the walk.
- *
- * Warn but do not fail: the links are up and carrying DATA, which is what
- * LINK_RUNNING decided. A TPL complaint is a datapath problem downstream of the
- * link, and failing the phase would report the wrong thing.
+ * They are downstream of the link: they only sample-map JESD frames onto
+ * converters, and their verify step needs a link that is already running. no-OS
+ * treats them the same way -- axi_dac_init()/axi_adc_init() are called after
+ * jesd204_fsm_start() returns (app.c:454-455), not from a phase. An earlier
+ * version of this file gave them an OPT_POST_RUNNING_STAGE row, which put the
+ * same work inside the walk; the position was right but it made a transport
+ * driver look like a link participant. axi_tpl_enable() is called from main()
+ * after jesd204_bringup(), where no-OS calls it.
  */
-static int axi_tpl_fsm_post_running(struct jesd204_dev *jdev,
-				    enum jesd204_state_op_reason reason)
-{
-	ARG_UNUSED(jdev);
-
-	if (reason != JESD204_STATE_OP_REASON_INIT) {
-		return JESD204_STATE_CHANGE_DONE;
-	}
-
-	if (axi_tpl_enable(DEVICE_DT_GET(DT_NODELABEL(rx_tpl)),
-			   DEVICE_DT_GET(DT_NODELABEL(tx_tpl)))) {
-		LOG_WRN("TPL post-link verify failed (link is up regardless)");
-	}
-
-	return JESD204_STATE_CHANGE_DONE;
-}
-
-static const struct jesd204_dev_data axi_tpl_jesd204_data = {
-	.max_num_links = 2,
-	.state_ops = {
-		[JESD204_OP_OPT_POST_RUNNING_STAGE] = {
-			.per_device = axi_tpl_fsm_post_running,
-			.mode = JESD204_STATE_OP_MODE_PER_DEVICE,
-		},
-	},
-};
-
-static struct jesd204_dev axi_tpl_jdev = {
-	.name = "axi-tpl",
-	.dev_data = &axi_tpl_jesd204_data,
-};
 
 /* ------------------------------------------------------------ topology --- */
 
@@ -551,12 +513,6 @@ static const struct jesd204_topology_dev board_topology_devs[] = {
 		.links_number = 1,
 	},
 	{
-		.jdev = &axi_tpl_jdev,
-		.link_ids = { DEFRAMER_LINK0_TX, FRAMER_LINK0_RX },
-		.is_transmit = { true, false },
-		.links_number = 2,
-	},
-	{
 		.jdev = &ad9081_jdev,
 		.link_ids = { DEFRAMER_LINK0_TX, FRAMER_LINK0_RX },
 		.is_transmit = { true, false },
@@ -610,9 +566,7 @@ static int topology_ready(void)
 	fn(DT_NODELABEL(tx_adxcvr))		\
 	fn(DT_NODELABEL(rx_adxcvr))		\
 	fn(DT_NODELABEL(tx_jesd))		\
-	fn(DT_NODELABEL(rx_jesd))		\
-	fn(DT_NODELABEL(rx_tpl))		\
-	fn(DT_NODELABEL(tx_tpl))
+	fn(DT_NODELABEL(rx_jesd))
 
 #define JESD204_ASSERT_ENABLED(node_id)						\
 	BUILD_ASSERT(DT_NODE_HAS_STATUS_OKAY(node_id),				\

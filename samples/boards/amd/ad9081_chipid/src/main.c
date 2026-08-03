@@ -276,6 +276,22 @@ int main(void)
 	}
 
 	/*
+	 * Verify the transport layer, now that the link underneath it is carrying
+	 * DATA. This is no-OS's axi_dac_init()/axi_adc_init() position: after
+	 * jesd204_fsm_start() returns, not inside a phase (app.c:454-455). The TPL
+	 * cores are downstream of the link -- they only map JESD frames onto
+	 * converters -- so they are not JESD204 topology devices.
+	 *
+	 * Warn but do not fail: the link is up, which is what was being brought up
+	 * here. A TPL complaint is a datapath problem below the link, and returning
+	 * an error would report the link as broken when it is not.
+	 */
+	if (axi_tpl_enable(DEVICE_DT_GET(DT_NODELABEL(rx_tpl)),
+			   DEVICE_DT_GET(DT_NODELABEL(tx_tpl)))) {
+		LOG_WRN("TPL post-link verify failed (link is up regardless)");
+	}
+
+	/*
 	 * Point the DAC converters at the transport core's DDS, which is what the
 	 * no-OS example emits: 3 MHz at 0.05 full scale, upconverted by the chip's
 	 * +2 GHz main NCO. Scope the DAC output to see it.
