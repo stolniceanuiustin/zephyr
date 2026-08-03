@@ -9,9 +9,15 @@
 
 menuconfig JESD204_AXI
 	bool "ADI JESD204 AXI IP core drivers"
-	depends on JESD204
 	help
 	  Drivers for ADI's JESD204 AXI IP cores in FPGA fabric.
+
+	  These drivers configure the cores and expose enable/status calls.
+	  Sequencing the enables across every device on the link is the
+	  caller's job: a JESD204 link only comes up when the converter, the
+	  transceiver and the link cores pass through the same phases
+	  together. See samples/boards/amd/ad9081_chipid for a phase-ordered
+	  bring-up built on these drivers.
 
 if JESD204_AXI
 

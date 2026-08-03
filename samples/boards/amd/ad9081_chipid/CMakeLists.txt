@@ -12,6 +12,7 @@ target_sources(app PRIVATE
   src/spi_mmio_fixup.c
   src/ad9081.c
   src/jesd_fsm.c
+  src/jesd204_fsm.c
 )
 
 # Fault-injection tests: the failure/recovery paths a working board never takes.

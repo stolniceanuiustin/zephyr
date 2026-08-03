@@ -42,7 +42,7 @@ LOG_MODULE_REGISTER(fault_injection, LOG_LEVEL_INF);
 #include <zephyr/drivers/jesd204/axi_adxcvr.h>
 #include <zephyr/drivers/jesd204/axi_jesd204.h>
 #include "fault_injection.h"
-#include <zephyr/jesd204/jesd204.h>
+#include "jesd204_fsm.h"
 #include "jesd_fsm.h"
 
 #define JESD204_STATE_CHANGE_DONE 1
