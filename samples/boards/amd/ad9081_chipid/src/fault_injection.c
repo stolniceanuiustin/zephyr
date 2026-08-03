@@ -180,50 +180,78 @@ static const struct jesd204_dev_data fi_good_data = {
 };
 
 /*
- * Both synthetic devices share JESD204_RANK_TEST. Equal ranks are legal and mean
- * the order between them is not load-bearing, which is true here: neither touches
- * hardware, so what this topology exercises is the walker's failure accounting,
- * not a dependency.
+ * Two links on the synthetic topology, so the walk under test is the same shape
+ * as the board's: the failure accounting has to survive a link loop, and a
+ * per_device callback must not be charged twice for a device serving both links.
  */
+#define FI_LINK_A 90
+#define FI_LINK_B 91
+
 static struct jesd204_dev fi_bad_dev = {
 	.name = "fi-bad",
-	.rank = JESD204_RANK_TEST,
 	.dev_data = &fi_bad_data,
 };
 
 static struct jesd204_dev fi_good_dev = {
 	.name = "fi-good",
-	.rank = JESD204_RANK_TEST,
 	.dev_data = &fi_good_data,
 };
 
-static struct jesd204_topology fi_topology = {
-	.devs = { &fi_good_dev, &fi_bad_dev },
-	.devs_number = 2,
-	.link = { .link_id = 99, .is_transmit = false },
+/*
+ * fi_bad_dev is the top device, so it is visited last -- which also means its
+ * failures are counted after fi_good_dev's clean pass, exercising the order the
+ * board relies on.
+ */
+static const struct jesd204_topology_dev fi_devs[] = {
+	{
+		.jdev = &fi_good_dev,
+		.link_ids = { FI_LINK_A },
+		.links_number = 1,
+	},
+	{
+		.jdev = &fi_bad_dev,
+		.link_ids = { FI_LINK_A, FI_LINK_B },
+		.is_transmit = { true, false },
+		.links_number = 2,
+		.is_top_device = true,
+	},
 };
+
+static struct jesd204_topology fi_topology;
 
 static void fi_test_fsm_accounting(void)
 {
 	const char *name = "fsm-accounting";
 	int failures;
+	int ret;
 
 	LOG_INF("--- FI 1: FSM failure accounting (synthetic topology) ---");
 
+	ret = jesd204_topology_init(&fi_topology, fi_devs, ARRAY_SIZE(fi_devs));
+	if (ret) {
+		LOG_ERR("synthetic topology rejected (%d)", ret);
+		fi_fail(name, "well-formed test topology was refused");
+		return;
+	}
+
 	fi_late_phase_ran = false;
-	failures = jesd204_fsm_start(&fi_topology);
+	failures = jesd204_fsm_start(&fi_topology, JESD204_LINKS_ALL);
 
 	/*
-	 * Three failing callbacks: LINK_INIT per-device, LINK_SETUP per-device,
-	 * LINK_SETUP per-link. The good device contributes none.
+	 * Four failing callbacks over two links:
+	 *   LINK_INIT  per-device  x1  -- once per phase, NOT once per link
+	 *   LINK_SETUP per-device  x1  -- likewise
+	 *   LINK_SETUP per-link    x2  -- once per link
+	 * The good device contributes none. A count of 6 would mean per_device
+	 * fired per link; 3 would mean the second link was skipped.
 	 */
-	if (failures != 3) {
-		LOG_ERR("expected 3 failures, got %d", failures);
+	if (failures != 4) {
+		LOG_ERR("expected 4 failures, got %d", failures);
 		fi_fail(name, "wrong failure count");
 	} else if (!fi_late_phase_ran) {
 		fi_fail(name, "walk aborted early -- LINK_RUNNING never ran");
 	} else {
-		fi_pass(name, "3 failures counted, walk continued to the end");
+		fi_pass(name, "4 failures counted, walk continued to the end");
 	}
 
 	/*
@@ -231,7 +259,7 @@ static void fi_test_fsm_accounting(void)
 	 * clean reverse walk is the expected result. This is the only check that
 	 * the reverse walk runs at all.
 	 */
-	failures = jesd204_fsm_stop(&fi_topology);
+	failures = jesd204_fsm_stop(&fi_topology, JESD204_LINKS_ALL);
 	if (failures != 0) {
 		LOG_ERR("reverse walk reported %d failure(s)", failures);
 		fi_fail("fsm-reverse-walk", "UNINIT should have been clean");
@@ -241,21 +269,19 @@ static void fi_test_fsm_accounting(void)
 }
 
 /*
- * The rank check is itself a failure path, so it gets injected like any other.
- * Two malformed topologies, both of which used to be silently walkable:
+ * Topology validation is itself a failure path, so it gets injected like any
+ * other. Every malformed array here would be silently walkable in no-OS, and the
+ * first is the bug that actually happened in this port: the converter listed
+ * where it did not belong, moving its JESD PLL check ahead of the GT
+ * reset-release. The link still came up, so no boot log could catch it.
  *
- *   - ranks decreasing, which is the bug that actually happened once (the chip
- *     listed ahead of the GT, moving its JESD PLL check before the reset-release)
- *   - a device with no .rank at all, the omission JESD204_RANK_UNSET exists for
- *
- * Both must be refused with -EINVAL before any callback runs. That "before" is
- * the part worth testing: a walk that started and then bailed would leave
- * hardware half-configured, which is exactly what refusing up front avoids. It is
- * checked via fi_late_phase_ran, so these devices register fi_cb_late rather than
- * fi_good_data's fi_cb_ok -- fi_cb_ok sets no flag, which would make the
- * assertion vacuously true whether the walk ran or not.
+ * Each must be refused with -EINVAL, and refused *before* any callback runs --
+ * a walk that started and then bailed would leave hardware half-configured,
+ * which is what refusing up front avoids. jesd204_topology_init() cannot run a
+ * callback at all, so "before" is checked where it can still go wrong: by
+ * confirming a rejected topology is not walkable afterwards.
  */
-static const struct jesd204_dev_data fi_ranked_data = {
+static const struct jesd204_dev_data fi_plain_data = {
 	.state_ops = {
 		[JESD204_OP_LINK_INIT] = {
 			.per_link = fi_cb_late,
@@ -263,85 +289,95 @@ static const struct jesd204_dev_data fi_ranked_data = {
 	},
 };
 
-static struct jesd204_dev fi_ranked_low = {
-	.name = "fi-rank-low",
-	.rank = JESD204_RANK_PHY,
-	.dev_data = &fi_ranked_data,
+static struct jesd204_dev fi_plain_a = {
+	.name = "fi-plain-a",
+	.dev_data = &fi_plain_data,
 };
 
-static struct jesd204_dev fi_ranked_high = {
-	.name = "fi-rank-high",
-	.rank = JESD204_RANK_LINK,
-	.dev_data = &fi_ranked_data,
+static struct jesd204_dev fi_plain_b = {
+	.name = "fi-plain-b",
+	.dev_data = &fi_plain_data,
 };
 
-/* .rank deliberately omitted -- defaults to JESD204_RANK_UNSET (0). */
-static struct jesd204_dev fi_unranked = {
-	.name = "fi-rank-unset",
-	.dev_data = &fi_ranked_data,
+/* No is_top_device at all: nothing declares the link set. */
+static const struct jesd204_topology_dev fi_devs_no_top[] = {
+	{ .jdev = &fi_plain_a, .link_ids = { FI_LINK_A }, .links_number = 1 },
+	{ .jdev = &fi_plain_b, .link_ids = { FI_LINK_A }, .links_number = 1 },
 };
 
-static struct jesd204_topology fi_misordered_topology = {
-	/* LINK before PHY: rank decreases across the array. */
-	.devs = { &fi_ranked_high, &fi_ranked_low },
-	.devs_number = 2,
-	.link = { .link_id = 98, .is_transmit = false },
+/* Two top devices: the visit-last position is ambiguous. */
+static const struct jesd204_topology_dev fi_devs_two_tops[] = {
+	{ .jdev = &fi_plain_a, .link_ids = { FI_LINK_A }, .links_number = 1,
+	  .is_top_device = true },
+	{ .jdev = &fi_plain_b, .link_ids = { FI_LINK_A }, .links_number = 1,
+	  .is_top_device = true },
 };
 
-static struct jesd204_topology fi_unranked_topology = {
-	.devs = { &fi_ranked_low, &fi_unranked },
-	.devs_number = 2,
-	.link = { .link_id = 97, .is_transmit = false },
+/*
+ * A non-top device on a link the top device does not declare. In no-OS this
+ * device is simply never visited -- the link-ID match fails every time
+ * (jesd204-fsm.c:17-18) -- so a typo in a link ID removes a device from the walk
+ * silently. That is the failure mode this check exists for.
+ */
+static const struct jesd204_topology_dev fi_devs_orphan_link[] = {
+	{ .jdev = &fi_plain_a, .link_ids = { FI_LINK_B }, .links_number = 1 },
+	{ .jdev = &fi_plain_b, .link_ids = { FI_LINK_A }, .links_number = 1,
+	  .is_top_device = true },
 };
 
-static void fi_test_topology_ranks(void)
+static void fi_check_refused(const char *name,
+			     const struct jesd204_topology_dev *devs,
+			     unsigned int devs_number)
 {
+	struct jesd204_topology top;
 	int ret;
 
-	LOG_INF("--- FI 1b: topology rank validation ---");
-
-	fi_late_phase_ran = false;
-	ret = jesd204_fsm_start(&fi_misordered_topology);
+	ret = jesd204_topology_init(&top, devs, devs_number);
 	if (ret != -EINVAL) {
-		LOG_ERR("misordered topology returned %d, expected -EINVAL", ret);
-		fi_fail("rank-misordered", "misordering was not refused");
-	} else if (fi_late_phase_ran) {
-		fi_fail("rank-misordered", "refused, but only after walking");
-	} else {
-		fi_pass("rank-misordered", "-EINVAL before any callback ran");
-	}
-
-	fi_late_phase_ran = false;
-	ret = jesd204_fsm_start(&fi_unranked_topology);
-	if (ret != -EINVAL) {
-		LOG_ERR("unranked device returned %d, expected -EINVAL", ret);
-		fi_fail("rank-unset", "missing rank was not refused");
-	} else if (fi_late_phase_ran) {
-		fi_fail("rank-unset", "refused, but only after walking");
-	} else {
-		fi_pass("rank-unset", "-EINVAL before any callback ran");
+		LOG_ERR("%s: topology_init returned %d, expected -EINVAL", name,
+			ret);
+		fi_fail(name, "malformed topology was not refused");
+		return;
 	}
 
 	/*
-	 * The reverse walk validates too, so teardown of a misordered topology is
-	 * refused the same way. Checked because an unwind in the wrong order is as
-	 * damaging as a bring-up in the wrong order.
+	 * A refused topology must also be unwalkable. Without this, a caller that
+	 * ignored the init return value would walk a half-built topology.
 	 */
-	ret = jesd204_fsm_stop(&fi_misordered_topology);
+	fi_late_phase_ran = false;
+	ret = jesd204_fsm_start(&top, JESD204_LINKS_ALL);
 	if (ret != -EINVAL) {
-		LOG_ERR("misordered teardown returned %d, expected -EINVAL", ret);
-		fi_fail("rank-misordered-stop", "teardown did not validate ranks");
+		LOG_ERR("%s: fsm_start on refused topology returned %d", name,
+			ret);
+		fi_fail(name, "refused topology was still walkable");
+	} else if (fi_late_phase_ran) {
+		fi_fail(name, "refused, but a callback ran anyway");
 	} else {
-		fi_pass("rank-misordered-stop", "teardown refused with -EINVAL");
+		fi_pass(name, "-EINVAL, and not walkable");
 	}
+}
 
-	/* The real topology must of course still pass. */
+static void fi_test_topology_validation(void)
+{
+	int ret;
+
+	LOG_INF("--- FI 1b: topology validation ---");
+
+	fi_check_refused("topology-no-top", fi_devs_no_top,
+			 ARRAY_SIZE(fi_devs_no_top));
+	fi_check_refused("topology-two-tops", fi_devs_two_tops,
+			 ARRAY_SIZE(fi_devs_two_tops));
+	fi_check_refused("topology-orphan-link", fi_devs_orphan_link,
+			 ARRAY_SIZE(fi_devs_orphan_link));
+
+	/* The real board topology must of course still pass. */
 	ret = jesd204_bringup_topology_is_valid();
 	if (ret < 0) {
 		LOG_ERR("real topology rejected (%d)", ret);
-		fi_fail("rank-real-topology", "the working topology failed the check");
+		fi_fail("topology-real-board",
+			"the working topology failed the check");
 	} else {
-		fi_pass("rank-real-topology", "board topology ranks ascend");
+		fi_pass("topology-real-board", "board topology is well-formed");
 	}
 }
 
@@ -513,7 +549,7 @@ int jesd204_fault_injection_run(void)
 	 * rather than to whatever ran before.
 	 */
 	fi_test_fsm_accounting();
-	fi_test_topology_ranks();
+	fi_test_topology_validation();
 	fi_test_lane_desync();
 	fi_test_teardown_rebringup();
 	fi_test_gt_refclk_lost();
