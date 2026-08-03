@@ -30,7 +30,7 @@
 #include <zephyr/logging/log.h>
 LOG_MODULE_REGISTER(jesd204_fsm, LOG_LEVEL_INF);
 
-#include "jesd204_fsm.h"
+#include <zephyr/jesd204/jesd204.h>
 
 /* Phase names, indexed by enum jesd204_dev_op, for the per-phase log line. */
 static const char *const op_names[__JESD204_MAX_OPS] = {

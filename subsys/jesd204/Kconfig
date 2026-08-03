@@ -1,0 +1,17 @@
+# JESD204 link bring-up framework
+#
+# SPDX-License-Identifier: Apache-2.0
+
+config JESD204
+	bool "JESD204 link bring-up state machine"
+	help
+	  Phase-ordered bring-up for JESD204 links, as in the Linux and
+	  ADI no-OS jesd204 frameworks. A JESD204 link only comes up when
+	  every participating device -- clock generator, converter, FPGA
+	  transceiver and FPGA link cores -- passes through the same phases
+	  together. Each device registers a table of callbacks indexed by
+	  phase, and the framework walks the phases in order rather than the
+	  ordering being hand-written per board.
+
+	  Enable this if a board brings up a JESD204 link. Say n if the
+	  converters in use stream over something else.

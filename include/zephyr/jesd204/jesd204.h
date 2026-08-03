@@ -53,8 +53,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-#ifndef JESD204_FSM_H_
-#define JESD204_FSM_H_
+#ifndef ZEPHYR_INCLUDE_JESD204_JESD204_H_
+#define ZEPHYR_INCLUDE_JESD204_JESD204_H_
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -322,4 +322,4 @@ int jesd204_fsm_stop(struct jesd204_topology *topology, unsigned int link_idx);
  */
 int jesd204_sysref_async(struct jesd204_topology *topology);
 
-#endif /* JESD204_FSM_H_ */
+#endif /* ZEPHYR_INCLUDE_JESD204_JESD204_H_ */

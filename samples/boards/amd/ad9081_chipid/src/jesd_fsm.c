@@ -68,7 +68,7 @@ LOG_MODULE_REGISTER(jesd_fsm, LOG_LEVEL_INF);
 #include "ad9081.h"
 #include "axi_adxcvr.h"
 #include "axi_jesd204.h"
-#include "jesd204_fsm.h"
+#include <zephyr/jesd204/jesd204.h>
 
 /*
  * Link IDs, from no-OS drivers/adc/ad9081/ad9081.h:239-241. The values matter
