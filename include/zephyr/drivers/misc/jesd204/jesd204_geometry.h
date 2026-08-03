@@ -10,8 +10,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-#ifndef ZEPHYR_INCLUDE_DRIVERS_JESD204_JESD204_GEOMETRY_H_
-#define ZEPHYR_INCLUDE_DRIVERS_JESD204_JESD204_GEOMETRY_H_
+#ifndef ZEPHYR_INCLUDE_DRIVERS_MISC_JESD204_JESD204_GEOMETRY_H_
+#define ZEPHYR_INCLUDE_DRIVERS_MISC_JESD204_JESD204_GEOMETRY_H_
 
 /*
  * Not devicetree properties, because they are not configuration of this board:
@@ -47,4 +47,4 @@
  */
 #define JESD204_DERIVE_HD(m, s, np, l) ((((m) * (s) * (np) / (l)) % (np)) != 0)
 
-#endif /* ZEPHYR_INCLUDE_DRIVERS_JESD204_JESD204_GEOMETRY_H_ */
+#endif /* ZEPHYR_INCLUDE_DRIVERS_MISC_JESD204_JESD204_GEOMETRY_H_ */

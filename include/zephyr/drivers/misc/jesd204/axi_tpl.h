@@ -7,8 +7,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-#ifndef ZEPHYR_INCLUDE_DRIVERS_JESD204_AXI_TPL_H_
-#define ZEPHYR_INCLUDE_DRIVERS_JESD204_AXI_TPL_H_
+#ifndef ZEPHYR_INCLUDE_DRIVERS_MISC_JESD204_AXI_TPL_H_
+#define ZEPHYR_INCLUDE_DRIVERS_MISC_JESD204_AXI_TPL_H_
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -58,4 +58,4 @@ int axi_tpl_enable(const struct device *rx, const struct device *tx);
 int axi_tpl_tx_dds(const struct device *dev, uint32_t freq_hz,
 		   uint32_t sample_rate_hz, uint32_t scale_micro, bool enable);
 
-#endif /* ZEPHYR_INCLUDE_DRIVERS_JESD204_AXI_TPL_H_ */
+#endif /* ZEPHYR_INCLUDE_DRIVERS_MISC_JESD204_AXI_TPL_H_ */

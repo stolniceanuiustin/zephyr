@@ -38,7 +38,7 @@
 #include <zephyr/logging/log.h>
 LOG_MODULE_REGISTER(axi_adxcvr, LOG_LEVEL_INF);
 
-#include <zephyr/drivers/jesd204/axi_adxcvr.h>
+#include <zephyr/drivers/misc/jesd204/axi_adxcvr.h>
 #include <zephyr/dt-bindings/jesd204/adxcvr.h>
 #include <zephyr/drivers/clock_control/hmc7044.h>
 #include "xilinx_transceiver.h"

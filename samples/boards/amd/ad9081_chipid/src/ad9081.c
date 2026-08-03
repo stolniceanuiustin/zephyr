@@ -38,7 +38,7 @@ LOG_MODULE_REGISTER(ad9081, LOG_LEVEL_INF);
 /* hal + bf: the deframer buf-protect op writes one bitfield by name. */
 #include "adi_ad9081_hal.h"
 #include "adi_ad9081_bf_ad9081.h"
-#include <zephyr/drivers/jesd204/jesd204_geometry.h>
+#include <zephyr/drivers/misc/jesd204/jesd204_geometry.h>
 
 /*
  * The SPI register page is mapped 1:1 by spi_mmio_fixup.c at PRE_KERNEL_1,

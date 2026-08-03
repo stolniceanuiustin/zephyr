@@ -58,9 +58,9 @@ LOG_MODULE_REGISTER(main, LOG_LEVEL_INF);
 
 #include "ad9081.h"
 #include <zephyr/drivers/clock_control/hmc7044.h>
-#include <zephyr/drivers/jesd204/axi_adxcvr.h>
-#include <zephyr/drivers/jesd204/axi_jesd204.h>
-#include <zephyr/drivers/jesd204/axi_tpl.h>
+#include <zephyr/drivers/misc/jesd204/axi_adxcvr.h>
+#include <zephyr/drivers/misc/jesd204/axi_jesd204.h>
+#include <zephyr/drivers/misc/jesd204/axi_tpl.h>
 #include "jesd_fsm.h"
 
 #ifdef CONFIG_AD9081_FAULT_INJECTION

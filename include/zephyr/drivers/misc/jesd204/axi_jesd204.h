@@ -7,8 +7,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-#ifndef ZEPHYR_INCLUDE_DRIVERS_JESD204_AXI_JESD204_H_
-#define ZEPHYR_INCLUDE_DRIVERS_JESD204_AXI_JESD204_H_
+#ifndef ZEPHYR_INCLUDE_DRIVERS_MISC_JESD204_AXI_JESD204_H_
+#define ZEPHYR_INCLUDE_DRIVERS_MISC_JESD204_AXI_JESD204_H_
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -110,4 +110,4 @@ uint32_t axi_jesd204_fi_lane_status(const struct device *dev, uint32_t lane);
 uint32_t axi_jesd204_fi_num_lanes(const struct device *dev);
 #endif
 
-#endif /* ZEPHYR_INCLUDE_DRIVERS_JESD204_AXI_JESD204_H_ */
+#endif /* ZEPHYR_INCLUDE_DRIVERS_MISC_JESD204_AXI_JESD204_H_ */
