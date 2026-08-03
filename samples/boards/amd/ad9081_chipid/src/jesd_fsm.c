@@ -80,6 +80,24 @@ LOG_MODULE_REGISTER(jesd_fsm, LOG_LEVEL_INF);
 #define FRAMER_LINK0_RX   2
 
 /*
+ * FSM topology participants, from the ad9081 node's adi,jesd204-devices
+ * (adi,ad9081.yaml). Fixed roles, addressed by array index -- devicetree
+ * says which devices are present, not what order they run in or which
+ * phases they take part in; that is hardware dependency order and stays
+ * fixed in board_topology_devs[] below.
+ */
+#define AD9081_NODE DT_NODELABEL(ad9081)
+
+BUILD_ASSERT(DT_PROP_LEN(AD9081_NODE, adi_jesd204_devices) == 4,
+	     "adi,jesd204-devices must list exactly tx_adxcvr, rx_adxcvr, "
+	     "tx_jesd, rx_jesd, in that order");
+
+#define JESD204_DEV_TX_ADXCVR DT_PHANDLE_BY_IDX(AD9081_NODE, adi_jesd204_devices, 0)
+#define JESD204_DEV_RX_ADXCVR DT_PHANDLE_BY_IDX(AD9081_NODE, adi_jesd204_devices, 1)
+#define JESD204_DEV_TX_JESD   DT_PHANDLE_BY_IDX(AD9081_NODE, adi_jesd204_devices, 2)
+#define JESD204_DEV_RX_JESD   DT_PHANDLE_BY_IDX(AD9081_NODE, adi_jesd204_devices, 3)
+
+/*
  * Every callback returns JESD204_STATE_CHANGE_DONE on success and a negative
  * errno on failure, as in no-OS. On UNINIT most of them have nothing to undo:
  * the phase is a no-op on the way down and says so by returning DONE.
@@ -353,13 +371,13 @@ static const struct jesd204_dev_data adxcvr_jesd204_data = {
 static struct jesd204_dev tx_adxcvr_jdev = {
 	.name = "tx_adxcvr",
 	.dev_data = &adxcvr_jesd204_data,
-	.priv = (void *)DEVICE_DT_GET(DT_NODELABEL(tx_adxcvr)),
+	.priv = (void *)DEVICE_DT_GET(JESD204_DEV_TX_ADXCVR),
 };
 
 static struct jesd204_dev rx_adxcvr_jdev = {
 	.name = "rx_adxcvr",
 	.dev_data = &adxcvr_jesd204_data,
-	.priv = (void *)DEVICE_DT_GET(DT_NODELABEL(rx_adxcvr)),
+	.priv = (void *)DEVICE_DT_GET(JESD204_DEV_RX_ADXCVR),
 };
 
 /* ---------------------------------------------------- FPGA JESD204 cores --- */
@@ -431,13 +449,13 @@ static const struct jesd204_dev_data axi_jesd204_jesd204_data = {
 static struct jesd204_dev rx_jesd_jdev = {
 	.name = "rx_jesd",
 	.dev_data = &axi_jesd204_jesd204_data,
-	.priv = (void *)DEVICE_DT_GET(DT_NODELABEL(rx_jesd)),
+	.priv = (void *)DEVICE_DT_GET(JESD204_DEV_RX_JESD),
 };
 
 static struct jesd204_dev tx_jesd_jdev = {
 	.name = "tx_jesd",
 	.dev_data = &axi_jesd204_jesd204_data,
-	.priv = (void *)DEVICE_DT_GET(DT_NODELABEL(tx_jesd)),
+	.priv = (void *)DEVICE_DT_GET(JESD204_DEV_TX_JESD),
 };
 
 /*
@@ -563,10 +581,10 @@ static int topology_ready(void)
  */
 #define JESD204_PARTICIPANTS(fn)		\
 	fn(DT_NODELABEL(ad9081))		\
-	fn(DT_NODELABEL(tx_adxcvr))		\
-	fn(DT_NODELABEL(rx_adxcvr))		\
-	fn(DT_NODELABEL(tx_jesd))		\
-	fn(DT_NODELABEL(rx_jesd))
+	fn(JESD204_DEV_TX_ADXCVR)		\
+	fn(JESD204_DEV_RX_ADXCVR)		\
+	fn(JESD204_DEV_TX_JESD)		\
+	fn(JESD204_DEV_RX_JESD)
 
 #define JESD204_ASSERT_ENABLED(node_id)						\
 	BUILD_ASSERT(DT_NODE_HAS_STATUS_OKAY(node_id),				\
