@@ -16,7 +16,7 @@ menuconfig JESD204_AXI
 	  Sequencing the enables across every device on the link is the
 	  caller's job: a JESD204 link only comes up when the converter, the
 	  transceiver and the link cores pass through the same phases
-	  together. See samples/boards/amd/ad9081_chipid for a phase-ordered
+	  together. See samples/drivers/misc/ad9081 for a phase-ordered
 	  bring-up built on these drivers.
 
 if JESD204_AXI
@@ -30,6 +30,18 @@ config JESD204_AXI_ADXCVR
 	  including the Xilinx GTH/GTY divider and DRP programming needed to
 	  hit a given lane rate from a given reference clock.
 
+config AD9081_ADXCVR_INIT_PRIORITY
+	int "AXI-ADXCVR (GT transceiver) init priority"
+	depends on JESD204_AXI_ADXCVR
+	default 65
+	help
+	  Initialisation priority of the AXI-ADXCVR driver, within POST_KERNEL.
+
+	  Must be above CONFIG_CLOCK_CONTROL_HMC7044_INIT_PRIORITY: the adxcvr
+	  nodes take `clocks = <&hmc7044 12>`, and Zephyr's init-priority
+	  validation rejects a device that initialises before a devicetree
+	  dependency. There is a BUILD_ASSERT in axi_adxcvr.c for it.
+
 config JESD204_AXI_LINK
 	bool "ADI AXI JESD204 link cores"
 	default y
@@ -38,6 +50,20 @@ config JESD204_AXI_LINK
 	help
 	  ADI's axi_jesd204_rx / axi_jesd204_tx link-layer cores: code group
 	  synchronisation, ILAS, lane alignment and link status.
+
+config AD9081_JESD204_INIT_PRIORITY
+	int "AXI-JESD204 link-core init priority"
+	depends on JESD204_AXI_LINK
+	default 65
+	help
+	  Initialisation priority of the AXI-JESD204 RX/TX link-core driver,
+	  within POST_KERNEL.
+
+	  Unconstrained in practice, same as the transport cores: the nodes have
+	  no devicetree dependencies (this port does not model the PL lane and
+	  device clocks, so there is no clocks phandle), and init() only marks
+	  the devices ready. The register work is an explicit
+	  axi_jesd204_configure() call from the bring-up sequence.
 
 config JESD204_AXI_TPL
 	bool "ADI AXI JESD204 transport layer cores"
@@ -48,5 +74,19 @@ config JESD204_AXI_TPL
 	  ADI's transport-layer cores, which map JESD204 octets onto
 	  converter samples. Downstream of the link: these are not JESD204
 	  bring-up participants.
+
+config AD9081_TPL_INIT_PRIORITY
+	int "AXI-AD9081 transport-core (TPL) init priority"
+	depends on JESD204_AXI_TPL
+	default 65
+	help
+	  Initialisation priority of the AXI-AD9081 RX/TX transport-core driver,
+	  within POST_KERNEL.
+
+	  Unconstrained in practice: the nodes have no devicetree dependencies
+	  (the transport cores run off the sample clock inside the PL, so there
+	  is no clocks phandle), and init() only marks the devices ready. The
+	  register work is an explicit axi_tpl_configure() call from the
+	  bring-up sequence.
 
 endif # JESD204_AXI
