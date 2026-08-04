@@ -63,7 +63,7 @@ LOG_MODULE_REGISTER(main, LOG_LEVEL_INF);
 #include <zephyr/drivers/misc/jesd204/axi_adxcvr.h>
 #include <zephyr/drivers/misc/jesd204/axi_jesd204.h>
 #include <zephyr/drivers/misc/jesd204/axi_tpl.h>
-#include "jesd_fsm.h"
+#include "ad9081_bringup.h"
 
 /*
  * DAC output tone, matching no-OS axi_dac_data_setup()'s defaults:

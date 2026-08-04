@@ -5,8 +5,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-#ifndef JESD_FSM_H_
-#define JESD_FSM_H_
+#ifndef AD9081_BRINGUP_H_
+#define AD9081_BRINGUP_H_
 
 /*
  * Run the JESD204B bring-up sequence to completion. Assumes every block has
@@ -16,8 +16,8 @@
  * link status on both ends. Returns 0 if the link reaches running state,
  * negative errno otherwise.
  *
- * The phase order is table-driven; see the state_ops tables in jesd_fsm.c and
- * the framework in jesd204_fsm.c.
+ * The phase order is table-driven; see the state_ops tables in
+ * ad9081_bringup.c and the generic phase walker in jesd204_fsm.c.
  */
 int jesd204_bringup(void);
 
@@ -45,4 +45,4 @@ int jesd204_bringup(void);
  */
 int jesd204_teardown(void);
 
-#endif /* JESD_FSM_H_ */
+#endif /* AD9081_BRINGUP_H_ */

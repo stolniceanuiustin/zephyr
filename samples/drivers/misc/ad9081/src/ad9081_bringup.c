@@ -1,6 +1,11 @@
 /*
  * JESD204B bring-up -- this board's device state tables and topology.
  *
+ * The other half of the bring-up is jesd204_fsm.c, which is the generic phase
+ * walker: it knows about phases, links and visit order and nothing about any
+ * converter, transceiver or FPGA core. Everything board- and chip-specific is
+ * here. The walker calls back into this file, never the reverse.
+ *
  * Every block (adxcvr, jesd204 link cores, TPL, AD9082 datapath) is *configured*
  * separately at boot, each holding its link/reset dark. A JESD204 link only
  * comes alive when the FPGA transceiver, the FPGA link cores and the AD9082's
@@ -63,6 +68,12 @@
 #include <zephyr/kernel.h>
 
 #include <zephyr/logging/log.h>
+/*
+ * Module name deliberately unchanged after this file was renamed from
+ * jesd_fsm.c: it prefixes every line this file logs, and boot_log.golden was
+ * captured with it. Renaming it would make a pure file rename produce a
+ * different boot log.
+ */
 LOG_MODULE_REGISTER(jesd_fsm, LOG_LEVEL_INF);
 
 #include <zephyr/drivers/misc/ad9081/ad9081.h>
