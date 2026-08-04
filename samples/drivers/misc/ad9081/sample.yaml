@@ -6,7 +6,7 @@ sample:
     clocking, CS, framing): HMC7044 scratchpad check on SPI1 and AD9081
     PROD_ID (0x9081/0x9082) on SPI0. Grows toward the full JESD204B link.
 tests:
-  sample.boards.amd.ad9081_chipid:
+  sample.drivers.misc.ad9081:
     platform_allow:
       - zynqmp_apu
     tags: spi
