@@ -1,0 +1,14 @@
+common:
+  build_only: true
+  tags:
+    - drivers
+    - jesd204
+tests:
+  drivers.jesd204.build:
+    # zynqmp_apu specifically, not a generic platform: the link-core and
+    # transport drivers BUILD_ASSERT on CONFIG_KERNEL_DIRECT_MAP, which only
+    # arm64 MMU targets provide, and the AD9081 vendor API needs a 64-bit
+    # target. This covers the AXI cores in the PL (adxcvr, JESD204 rx/tx link,
+    # AD9081 rx/tx transport), the HMC7044 clock generator and the AD9081 MxFE.
+    platform_allow:
+      - zynqmp_apu

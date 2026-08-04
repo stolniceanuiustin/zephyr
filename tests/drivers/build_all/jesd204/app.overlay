@@ -1,0 +1,302 @@
+/*
+ * Copyright (c) 2026 Analog Devices, Inc.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Application overlay for testing the ADI JESD204 driver builds: the AXI IP
+ * cores in FPGA fabric (adxcvr, JESD204 rx/tx link, AD9081 rx/tx transport),
+ * the HMC7044 clock generator and the AD9081/AD9082 MxFE.
+ *
+ * Unlike most build_all overlays this cannot use vnd,* placeholder buses or
+ * arbitrary node names:
+ *
+ *   - The link and transport drivers cross-check the two ends of one link
+ *     against each other with BUILD_ASSERTs that name DT_NODELABEL(rx_jesd),
+ *     tx_jesd and rx_tpl directly, so those three labels are load-bearing.
+ *   - The geometry values must be internally consistent (M8 L4 F4 K32 N16 NP16
+ *     S1 CS0, subclass 1) or those asserts fail the build. They are the
+ *     zcu102_ad9081_m8_l4 profile's, same as the sample's.
+ *   - The addresses are the real ones from that board's bitstream. Nothing is
+ *     accessed in a build-only test, but device_map() of each page is what
+ *     CONFIG_MAX_XLAT_TABLES is sized for.
+ */
+
+#include <zephyr/dt-bindings/gpio/gpio.h>
+#include <zephyr/dt-bindings/interrupt-controller/arm-gic.h>
+#include <zephyr/dt-bindings/jesd204/adxcvr.h>
+
+/ {
+	soc {
+		test_spi0: spi@ff040000 {
+			compatible = "cdns,spi";
+			reg = <0x0 0xff040000 0x0 0x1000>;
+			status = "okay";
+			interrupts = <GIC_SPI 19 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+			fifo-width = <8>;
+			rx-fifo-depth = <128>;
+			tx-fifo-depth = <128>;
+			clock-frequency = <100000000>;
+
+			/*
+			 * AD9082 MxFE. Rates in kHz (the DAC runs at 12 GHz and
+			 * a DT int is one 32-bit cell); NCO shifts in Hz.
+			 *
+			 * 6 * 8 = 48x interpolation and 4 * 4 = 16x decimation
+			 * both land on the link's 250 MSPS: 12 GHz / 48 and
+			 * 4 GHz / 16. There is a BUILD_ASSERT tying
+			 * adi,ref-clk-frequency-khz to the HMC7044 output that
+			 * feeds it, which is why the clock node below is not
+			 * optional here.
+			 */
+			test_ad9081: ad9081@0 {
+				compatible = "adi,ad9081";
+				reg = <0>;
+				spi-max-frequency = <10000000>;
+				reset-gpios = <&test_psgpio_bank4 23 GPIO_ACTIVE_LOW>;
+
+				adi,dac-frequency-khz = <12000000>;
+				adi,adc-frequency-khz = <4000000>;
+				adi,ref-clk-frequency-khz = <250000>;
+
+				adi,jesd-tx-link = <&tx_jesd>;
+				adi,jesd-rx-link = <&rx_jesd>;
+
+				adi,jesd204-devices =
+					<&test_tx_adxcvr &test_rx_adxcvr
+					 &tx_jesd &rx_jesd>;
+
+				adi,tx-jesd-mode-id = <9>;
+				adi,rx-jesd-mode-id = <10>;
+
+				adi,tx-main-interpolation = <6>;
+				adi,tx-channel-interpolation = <8>;
+				adi,tx-dac-channel-crossbar = <0x1 0x2 0x4 0x8>;
+				adi,tx-main-nco-shift-hz =
+					<2000000000 2000000000
+					 2000000000 2000000000>;
+				adi,tx-channel-nco-shift-hz = <0 0 0 0 0 0 0 0>;
+				/* 1024 = unity in the vendor API's 1.10 format. */
+				adi,tx-channel-gains =
+					<1024 1024 1024 1024 0 0 0 0>;
+				/* Board SERDES wiring; 7 = unconnected. */
+				adi,tx-logical-lane-mapping = <0 2 7 7 1 7 7 3>;
+
+				adi,rx-coarse-ddc-select = <0xf>;
+				adi,rx-fine-ddc-select = <0x33>;
+				adi,rx-coarse-decimation = <4 4 4 4>;
+				/* 0 marks a fine DDC the select mask disables. */
+				adi,rx-fine-decimation = <4 4 0 0 4 4 0 0>;
+				adi,rx-coarse-nco-shift-hz =
+					<2000000000 2000000000
+					 2000000000 2000000000>;
+				adi,rx-fine-nco-shift-hz = <0 0 0 0 0 0 0 0>;
+				adi,rx-logical-lane-mapping = <2 0 7 7 7 7 3 1>;
+				/* Only the first M (8) entries are meaningful. */
+				adi,rx-link-converter-select =
+					<0 1 2 3 8 9 10 11
+					 0 0 0 0 0 0 0 0>;
+			};
+		};
+
+		test_spi1: spi@ff050000 {
+			compatible = "cdns,spi";
+			reg = <0x0 0xff050000 0x0 0x1000>;
+			status = "okay";
+			interrupts = <GIC_SPI 20 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+			fifo-width = <8>;
+			rx-fifo-depth = <128>;
+			tx-fifo-depth = <128>;
+			clock-frequency = <100000000>;
+
+			/*
+			 * HMC7044. PLL2 is 3 GHz, so output divider N gives
+			 * 3000/N MHz -- out2 = 250 MHz is the AD9081's device
+			 * REFCLK and out12 = 500 MHz is the GT reference the
+			 * two adxcvr nodes take a phandle to.
+			 */
+			hmc7044: hmc7044@0 {
+				compatible = "adi,hmc7044";
+				reg = <0>;
+				spi-max-frequency = <10000000>;
+
+				#clock-cells = <1>;
+				#address-cells = <1>;
+				#size-cells = <0>;
+
+				adi,pll1-clkin-frequencies =
+					<100000000 10000000 0 0>;
+				adi,vcxo-frequency = <100000000>;
+				adi,pll2-output-frequency = <3000000000>;
+
+				adi,pll1-loop-bandwidth-hz = <200>;
+				adi,pll1-ref-prio-ctrl = <0xe4>;
+				adi,sysref-timer-divider = <1024>;
+				adi,pulse-generator-mode = <0>;
+				adi,sync-pin-mode = <1>;
+
+				adi,clkin0-buffer-mode = <0x07>;
+				adi,clkin1-buffer-mode = <0x07>;
+				adi,clkin2-buffer-mode = <0x00>;
+				adi,clkin3-buffer-mode = <0x00>;
+				adi,oscin-buffer-mode = <0x15>;
+
+				adi,gpi-controls = <0x00 0x00 0x00 0x00>;
+				adi,gpo-controls = <0x37 0x33 0x00 0x00>;
+
+				hmc7044_c2: channel@2 {
+					reg = <2>;
+					adi,extended-name = "DEV_REFCLK";
+					adi,divider = <12>;    /* 250 MHz */
+					adi,driver-mode = <2>; /* LVDS */
+				};
+
+				channel@3 {
+					reg = <3>;
+					adi,extended-name = "DEV_SYSREF";
+					adi,divider = <1536>;  /* 1.953 MHz */
+					adi,driver-mode = <2>;
+					adi,jesd204-sysref-chan;
+				};
+
+				channel@c {
+					reg = <12>;
+					adi,extended-name = "FPGA_REFCLK";
+					adi,divider = <6>;     /* 500 MHz */
+					adi,driver-mode = <2>;
+				};
+
+				channel@d {
+					reg = <13>;
+					adi,extended-name = "FPGA_SYSREF";
+					adi,divider = <1536>;  /* 1.953 MHz */
+					adi,driver-mode = <2>;
+					adi,jesd204-sysref-chan;
+				};
+			};
+		};
+
+		/*
+		 * GT transceivers, one per direction. reg covers a full 64 KiB
+		 * page rather than the core's smaller register block, because a
+		 * page is what device_map() works in.
+		 *
+		 * TX takes QPLL0 and RX takes CPLL, as on the reference board --
+		 * both mux selections are exercised this way, and the driver
+		 * BUILD_ASSERTs that adi,out-clk-select is not the divided
+		 * refclk on either.
+		 */
+		test_tx_adxcvr: adxcvr@84b60000 {
+			compatible = "adi,axi-adxcvr-1.0";
+			reg = <0x0 0x84b60000 0x0 0x10000>;
+			status = "okay";
+			clocks = <&hmc7044 12>;
+
+			adi,sys-clk-select = <XCVR_QPLL>;
+			adi,out-clk-select = <XCVR_PROGDIV_CLK>;
+			adi,lane-rate-khz = <10000000>;
+		};
+
+		test_rx_adxcvr: adxcvr@84a60000 {
+			compatible = "adi,axi-adxcvr-1.0";
+			reg = <0x0 0x84a60000 0x0 0x10000>;
+			status = "okay";
+			clocks = <&hmc7044 12>;
+
+			adi,sys-clk-select = <XCVR_CPLL>;
+			adi,out-clk-select = <XCVR_PROGDIV_CLK>;
+			adi,lane-rate-khz = <10000000>;
+
+			/* LPM equalisation rather than DFE -- RX only. */
+			adi,use-lpm-enable;
+		};
+
+		/*
+		 * JESD204 link cores. The node labels rx_jesd / tx_jesd are
+		 * required verbatim: axi_jesd204.c BUILD_ASSERTs the shared
+		 * geometry by naming them, and derives HD from M/L/S/NP/F rather
+		 * than reading a property, so the two sets below have to agree.
+		 */
+		rx_jesd: axi-jesd204-rx@84a90000 {
+			compatible = "adi,axi-jesd204-rx-1.0";
+			reg = <0x0 0x84a90000 0x0 0x10000>;
+			status = "okay";
+
+			adi,lanes-per-device = <4>;
+			adi,converters-per-device = <8>;
+			adi,octets-per-frame = <4>;
+			adi,frames-per-multiframe = <32>;
+			adi,bits-per-sample = <16>;
+			adi,subclass = <1>;
+		};
+
+		tx_jesd: axi-jesd204-tx@84b90000 {
+			compatible = "adi,axi-jesd204-tx-1.0";
+			reg = <0x0 0x84b90000 0x0 0x10000>;
+			status = "okay";
+
+			adi,lanes-per-device = <4>;
+			adi,converters-per-device = <8>;
+			adi,octets-per-frame = <4>;
+			adi,frames-per-multiframe = <32>;
+			adi,bits-per-sample = <16>;
+			adi,subclass = <1>;
+
+			/*
+			 * ILAS-only, so the deframer carries these and the
+			 * framer has no register for them.
+			 */
+			adi,converter-resolution = <16>;
+			adi,control-bits-per-sample = <0>;
+			adi,samples-per-converter-per-frame = <1>;
+		};
+
+		/*
+		 * Transport cores. rx_tpl is another label named directly by a
+		 * BUILD_ASSERT, which ties adi,num-channels to the link's M.
+		 */
+		rx_tpl: axi-ad9081-rx@84a10000 {
+			compatible = "adi,axi-ad9081-rx-1.0";
+			reg = <0x0 0x84a10000 0x0 0x10000>;
+			status = "okay";
+
+			/* One channel per converter: M8. */
+			adi,num-channels = <8>;
+
+			/* The vendor ADC init requires PCORE major >= 9. */
+			adi,pcore-version-min-major = <9>;
+		};
+
+		tx_tpl: axi-ad9081-tx@84b10000 {
+			compatible = "adi,axi-ad9081-tx-1.0";
+			reg = <0x0 0x84b10000 0x0 0x10000>;
+			status = "okay";
+
+			adi,num-channels = <8>;
+		};
+
+		/* Only bank 4 is used, for the AD9081's active-low RSTB. */
+		test_psgpio: gpio@ff0a0000 {
+			compatible = "xlnx,ps-gpio";
+			reg = <0x0 0xff0a0000 0x0 0x1000>;
+			status = "okay";
+			interrupts = <GIC_SPI 16 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>;
+			interrupt-names = "irq_0";
+
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			test_psgpio_bank4: psgpio_bank@4 {
+				compatible = "xlnx,ps-gpio-bank";
+				reg = <0x4>;
+				gpio-controller;
+				#gpio-cells = <2>;
+				ngpios = <32>;
+				status = "okay";
+			};
+		};
+	};
+};
