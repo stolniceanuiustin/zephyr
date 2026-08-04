@@ -31,10 +31,10 @@ int jesd204_bringup(void);
  * (no-OS has adxcvr_clk_disable() / axi_jesd204_*_lane_clk_disable(); this port
  * has not needed them). So this is a link stop, not a full unwind.
  *
- * That partial unwind is nevertheless enough to re-bring-up from: with
- * CONFIG_AD9081_FAULT_INJECTION the sample tears the link down and calls
- * jesd204_bringup() again, and the link reaches DATA the second time (verified
- * on hardware). Disabling the deframer does drop the link out of DATA, and
+ * That partial unwind is nevertheless enough to re-bring-up from: tearing the
+ * link down and calling jesd204_bringup() again reaches DATA the second time
+ * (verified on hardware by the fault-injection suite that used to live here,
+ * boot_log_fi.golden). Disabling the deframer does drop the link out of DATA, and
  * re-running CLK_SYNC and LINK_ENABLE over the still-running GT, lane clocks and
  * HMC7044 tree renegotiates it. Only this one cycle is tested -- nothing says
  * repeated cycles stay clean, and the blocks left running are why it works, so a
@@ -44,16 +44,5 @@ int jesd204_bringup(void);
  * was never initialised.
  */
 int jesd204_teardown(void);
-
-/*
- * Validate the board topology's device ranks without walking any phase. Returns
- * 0 if the visit order matches the declared jesd204_dev_rank ordering, -EINVAL
- * otherwise.
- *
- * Exists for the fault-injection suite: the rank check is only observable through
- * jesd204_fsm_start()'s return value, and calling that on the real topology to
- * test the check would disturb a live link. This exposes the verdict alone.
- */
-int jesd204_bringup_topology_is_valid(void);
 
 #endif /* JESD_FSM_H_ */

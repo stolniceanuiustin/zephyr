@@ -40,27 +40,4 @@ int axi_adxcvr_configure(const struct device *dev);
  */
 int axi_adxcvr_enable(const struct device *dev);
 
-#ifdef CONFIG_AD9081_FAULT_INJECTION
-#include <stdint.h>
-
-/*
- * Fault-injection hooks (CONFIG_AD9081_FAULT_INJECTION only).
- *
- * break_refclk() re-points the transceiver's sys_clk mux at QPLL1, which this
- * bitstream does not drive, so the GT loses its reference clock. The next
- * axi_adxcvr_enable() then exercises adxcvr_reset()'s two-attempt retry and its
- * -ETIMEDOUT report for real, which is what pulling the FMC reference clock
- * would do without needing to touch the board.
- *
- * Only meaningful on an instance that is not already selecting QPLL1 -- the
- * suite uses the RX one, which selects CPLL.
- *
- * restore_refclk() puts the mux back and re-programs the GT dividers.
- * status() is the raw REG_STATUS word, for reporting what the GT said.
- */
-int axi_adxcvr_fi_break_refclk(const struct device *dev);
-int axi_adxcvr_fi_restore_refclk(const struct device *dev);
-uint32_t axi_adxcvr_fi_status(const struct device *dev);
-#endif
-
 #endif /* ZEPHYR_INCLUDE_DRIVERS_MISC_JESD204_AXI_ADXCVR_H_ */

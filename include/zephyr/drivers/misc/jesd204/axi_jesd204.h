@@ -86,28 +86,4 @@ int axi_jesd204_status_read(const struct device *dev);
  */
 bool axi_jesd204_link_is_data(const struct device *dev);
 
-#ifdef CONFIG_AD9081_FAULT_INJECTION
-/*
- * Fault-injection hooks (CONFIG_AD9081_FAULT_INJECTION only). Framer only, as
- * the watchdog they exercise is.
- *
- * A lane desync cannot be caused from software: LANE_STATUS is driven by the
- * core's alignment logic and is read-only. So instead of faking a desync in the
- * hardware, force the value the watchdog *reads* -- everything after that read
- * (the healthy/desynced decision, the LINK_DISABLE bounce, the -EAGAIN return)
- * is the real code path under test.
- *
- * force_lane_status() makes every lane of `dev` read `status` until
- * clear_lane_status(). Pass a word whose low two bits are 0 to look desynced,
- * non-zero for healthy.
- */
-void axi_jesd204_fi_force_lane_status(const struct device *dev,
-				      uint32_t status);
-void axi_jesd204_fi_clear_lane_status(const struct device *dev);
-
-/* Unforced reads, so a test can report what the hardware actually says. */
-uint32_t axi_jesd204_fi_lane_status(const struct device *dev, uint32_t lane);
-uint32_t axi_jesd204_fi_num_lanes(const struct device *dev);
-#endif
-
 #endif /* ZEPHYR_INCLUDE_DRIVERS_MISC_JESD204_AXI_JESD204_H_ */

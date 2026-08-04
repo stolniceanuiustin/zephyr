@@ -11,10 +11,4 @@ target_sources(app PRIVATE
   src/jesd204_fsm.c
 )
 
-# Fault-injection tests: the failure/recovery paths a working board never takes.
-# Off by default -- the tests break a live link on purpose.
-target_sources_ifdef(CONFIG_AD9081_FAULT_INJECTION app PRIVATE
-  src/fault_injection.c
-)
-
 target_include_directories(app PRIVATE src)

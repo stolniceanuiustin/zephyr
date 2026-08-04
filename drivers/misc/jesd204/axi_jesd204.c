@@ -114,12 +114,6 @@ struct axi_jesd204_data {
 	uint32_t num_lanes;
 	uint32_t data_path_width;
 	uint32_t tpl_data_path_width;
-
-#ifdef CONFIG_AD9081_FAULT_INJECTION
-	/* Substitute LANE_STATUS reads. See axi_jesd204_fi_*() below. */
-	bool lane_status_forced;
-	uint32_t lane_status_force_val;
-#endif
 };
 
 static inline uint32_t jesd_read(const struct device *dev, uint32_t reg)
@@ -352,19 +346,6 @@ static bool jesd_rx_check_lane_status(const struct device *dev, uint32_t lane)
 	uint32_t status = jesd_read(dev, JESD204_RX_REG_LANE_STATUS(lane));
 	uint32_t errors = 0;
 
-#ifdef CONFIG_AD9081_FAULT_INJECTION
-	/*
-	 * Test hook. A desync cannot be provoked from software -- LANE_STATUS is
-	 * driven by the core's own alignment logic and is read-only -- so the
-	 * injected fault substitutes the value the register would have reported.
-	 * Everything downstream of this read (the decision, the log line, the
-	 * LINK_DISABLE bounce and the caller's -EAGAIN handling) is the real code.
-	 */
-	if (data->lane_status_forced) {
-		status = data->lane_status_force_val;
-	}
-#endif
-
 	/* This link is 8B/10B (JESD204B); the 64B/66B EMB path does not apply. */
 	if ((status & 0x3) != 0x0) {
 		return false;
@@ -467,37 +448,6 @@ int axi_jesd204_status_read(const struct device *dev)
 	}
 	return -EIO;
 }
-
-#ifdef CONFIG_AD9081_FAULT_INJECTION
-
-void axi_jesd204_fi_force_lane_status(const struct device *dev, uint32_t status)
-{
-	struct axi_jesd204_data *data = dev->data;
-
-	data->lane_status_force_val = status;
-	data->lane_status_forced = true;
-}
-
-void axi_jesd204_fi_clear_lane_status(const struct device *dev)
-{
-	struct axi_jesd204_data *data = dev->data;
-
-	data->lane_status_forced = false;
-}
-
-uint32_t axi_jesd204_fi_lane_status(const struct device *dev, uint32_t lane)
-{
-	return jesd_read(dev, JESD204_RX_REG_LANE_STATUS(lane));
-}
-
-uint32_t axi_jesd204_fi_num_lanes(const struct device *dev)
-{
-	struct axi_jesd204_data *data = dev->data;
-
-	return data->num_lanes;
-}
-
-#endif /* CONFIG_AD9081_FAULT_INJECTION */
 
 /*
  * init() only exists so device_is_ready() means something. The real work is an

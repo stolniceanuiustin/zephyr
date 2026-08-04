@@ -654,15 +654,3 @@ int jesd204_teardown(void)
 
 	return jesd204_fsm_stop(&topology, JESD204_LINKS_ALL);
 }
-
-int jesd204_bringup_topology_is_valid(void)
-{
-	struct jesd204_topology scratch;
-
-	/*
-	 * Built into a scratch copy rather than reusing the live one: this is a
-	 * verdict on the array, and it is called while a link is up.
-	 */
-	return jesd204_topology_init(&scratch, board_topology_devs,
-				     ARRAY_SIZE(board_topology_devs));
-}
