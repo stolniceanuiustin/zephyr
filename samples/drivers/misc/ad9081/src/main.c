@@ -51,7 +51,9 @@
 
 #include <zephyr/kernel.h>
 #include <zephyr/device.h>
+#include <zephyr/cache.h>
 #include <zephyr/drivers/clock_control.h>
+#include <zephyr/drivers/dma.h>
 
 #include <zephyr/logging/log.h>
 LOG_MODULE_REGISTER(main, LOG_LEVEL_INF);
@@ -86,6 +88,87 @@ LOG_MODULE_REGISTER(main, LOG_LEVEL_INF);
  * apart.
  */
 #define GT_REFCLK_OUT DT_CLOCKS_CELL(DT_NODELABEL(tx_adxcvr), output)
+
+/*
+ * One-shot RX capture: enough samples to dump a few full periods of a
+ * fed-in signal per channel, not a real acquisition. 8 converters
+ * interleaved (M8), 16-bit signed each -- rx_tpl arms every channel with
+ * ADC_CHAN_FORMAT_SIGNEXT (axi_tpl.c).
+ */
+#define RX_CAPTURE_SAMPLES_PER_CHAN  64
+#define RX_CAPTURE_NUM_CHAN          8
+#define RX_CAPTURE_LOG_COUNT         16
+
+static int16_t rx_capture_buf[RX_CAPTURE_NUM_CHAN * RX_CAPTURE_SAMPLES_PER_CHAN] __aligned(64);
+
+/*
+ * Kick a single DEV_TO_MEM transfer on rx_dmac and dump the first few
+ * captured words, so a signal fed into the ADC input can be confirmed
+ * present in the digital samples without any host-side IIO tooling --
+ * counterpart to the DAC's DDS tone being visible on a scope.
+ *
+ * Best-effort: a failure here does not affect the link, which is already
+ * up by the time this runs, so it warns rather than returning an error.
+ */
+static void rx_capture_dump(void)
+{
+	const struct device *dmac = DEVICE_DT_GET(DT_NODELABEL(rx_dmac));
+	struct dma_block_config block = {
+		.dest_address = (uintptr_t)rx_capture_buf,
+		.block_size = sizeof(rx_capture_buf),
+	};
+	struct dma_config cfg = {
+		.channel_direction = PERIPHERAL_TO_MEMORY,
+		.block_count = 1,
+		.head_block = &block,
+		.dest_data_size = sizeof(int16_t),
+		.dest_burst_length = sizeof(int16_t),
+	};
+	struct dma_status status;
+	int ret;
+
+	if (!device_is_ready(dmac)) {
+		LOG_WRN("rx_dmac not ready, skipping RX capture dump");
+		return;
+	}
+
+	ret = dma_config(dmac, 0, &cfg);
+	if (ret) {
+		LOG_WRN("rx_dmac config failed (%d), skipping RX capture dump", ret);
+		return;
+	}
+
+	ret = dma_start(dmac, 0);
+	if (ret) {
+		LOG_WRN("rx_dmac start failed (%d), skipping RX capture dump", ret);
+		return;
+	}
+
+	/* No interrupt wired to this core -- dma_get_status() self-pumps
+	 * the transfer on each poll, so it must be polled to completion.
+	 */
+	do {
+		ret = dma_get_status(dmac, 0, &status);
+		if (ret) {
+			LOG_WRN("rx_dmac status read failed (%d)", ret);
+			return;
+		}
+	} while (status.busy);
+
+	sys_cache_data_invd_range(rx_capture_buf, sizeof(rx_capture_buf));
+
+	/*
+	 * All RX_CAPTURE_SAMPLES_PER_CHAN points for channel 0 alone, so a
+	 * fed-in AC tone's periodicity can actually be seen -- interleaved
+	 * multi-channel dumps only show 2 points per channel at
+	 * RX_CAPTURE_LOG_COUNT=16 and cannot show oscillation.
+	 */
+	LOG_INF("RX capture: ch0, all %u samples:", RX_CAPTURE_SAMPLES_PER_CHAN);
+	for (int i = 0; i < RX_CAPTURE_SAMPLES_PER_CHAN; i++) {
+		LOG_INF("  [%2d] ch0 = %6d", i,
+			rx_capture_buf[i * RX_CAPTURE_NUM_CHAN]);
+	}
+}
 
 /*
  * The HMC7044 is a clock_control driver, so it programmes itself at POST_KERNEL
@@ -290,6 +373,14 @@ int main(void)
 			   DEVICE_DT_GET(DT_NODELABEL(tx_tpl)))) {
 		LOG_WRN("TPL post-link verify failed (link is up regardless)");
 	}
+
+	/*
+	 * One-shot RX sample dump: confirms real captured data is reaching
+	 * the CPU over rx_dmac, for feeding a known signal into the ADC
+	 * input and checking it shows up here -- the RX counterpart of
+	 * scoping the DAC's DDS tone below.
+	 */
+	rx_capture_dump();
 
 	/*
 	 * Point the DAC converters at the transport core's DDS, which is what the
