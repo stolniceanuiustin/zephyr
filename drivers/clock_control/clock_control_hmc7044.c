@@ -5,19 +5,8 @@
  * JESD204 SYSREF distributor. One device instance per devicetree node; the
  * PLL1/PLL2/VCO/output-divider/SYSREF configuration comes entirely from DT.
  *
- * The register writes, their ordering, and the PLL divider math follow ADI's
- * no-OS driver (drivers/frequency/hmc7044/hmc7044.c), reduced to the single-chip
- * HMC7044 programming path -- the HMC7043-companion and multi-chip-sync variants
- * of that code are not implemented. Property names in the binding follow ADI's
- * Linux binding, so a devicetree written for ADI Linux transfers with only
- * syntax changes.
- *
- * Output rates are programmed once, at init, from devicetree. Unimplemented ops
- * (set_rate, async_on, configure) are left NULL rather than
- * stubbed. Every field of clock_control_driver_api is @driver_ops_optional and
- * each public wrapper NULL-checks and returns -ENOSYS on the caller's behalf, so
- * this is the documented design and not a driver shirking a contract.
- * clock_control_fixed_rate.c is the in-tree precedent.
+ * Property names in the binding follow ADI's Linux binding,
+ * so a devicetree written for ADI Linux transfers with only syntax changes.
  *
  * INIT LEVEL: this is POST_KERNEL, not PRE_KERNEL_1 as clock providers
  * conventionally are, because it is SPI-attached and Zephyr SPI controllers
@@ -25,9 +14,8 @@
  * the comment at DEVICE_DT_INST_DEFINE below. Consumers of these rates must be
  * POST_KERNEL or later.
  *
- * The HMC7044 has NO chip-ID register, so -- exactly like no-OS
- * hmc7044_read_write_check() -- the bus is proved by writing a known byte to the
- * scratchpad register (0x0008) and reading it back.
+ * The HMC7044 has NO chip-ID register, so the bus is proved by writing a
+ * known byte to the scratchpad register (0x0008) and reading it back.
  *
  * SPDX-License-Identifier: Apache-2.0
  */
@@ -47,14 +35,8 @@
 #include <zephyr/logging/log.h>
 LOG_MODULE_REGISTER(hmc7044, LOG_LEVEL_INF);
 
-/*
- * This driver talks to the chip only through the SPI API. It deliberately does
- * not touch its bus controller's registers -- if a given SoC's SPI driver needs
- * its register page mapped, that is that driver's or the board's problem, not a
- * peripheral driver's.
- */
 
-/* HMC7044 command word (from no-OS hmc7044.c):
+/* HMC7044 command word :
  *   bit 15    : 1 = read, 0 = write
  *   bits 14:13: (count - 1)      -- 1 byte here -> 0
  *   bits 11:0 : register address
@@ -64,7 +46,7 @@ LOG_MODULE_REGISTER(hmc7044, LOG_LEVEL_INF);
 #define HMC7044_CNT(x)  (((x) - 1U) << 13)
 #define HMC7044_ADDR(x) ((x) & 0xFFFU)
 
-/* -------------------- HMC7044 registers / bitfields (no-OS) ---------------- */
+/* -------------------- HMC7044 registers / bitfields ---------------- */
 
 /* Global Control */
 #define HMC7044_REG_SOFT_RESET		0x0000
@@ -263,8 +245,8 @@ struct hmc7044_config {
 	uint32_t vcxo_freq;
 	uint32_t pll2_freq;
 	uint32_t pll1_loop_bw;
-	/* kHz, already clamped -- no-OS/Linux both work in kHz internally. */
-	uint32_t pfd1_limit;
+	/* pdf1_limit in kHz, already clamped */
+	uint32_t pfd1_limit; 	
 	uint32_t pll1_cp_current;
 	uint32_t sysref_timer_div;
 	uint32_t pulse_gen_mode;
@@ -615,10 +597,6 @@ static enum clock_control_status hmc7044_clk_get_status(const struct device *dev
 	return CLOCK_CONTROL_STATUS_OFF;
 }
 
-/*
- * set_rate, async_on and configure are intentionally absent -- see the file
- * header and hmc7044.h. The public wrappers return -ENOSYS for a NULL op.
- */
 static DEVICE_API(clock_control, hmc7044_api) = {
 	.on = hmc7044_clk_on,
 	.off = hmc7044_clk_off,
