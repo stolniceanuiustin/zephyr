@@ -1,7 +1,12 @@
 /*
  * Copyright (c) 2026 Analog Devices, Inc.
  *
- * HMC7044 clock generator -- clock_control extension API.
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+/**
+ * @file
+ * @brief HMC7044 clock generator -- clock_control extension API.
  *
  * The HMC7044 is driven through the standard Zephyr clock_control API:
  *
@@ -18,12 +23,10 @@
  * This header adds the two things the standard API cannot express: a SYSREF
  * pulse request and PLL-level status detail. That is the same pattern
  * nrf_clock_control.h and stm32_clock_control.h use for vendor-specific ops.
- *
- * SPDX-License-Identifier: Apache-2.0
  */
 
-#ifndef HMC7044_H_
-#define HMC7044_H_
+#ifndef ZEPHYR_INCLUDE_DRIVERS_CLOCK_CONTROL_HMC7044_H_
+#define ZEPHYR_INCLUDE_DRIVERS_CLOCK_CONTROL_HMC7044_H_
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -35,11 +38,18 @@
 extern "C" {
 #endif
 
+/**
+ * @brief HMC7044 clock generator interface
+ * @defgroup hmc7044_interface HMC7044 clock generator interface
+ * @ingroup clock_control_interface
+ * @{
+ */
+
 /** Number of clock outputs on an HMC7044. */
 #define HMC7044_NUM_CLK_OUT 14
 
-/*
- * Build a clock_control_subsys_t handle for output @p n (0..13).
+/**
+ * @brief Build a clock_control_subsys_t handle for output @p n (0..13).
  *
  * The handle is the output number biased by one: output 0 is a real output, and
  * an unbiased handle of 0 would be indistinguishable from
@@ -107,8 +117,10 @@ struct hmc7044_status {
  */
 int hmc7044_get_status(const struct device *dev, struct hmc7044_status *status);
 
+/** @} */
+
 #ifdef __cplusplus
 }
 #endif
 
-#endif /* HMC7044_H_ */
+#endif /* ZEPHYR_INCLUDE_DRIVERS_CLOCK_CONTROL_HMC7044_H_ */
