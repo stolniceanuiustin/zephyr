@@ -278,7 +278,7 @@ int adxcvr_drp_write(struct adxcvr *x, unsigned int drp_port,
 				(unsigned long)phys);                                              \
 			return -EIO;                                                               \
 		}                                                                                  \
-	} while (0)
+	} while (0);
 
 static int axi_adxcvr_map(void)
 {

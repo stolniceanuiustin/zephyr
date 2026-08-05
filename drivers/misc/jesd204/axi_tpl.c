@@ -140,7 +140,7 @@ static inline void tpl_write(const struct device *dev, uint32_t reg,
 				(unsigned long)phys);                                              \
 			return -EIO;                                                               \
 		}                                                                                  \
-	} while (0)
+	} while (0);
 
 static int axi_tpl_map(void)
 {

@@ -151,7 +151,7 @@ static inline void jesd_write(const struct device *dev, uint32_t reg,
 				(unsigned long)phys);                                              \
 			return -EIO;                                                               \
 		}                                                                                  \
-	} while (0)
+	} while (0);
 
 static int axi_jesd204_map(void)
 {
