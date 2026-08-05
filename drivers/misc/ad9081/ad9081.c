@@ -821,15 +821,20 @@ BUILD_ASSERT(CONFIG_AD9081_MXFE_INIT_PRIORITY > CONFIG_SPI_INIT_PRIORITY,
 	     "The AD9081 is SPI-attached, so it must initialise after its SPI controller");
 
 /*
- * adi,ref-clk-frequency-khz is a statement about a wire: the HMC7044's
- * DEV_REFCLK output drives the chip's REFCLK pin. It is a rate here rather than
- * a phandle (see the binding for why), so the two can drift -- and the failure
- * mode is the CLK PLL solving for a reference it is not being given. Check them
- * against each other at build time instead: PLL2 / that output's divider.
+ * adi,ref-clk-frequency-khz is a statement about a wire: a clock-generator
+ * output drives the chip's REFCLK pin. It is a rate rather than a phandle (see
+ * the binding for why), so the two can drift -- and the failure mode is the CLK
+ * PLL solving for a reference it is not being given.
+ *
+ * When adi,ref-clk-source names the output node, check them against each other
+ * at build time: the generator's PLL2 rate over that output's divider. Optional,
+ * because a board may drive REFCLK from something this tree cannot describe.
  */
-#define AD9081_HMC7044_DEV_REFCLK DT_NODELABEL(hmc7044_c2)
+#if DT_INST_NODE_HAS_PROP(0, adi_ref_clk_source)
+#define AD9081_REFCLK_OUT DT_INST_PHANDLE(0, adi_ref_clk_source)
 
 BUILD_ASSERT(DT_INST_PROP(0, adi_ref_clk_frequency_khz) * 1000ULL ==
-		     DT_PROP(DT_NODELABEL(hmc7044), adi_pll2_output_frequency) /
-			     DT_PROP(AD9081_HMC7044_DEV_REFCLK, adi_divider),
-	     "adi,ref-clk-frequency-khz disagrees with the HMC7044 DEV_REFCLK output rate");
+		     DT_PROP(DT_PARENT(AD9081_REFCLK_OUT), adi_pll2_output_frequency) /
+			     DT_PROP(AD9081_REFCLK_OUT, adi_divider),
+	     "adi,ref-clk-frequency-khz disagrees with adi,ref-clk-source's output rate");
+#endif

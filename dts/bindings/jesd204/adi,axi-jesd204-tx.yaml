@@ -129,3 +129,17 @@ properties:
       what this board is) means SYSREF is used for deterministic latency, so the
       driver leaves SYSREF_DISABLE clear and does not enable
       buffer-early-release -- both of which no-OS only does for subclass 0.
+
+  adi,jesd204-peer:
+    type: phandle
+    required: true
+    description: |
+      The core describing the other direction of the same link. The two halves
+      share one link description, so the properties that cannot differ are
+      checked against each other at build time through this phandle rather than
+      through a fixed node label -- a driver that names a label only builds on a
+      board that happens to use that name.
+
+      Stated on this node and not on its peer: a phandle each way is a
+      devicetree cycle. This is the direction that carries the properties the
+      check needs, so it is the end that points.

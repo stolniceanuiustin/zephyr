@@ -78,6 +78,7 @@
 				adi,dac-frequency-khz = <12000000>;
 				adi,adc-frequency-khz = <4000000>;
 				adi,ref-clk-frequency-khz = <250000>;
+				adi,ref-clk-source = <&hmc7044_c2>;
 
 				adi,jesd-tx-link = <&tx_jesd>;
 				adi,jesd-rx-link = <&rx_jesd>;
@@ -424,6 +425,7 @@
 		};
 
 		tx_jesd: axi-jesd204-tx@84b90000 {
+			adi,jesd204-peer = <&rx_jesd>;
 			compatible = "adi,axi-jesd204-tx-1.0";
 			reg = <0x0 0x84b90000 0x0 0x10000>;
 			status = "okay";
@@ -477,6 +479,7 @@
 		};
 
 		tx_tpl: axi-ad9081-tx@84b10000 {
+			adi,jesd204-peer = <&rx_tpl>;
 			compatible = "adi,axi-ad9081-tx-1.0";
 			reg = <0x0 0x84b10000 0x0 0x10000>;
 			status = "okay";

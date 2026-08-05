@@ -492,14 +492,11 @@ static int axi_jesd204_init(const struct device *dev)
 }
 
 /*
- * The geometry a node does not carry, per direction:
- *
- *   RX has no N, CS or S. The framer receives the ILAS it is described in
- *   rather than announcing one, so those three never reach a register on this
- *   side -- and no-OS's RX core struct has no fields for them either. They are
- *   set to the TX node's values so the derived HD and the identity log line are
- *   computed from one consistent geometry, and the BUILD_ASSERTs below pin the
- *   two nodes' shared parameters together.
+ * N, CS and S are TX-only: they reach a register solely through the ILAS words
+ * and their checksum, which only the deframer emits. The framer receives the
+ * ILAS it is described in, so its node does not carry them and they are passed
+ * as 0 here. HD derives from the same three, so it is 0 on RX for the same
+ * reason.
  */
 #define JESD204_DEFINE(node, is_tx, magic_val, n_val, cs_val, s_val)                               \
 	static struct axi_jesd204_data axi_jesd204_data_##node;                                    \
@@ -532,13 +529,7 @@ static int axi_jesd204_init(const struct device *dev)
 		       DT_PROP(node, adi_control_bits_per_sample),              \
 		       DT_PROP(node, adi_samples_per_converter_per_frame))
 
-#define JESD204_DEFINE_RX(node)                                                \
-	JESD204_DEFINE(node, false, JESD204_RX_MAGIC,                          \
-		       DT_PROP(DT_NODELABEL(tx_jesd), adi_converter_resolution), \
-		       DT_PROP(DT_NODELABEL(tx_jesd),                          \
-			       adi_control_bits_per_sample),                    \
-		       DT_PROP(DT_NODELABEL(tx_jesd),                          \
-			       adi_samples_per_converter_per_frame))
+#define JESD204_DEFINE_RX(node) JESD204_DEFINE(node, false, JESD204_RX_MAGIC, 0, 0, 0)
 
 DT_FOREACH_STATUS_OKAY(adi_axi_jesd204_rx_1_0, JESD204_DEFINE_RX)
 DT_FOREACH_STATUS_OKAY(adi_axi_jesd204_tx_1_0, JESD204_DEFINE_TX)
@@ -550,49 +541,45 @@ DT_FOREACH_STATUS_OKAY(adi_axi_jesd204_tx_1_0, JESD204_DEFINE_TX)
  * checkable at all -- and also what makes it possible to get wrong, so it is
  * checked rather than trusted.
  *
- * tools/check_profile.py does the rest: each side against the bitstream's
- * make parameters, and HD against the derivation rather than against no-OS.
+ * Driven off adi,jesd204-peer rather than fixed node labels, so a board with
+ * differently-named nodes, or a second link, still gets checked.
+ *
+ * tools/check_profile.py does the rest: each side against the bitstream's make
+ * parameters, and HD against the derivation.
  */
-#define JESD204_ASSERT_SAME(prop)                                              \
-	BUILD_ASSERT(DT_PROP(DT_NODELABEL(rx_jesd), prop) ==                   \
-			     DT_PROP(DT_NODELABEL(tx_jesd), prop),             \
-		     "RX and TX link cores describe one link: " #prop           \
-		     " must match")
-
-JESD204_ASSERT_SAME(adi_lanes_per_device);
-JESD204_ASSERT_SAME(adi_converters_per_device);
-JESD204_ASSERT_SAME(adi_octets_per_frame);
-JESD204_ASSERT_SAME(adi_frames_per_multiframe);
-JESD204_ASSERT_SAME(adi_bits_per_sample);
-JESD204_ASSERT_SAME(adi_subclass);
+#define JESD204_ASSERT_SAME(node, peer, prop)                                                      \
+	BUILD_ASSERT(DT_PROP(node, prop) == DT_PROP(peer, prop),                                   \
+		     "RX and TX link cores describe one link: " #prop " must match");
 
 /*
  * F is not free either: it is the per-lane octet count the rest of the geometry
  * implies. A node stating something else would program CONF0 and ILAS word 1
  * with a frame length the converters do not produce.
+ *
+ * And HD must come out 0 for this profile. Asserted separately from the
+ * derivation macro so a future geometry that genuinely needs HD=1 has to be
+ * acknowledged here: the chip-side jesd_param structs in ad9081.c carry HD as a
+ * literal and would otherwise silently disagree with what the core advertises.
  */
-BUILD_ASSERT(DT_PROP(DT_NODELABEL(tx_jesd), adi_octets_per_frame) ==
-		     DT_PROP(DT_NODELABEL(tx_jesd), adi_converters_per_device) *
-			     DT_PROP(DT_NODELABEL(tx_jesd),
-				     adi_samples_per_converter_per_frame) *
-			     DT_PROP(DT_NODELABEL(tx_jesd),
-				     adi_bits_per_sample) / 8 /
-			     DT_PROP(DT_NODELABEL(tx_jesd),
-				     adi_lanes_per_device),
-	     "F must equal M*S*NP/8/L");
+#define JESD204_ASSERT_LINK(node)                                                                  \
+	JESD204_ASSERT_SAME(node, DT_PHANDLE(node, adi_jesd204_peer), adi_lanes_per_device)        \
+	JESD204_ASSERT_SAME(node, DT_PHANDLE(node, adi_jesd204_peer), adi_converters_per_device)   \
+	JESD204_ASSERT_SAME(node, DT_PHANDLE(node, adi_jesd204_peer), adi_octets_per_frame)        \
+	JESD204_ASSERT_SAME(node, DT_PHANDLE(node, adi_jesd204_peer), adi_frames_per_multiframe)   \
+	JESD204_ASSERT_SAME(node, DT_PHANDLE(node, adi_jesd204_peer), adi_bits_per_sample)         \
+	JESD204_ASSERT_SAME(node, DT_PHANDLE(node, adi_jesd204_peer), adi_subclass)                \
+	BUILD_ASSERT(DT_PROP(node, adi_octets_per_frame) ==                                        \
+			     DT_PROP(node, adi_converters_per_device) *                            \
+				     DT_PROP(node, adi_samples_per_converter_per_frame) *          \
+				     DT_PROP(node, adi_bits_per_sample) / 8 /                      \
+				     DT_PROP(node, adi_lanes_per_device),                          \
+		     "F must equal M*S*NP/8/L");                                                   \
+	BUILD_ASSERT(JESD204_DERIVE_HD(DT_PROP(node, adi_converters_per_device),                   \
+				       DT_PROP(node, adi_samples_per_converter_per_frame),         \
+				       DT_PROP(node, adi_bits_per_sample),                         \
+				       DT_PROP(node, adi_lanes_per_device)) == 0,                  \
+		     "HD derives to 1: both ends take it from JESD204_DERIVE_HD, so this "         \
+		     "assert and its two users have to be re-checked together");
 
-/*
- * And HD must come out 0 for this profile. Stated as its own assertion rather
- * than left to the derivation macro so that a future geometry change which
- * genuinely needs HD=1 has to be acknowledged here -- the chip-side jesd_param
- * structs in ad9081.c carry HD as a literal and would otherwise silently
- * disagree with what the core advertises in ILAS.
- */
-BUILD_ASSERT(JESD204_DERIVE_HD(
-		     DT_PROP(DT_NODELABEL(tx_jesd), adi_converters_per_device),
-		     DT_PROP(DT_NODELABEL(tx_jesd),
-			     adi_samples_per_converter_per_frame),
-		     DT_PROP(DT_NODELABEL(tx_jesd), adi_bits_per_sample),
-		     DT_PROP(DT_NODELABEL(tx_jesd), adi_lanes_per_device)) == 0,
-	     "HD derives to 1: both ends take it from JESD204_DERIVE_HD, so this "
-	     "assert and its two users have to be re-checked together");
+/* Deframer side only: it is the end that carries N, CS and S. */
+DT_FOREACH_STATUS_OKAY(adi_axi_jesd204_tx_1_0, JESD204_ASSERT_LINK)

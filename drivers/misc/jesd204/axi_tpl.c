@@ -432,11 +432,15 @@ DT_FOREACH_STATUS_OKAY(adi_axi_ad9081_rx_1_0, TPL_DEFINE_RX)
 DT_FOREACH_STATUS_OKAY(adi_axi_ad9081_tx_1_0, TPL_DEFINE_TX)
 
 /*
- * adi,num-channels must equal the link's M -- the transport core has one
- * channel per converter. M lives in axi_jesd204.c and is not visible here, so
- * this only pins the two cores to each other; tools/check_profile.py does the
- * comparison against M and against the bitstream's RX_JESD_M/TX_JESD_M.
+ * adi,num-channels must equal the link's M -- the transport core has one channel
+ * per converter. M lives on the link nodes and is not visible here, so this only
+ * pins the two transport cores to each other, via adi,jesd204-peer rather than
+ * fixed node labels; tools/check_profile.py does the comparison against M and
+ * against the bitstream's RX_JESD_M/TX_JESD_M.
  */
-BUILD_ASSERT(DT_PROP(DT_NODELABEL(rx_tpl), adi_num_channels) ==
-		     DT_PROP(DT_NODELABEL(tx_tpl), adi_num_channels),
-	     "RX and TX transport cores must have the same converter count");
+#define TPL_ASSERT_PEER(node)                                                                      \
+	BUILD_ASSERT(DT_PROP(node, adi_num_channels) ==                                            \
+			     DT_PROP(DT_PHANDLE(node, adi_jesd204_peer), adi_num_channels),        \
+		     "RX and TX transport cores must have the same converter count");
+
+DT_FOREACH_STATUS_OKAY(adi_axi_ad9081_tx_1_0, TPL_ASSERT_PEER)

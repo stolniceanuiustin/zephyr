@@ -83,6 +83,17 @@ properties:
       The on-chip CLK PLL is engaged whenever this differs from the DAC rate,
       which the driver leaves to the vendor API to decide.
 
+  adi,ref-clk-source:
+    type: phandle
+    description: |
+      The clock-generator output node that drives the chip's REFCLK pin. Not a
+      clock consumer binding -- see the header above for why this port does not
+      claim the HMC7044 as a clock provider. Its only use is a build-time check
+      that adi,ref-clk-frequency-khz matches that output's rate (the parent's
+      adi,pll2-output-frequency over the output's adi,divider). Optional: a board
+      may drive REFCLK from something this tree cannot describe, and then the
+      rate stands on its own.
+
   # ------------------------------------------------------- link references ---
 
   adi,jesd-tx-link:
