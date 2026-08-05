@@ -1,19 +1,29 @@
 sample:
   name: AD9081 + HMC7044 JESD204B bring-up
   description: >
-    Bottom-up bring-up of the AD9081/AD9082 MxFE + HMC7044 clock over the
-    ZynqMP PS Cadence SPI. Proves both SPI control planes (EMIO routing,
-    clocking, CS, framing): HMC7044 scratchpad check on SPI1 and AD9081
-    PROD_ID (0x9081/0x9082) on SPI0. Grows toward the full JESD204B link.
+    Brings up a JESD204B subclass-1 link between an AD9081/AD9082 MxFE and the
+    ADI AXI JESD204 IP cores in ZynqMP programmable logic: HMC7044 clock tree,
+    GT transceivers, link cores, transport cores, then a phase-ordered JESD204
+    bring-up to DATA. Ends by capturing ADC samples over DMA and emitting a
+    DDS tone on the DAC.
 tests:
   sample.drivers.misc.ad9081:
     platform_allow:
       - zynqmp_apu
-    tags: spi
+    tags:
+      - spi
+      - clock_control
+      - dma
+      - jesd204
     harness: console
     harness_config:
       type: multi_line
-      ordered: false
+      ordered: true
       regex:
-        - "SUCCESS: HMC7044 scratchpad read/write confirmed"
+        - "SUCCESS: HMC7044 clock tree configured"
         - "SUCCESS: AD90[89][12] detected over SPI"
+        - "SUCCESS: GT transceivers configured"
+        - "SUCCESS: JESD204 link cores configured"
+        - "SUCCESS: TPL transport cores configured"
+        - "SUCCESS: JESD204B link up"
+        - "=== bring-up complete ==="

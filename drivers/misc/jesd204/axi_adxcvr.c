@@ -1,26 +1,26 @@
 /*
  * Copyright (c) 2026 Analog Devices, Inc.
  *
- * AXI ADXCVR -- GT transceiver (PHY) bring-up, minimal fixed-rate variant.
+ * AXI ADXCVR -- GT transceiver (PHY) bring-up.
  *
- * This drives the ADI AXI-ADXCVR wrapper around the Xilinx GTH4 transceivers on
+ * Drives the ADI AXI-ADXCVR wrapper around the Xilinx GTH4 transceivers on
  * ZynqMP for the AD9081 JESD204B link (TX -> QPLL0, RX -> CPLL, out clock via
  * PROGDIV, 10 Gbps lanes off a 500 MHz refclk). One devicetree node per
- * direction; everything that used to be a file-scope singleton is now that
- * node's config.
+ * direction.
  *
- * Scope decision: the bitstream is synthesised by the Xilinx Transceiver Wizard
- * for exactly this rate, so the GT's PLL/CDR/divider attributes are already
- * correct at configuration time. On UltraScale the no-OS driver's own DRP
- * "configure_cdr"/"configure_lpm_dfe_mode" paths are empty stubs for precisely
- * this reason ("the UltraScale Transceiver Wizard should be used"). We therefore
- * do NOT re-program the GT over DRP -- we only:
- *   1. select the PLL source + output-clock mux + LPM/DFE mode (REG_CONTROL),
- *   2. pulse the core reset and poll for the transceiver-ready status,
- *   3. clear any elastic-buffer under/overflow (newer PCORE).
- * This mirrors adxcvr_init() steps 1-6 + adxcvr_clk_enable() from no-OS
- * axi_adxcvr.c, minus adxcvr_clk_set_rate() (the DRP layer we trust the
- * bitstream to have set).
+ * axi_adxcvr_configure() does, in order:
+ *   1. query the GT reference rate from the clock provider,
+ *   2. select the PLL source + output-clock mux + LPM/DFE mode (REG_CONTROL),
+ *   3. solve the CPLL/QPLL dividers for the target lane rate and write them
+ *      over DRP (OUT_DIV, PROGDIV, CDR, CLK25_DIV).
+ * axi_adxcvr_enable() then pulses the core reset, polls for transceiver-ready,
+ * and clears any elastic-buffer under/overflow.
+ *
+ * The DRP pass in step 3 is not redundant with the Transceiver Wizard's
+ * synthesised attributes: the divider solve reads the queried reference rate,
+ * so a clock tree that differs from the synthesised 500 MHz still produces
+ * correct dividers. CDR and LPM/DFE re-programming are the parts the Wizard
+ * owns; the vendor divider math leaves them alone on UltraScale.
  *
  * SPDX-License-Identifier: Apache-2.0
  */
