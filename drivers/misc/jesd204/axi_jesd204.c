@@ -1,4 +1,6 @@
 /*
+ * Copyright (c) 2026 Analog Devices, Inc.
+ *
  * AXI JESD204 link cores (RX framer / TX deframer) -- configure-only.
  *
  * Programs the link-layer parameters (M/L/F/K/N/NP..., scrambling, ILAS) into

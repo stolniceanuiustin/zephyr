@@ -1,4 +1,6 @@
 /*
+ * Copyright (c) 2026 Analog Devices, Inc.
+ *
  * AXI AD9081 TPL (transport-layer) cores -- configure-only.
  *
  * The TPL cores sit between the JESD204 link cores and the DMA: they map link

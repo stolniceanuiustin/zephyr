@@ -1,4 +1,6 @@
 /*
+ * Copyright (c) 2026 Analog Devices, Inc.
+ *
  * AXI JESD204 link cores (RX framer / TX deframer).
  *
  * One devicetree node per direction (adi,axi-jesd204-rx-1.0 /

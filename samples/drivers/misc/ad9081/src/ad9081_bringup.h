@@ -1,4 +1,6 @@
 /*
+ * Copyright (c) 2026 Analog Devices, Inc.
+ *
  * JESD204B bring-up sequence -- coordinates the FPGA cores (adxcvr, jesd204 link,
  * TPL) and the AD9082 chip through the link-up phases.
  *

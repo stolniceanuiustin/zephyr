@@ -1,4 +1,6 @@
 /*
+ * Copyright (c) 2026 Analog Devices, Inc.
+ *
  * HMC7044 dual-PLL clock generator -- Zephyr clock_control driver.
  *
  * A 14-output, dual-PLL, SPI-programmed jitter-attenuating clock generator and

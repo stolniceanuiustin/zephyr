@@ -1,4 +1,6 @@
 /*
+ * Copyright (c) 2026 Analog Devices, Inc.
+ *
  * JESD204 link facts that are not configuration of this board.
  *
  * Shared between the FPGA link-core driver (axi_jesd204.c), which advertises

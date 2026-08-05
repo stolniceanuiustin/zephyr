@@ -1,4 +1,6 @@
 /*
+ * Copyright (c) 2026 Analog Devices, Inc.
+ *
  * AD9081/AD9082 MxFE.
  *
  * One devicetree node per chip (compatible "adi,ad9081"), so every entry point

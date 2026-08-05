@@ -1,4 +1,6 @@
 /*
+ * Copyright (c) 2026 Analog Devices, Inc.
+ *
  * HMC7044 clock generator -- clock_control extension API.
  *
  * The HMC7044 is driven through the standard Zephyr clock_control API:

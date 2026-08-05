@@ -1,4 +1,6 @@
 /*
+ * Copyright (c) 2026 Analog Devices, Inc.
+ *
  * Board-level workaround: identity-map the PS SPI register pages.
  *
  * WHY THIS EXISTS

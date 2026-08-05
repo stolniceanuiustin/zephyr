@@ -1,4 +1,6 @@
 /*
+ * Copyright (c) 2026 Analog Devices, Inc.
+ *
  * Thin platform shim so the verbatim ADI/Xilinx GT reconfiguration driver
  * (xilinx_transceiver.c, copied unchanged from no-OS) builds on Zephyr.
  *

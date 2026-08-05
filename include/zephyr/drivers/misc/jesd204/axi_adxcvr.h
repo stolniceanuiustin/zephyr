@@ -1,4 +1,6 @@
 /*
+ * Copyright (c) 2026 Analog Devices, Inc.
+ *
  * AXI ADXCVR -- GT transceiver (PHY) bring-up.
  *
  * One device per JESD204 direction, from devicetree (compatible

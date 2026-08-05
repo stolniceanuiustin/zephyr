@@ -1,4 +1,6 @@
 /*
+ * Copyright (c) 2026 Analog Devices, Inc.
+ *
  * JESD204B bring-up -- this board's device state tables and topology.
  *
  * The other half of the bring-up is jesd204_fsm.c, which is the generic phase

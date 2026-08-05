@@ -1,4 +1,6 @@
 /*
+ * Copyright (c) 2026 Analog Devices, Inc.
+ *
  * AXI AD9081 TPL (transport-layer) cores -- ADC framer / DAC deframer datapath.
  *
  * One devicetree node per direction (adi,axi-ad9081-rx-1.0 /

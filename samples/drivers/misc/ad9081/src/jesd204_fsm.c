@@ -1,4 +1,6 @@
 /*
+ * Copyright (c) 2026 Analog Devices, Inc.
+ *
  * JESD204 bring-up framework -- topology construction and the state machine
  * walk.
  *

@@ -1,4 +1,6 @@
 /*
+ * Copyright (c) 2026 Analog Devices, Inc.
+ *
  * AXI ADXCVR devicetree constants.
  *
  * Copied from ADI's Linux tree (include/dt-bindings/jesd204/adxcvr.h) so that a

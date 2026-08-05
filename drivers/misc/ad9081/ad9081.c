@@ -1,4 +1,6 @@
 /*
+ * Copyright (c) 2026 Analog Devices, Inc.
+ *
  * AD9081/AD9082 MxFE -- Zephyr driver over the ADI API library.
  *
  * The ADI API library (src/adi_api/, copied verbatim from no-OS) is fully

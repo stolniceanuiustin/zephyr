@@ -1,4 +1,6 @@
 /*
+ * Copyright (c) 2026 Analog Devices, Inc.
+ *
  * JESD204 bring-up framework -- state machine types.
  *
  * A port of the no-OS/Linux jesd204 framework (no-OS include/jesd204.h,

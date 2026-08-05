@@ -1,4 +1,6 @@
 /*
+ * Copyright (c) 2026 Analog Devices, Inc.
+ *
  * AXI ADXCVR -- GT transceiver (PHY) bring-up, minimal fixed-rate variant.
  *
  * This drives the ADI AXI-ADXCVR wrapper around the Xilinx GTH4 transceivers on

@@ -1,4 +1,6 @@
 /*
+ * Copyright (c) 2026 Analog Devices, Inc.
+ *
  * AD9081/AD9082 + HMC7044 JESD204B bring-up.
  *
  * A Zephyr counterpart to the no-OS ad9081 example
