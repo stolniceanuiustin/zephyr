@@ -128,19 +128,19 @@ static inline void tpl_write(const struct device *dev, uint32_t reg,
  * swapping the two is a behaviour change (different init level, different
  * failure reporting) and belongs in its own commit -- see PLAN step 3(b).
  */
-#define TPL_MAP_ONE(node)                                                      \
-	do {                                                                   \
-		mm_reg_t virt;                                                 \
-		uintptr_t phys = DT_REG_ADDR(node);                            \
-									       \
-		device_map(&virt, phys, DT_REG_SIZE(node), K_MEM_CACHE_NONE);   \
-		if (virt != phys) {                                            \
-			LOG_ERR("%s not identity-mapped: virt=0x%lx phys=0x%lx",\
-				DT_NODE_FULL_NAME(node),                       \
-				(unsigned long)virt, (unsigned long)phys);      \
-			return -EIO;                                           \
-		}                                                              \
-	} while (0);
+#define TPL_MAP_ONE(node)                                                                          \
+	do {                                                                                       \
+		mm_reg_t virt;                                                                     \
+		uintptr_t phys = DT_REG_ADDR(node);                                                \
+                                                                                                   \
+		device_map(&virt, phys, DT_REG_SIZE(node), K_MEM_CACHE_NONE);                      \
+		if (virt != phys) {                                                                \
+			LOG_ERR("%s not identity-mapped: virt=0x%lx phys=0x%lx",                   \
+				DT_NODE_FULL_NAME(node), (unsigned long)virt,                      \
+				(unsigned long)phys);                                              \
+			return -EIO;                                                               \
+		}                                                                                  \
+	} while (0)
 
 static int axi_tpl_map(void)
 {

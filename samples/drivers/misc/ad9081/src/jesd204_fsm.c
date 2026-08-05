@@ -484,7 +484,8 @@ int jesd204_fsm_stop(struct jesd204_topology *topology, unsigned int link_idx)
 
 	LOG_INF("--- JESD204 FSM: teardown ---");
 
-	for (int op = __JESD204_MAX_OPS - 1; op >= 0; op--) {
+	for (int i = __JESD204_MAX_OPS - 1; i >= 0; i--) {
+		enum jesd204_dev_op op = (enum jesd204_dev_op)i;
 		bool per_device_done[JESD204_MAX_DEVS] = { false };
 		int failures = 0;
 

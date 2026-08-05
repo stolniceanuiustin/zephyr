@@ -213,7 +213,7 @@ static int adxcvr_drp_wait_idle(struct adxcvr *x, uint32_t drp_addr)
 	}
 
 	LOG_ERR("%s: DRP wait idle timeout", x->dev->name);
-	return -1;
+	return -ETIMEDOUT;
 }
 
 int adxcvr_drp_read(struct adxcvr *x, unsigned int drp_port,
@@ -266,20 +266,19 @@ int adxcvr_drp_write(struct adxcvr *x, unsigned int drp_port,
  * own init(): that swap is a behaviour change (different init level, different
  * failure reporting) and this commit is the structural half. See PLAN step 3.
  */
-#define ADXCVR_MAP_ONE(inst)                                                   \
-	do {                                                                   \
-		mm_reg_t virt;                                                 \
-		uintptr_t phys = DT_INST_REG_ADDR(inst);                       \
-									       \
-		device_map(&virt, phys, DT_INST_REG_SIZE(inst),                \
-			   K_MEM_CACHE_NONE);                                  \
-		if (virt != phys) {                                            \
-			LOG_ERR("%s not identity-mapped: virt=0x%lx phys=0x%lx",\
-				DT_NODE_FULL_NAME(DT_DRV_INST(inst)),          \
-				(unsigned long)virt, (unsigned long)phys);     \
-			return -EIO;                                           \
-		}                                                              \
-	} while (0);
+#define ADXCVR_MAP_ONE(inst)                                                                       \
+	do {                                                                                       \
+		mm_reg_t virt;                                                                     \
+		uintptr_t phys = DT_INST_REG_ADDR(inst);                                           \
+                                                                                                   \
+		device_map(&virt, phys, DT_INST_REG_SIZE(inst), K_MEM_CACHE_NONE);                 \
+		if (virt != phys) {                                                                \
+			LOG_ERR("%s not identity-mapped: virt=0x%lx phys=0x%lx",                   \
+				DT_NODE_FULL_NAME(DT_DRV_INST(inst)), (unsigned long)virt,         \
+				(unsigned long)phys);                                              \
+			return -EIO;                                                               \
+		}                                                                                  \
+	} while (0)
 
 static int axi_adxcvr_map(void)
 {

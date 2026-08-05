@@ -139,19 +139,19 @@ static inline void jesd_write(const struct device *dev, uint32_t reg,
  * axi_tpl.c: swapping the two is a behaviour change (different init level,
  * different failure reporting) and belongs in its own commit -- PLAN step 3(b).
  */
-#define JESD204_MAP_ONE(node)                                                  \
-	do {                                                                   \
-		mm_reg_t virt;                                                 \
-		uintptr_t phys = DT_REG_ADDR(node);                            \
-									       \
-		device_map(&virt, phys, DT_REG_SIZE(node), K_MEM_CACHE_NONE);   \
-		if (virt != phys) {                                            \
-			LOG_ERR("%s not identity-mapped: virt=0x%lx phys=0x%lx",\
-				DT_NODE_FULL_NAME(node),                       \
-				(unsigned long)virt, (unsigned long)phys);      \
-			return -EIO;                                           \
-		}                                                              \
-	} while (0);
+#define JESD204_MAP_ONE(node)                                                                      \
+	do {                                                                                       \
+		mm_reg_t virt;                                                                     \
+		uintptr_t phys = DT_REG_ADDR(node);                                                \
+                                                                                                   \
+		device_map(&virt, phys, DT_REG_SIZE(node), K_MEM_CACHE_NONE);                      \
+		if (virt != phys) {                                                                \
+			LOG_ERR("%s not identity-mapped: virt=0x%lx phys=0x%lx",                   \
+				DT_NODE_FULL_NAME(node), (unsigned long)virt,                      \
+				(unsigned long)phys);                                              \
+			return -EIO;                                                               \
+		}                                                                                  \
+	} while (0)
 
 static int axi_jesd204_map(void)
 {
@@ -305,7 +305,10 @@ int axi_jesd204_configure(const struct device *dev)
 	 */
 
 	if (cfg->tx) {
-		for (uint32_t lane = 0; lane < data->num_lanes; lane++) {
+		/* cfg->l, not the read-back count: every declared lane must
+		 * get its ILAS words even if SYNTH_NUM_LANES disagrees.
+		 */
+		for (uint32_t lane = 0; lane < cfg->l; lane++) {
 			jesd_tx_set_lane_ilas(dev, lane);
 		}
 	}
