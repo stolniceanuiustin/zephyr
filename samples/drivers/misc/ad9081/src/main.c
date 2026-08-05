@@ -162,11 +162,10 @@ static const int32_t cos_q12[RX_CAPTURE_SAMPLES_PER_CHAN] = {
 	1567,  1931,  2276,  2598,  2896,  3166,  3406,  3612,  3784,  3920,  4017,  4076,
 };
 
-static void rx_capture_check_tone(void)
+static unsigned int rx_capture_tone_pct(unsigned int chan)
 {
 	int64_t re = 0, im = 0, energy = 0;
 	int32_t mean = 0;
-	unsigned int pct;
 
 	/*
 	 * Remove DC first. An ADC offset is a bin-0 term and does not leak into
@@ -174,12 +173,12 @@ static void rx_capture_check_tone(void)
 	 * fraction is taken against, which would understate a good tone.
 	 */
 	for (int n = 0; n < RX_CAPTURE_SAMPLES_PER_CHAN; n++) {
-		mean += rx_capture_buf[n * RX_CAPTURE_NUM_CHAN];
+		mean += rx_capture_buf[n * RX_CAPTURE_NUM_CHAN + chan];
 	}
 	mean /= RX_CAPTURE_SAMPLES_PER_CHAN;
 
 	for (int n = 0; n < RX_CAPTURE_SAMPLES_PER_CHAN; n++) {
-		int32_t x = rx_capture_buf[n * RX_CAPTURE_NUM_CHAN] - mean;
+		int32_t x = rx_capture_buf[n * RX_CAPTURE_NUM_CHAN + chan] - mean;
 		/* sin(t) = cos(t - 90 degrees), i.e. a quarter turn back. */
 		int32_t phase = (RX_CAPTURE_TONE_BIN * n) % RX_CAPTURE_SAMPLES_PER_CHAN;
 		int32_t quarter = RX_CAPTURE_SAMPLES_PER_CHAN / 4;
@@ -190,8 +189,7 @@ static void rx_capture_check_tone(void)
 	}
 
 	if (energy == 0) {
-		LOG_WRN("RX capture: ch0 is flat -- no signal at the ADC input");
-		return;
+		return 0;
 	}
 
 	/*
@@ -201,18 +199,41 @@ static void rx_capture_check_tone(void)
 	 */
 	re >>= 12;
 	im >>= 12;
-	pct = (unsigned int)((200ULL * (uint64_t)(re * re + im * im)) /
-			     ((uint64_t)energy * RX_CAPTURE_SAMPLES_PER_CHAN));
+	return (unsigned int)((200ULL * (uint64_t)(re * re + im * im)) /
+			      ((uint64_t)energy * RX_CAPTURE_SAMPLES_PER_CHAN));
+}
 
-	LOG_INF("RX capture: %u%% of ch0 energy in bin %u (%u MHz), DC %d", pct,
-		RX_CAPTURE_TONE_BIN, DAC_DDS_TONE_HZ / 1000000U, mean);
+/*
+ * Report the tone fraction for every captured channel.
+ *
+ * All of them, not just channel 0: which converter a cabled ADC input arrives on
+ * depends on the coarse/fine DDC selects and the crossbar, so a single-channel
+ * check reports "no tone" for a working loopback on any other channel. Scanning
+ * all eight makes the log say which one it landed on.
+ */
+static void rx_capture_check_tone(void)
+{
+	unsigned int best_pct = 0, best_chan = 0;
 
-	if (pct >= RX_CAPTURE_TONE_MIN_PCT) {
-		LOG_INF("SUCCESS: loopback tone present at %u MHz", DAC_DDS_TONE_HZ / 1000000U);
+	for (unsigned int c = 0; c < RX_CAPTURE_NUM_CHAN; c++) {
+		unsigned int pct = rx_capture_tone_pct(c);
+
+		LOG_INF("RX capture: ch%u has %u%% of its energy in bin %u (%u MHz)", c, pct,
+			RX_CAPTURE_TONE_BIN, DAC_DDS_TONE_HZ / 1000000U);
+
+		if (pct > best_pct) {
+			best_pct = pct;
+			best_chan = c;
+		}
+	}
+
+	if (best_pct >= RX_CAPTURE_TONE_MIN_PCT) {
+		LOG_INF("SUCCESS: loopback tone present at %u MHz on ch%u (%u%%)",
+			DAC_DDS_TONE_HZ / 1000000U, best_chan, best_pct);
 	} else {
-		LOG_WRN("no loopback tone (want >=%u%%) -- expected unless DAC0 is "
-			"cabled to ADC0 through an attenuator",
-			RX_CAPTURE_TONE_MIN_PCT);
+		LOG_WRN("no loopback tone on any channel (best %u%% on ch%u, want >=%u%%) -- "
+			"expected unless a DAC output is cabled to an ADC input",
+			best_pct, best_chan, RX_CAPTURE_TONE_MIN_PCT);
 	}
 }
 
