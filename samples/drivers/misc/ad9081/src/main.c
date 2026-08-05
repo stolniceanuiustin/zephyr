@@ -95,7 +95,9 @@ LOG_MODULE_REGISTER(main, LOG_LEVEL_INF);
  */
 #define RX_CAPTURE_SAMPLES_PER_CHAN  64
 #define RX_CAPTURE_NUM_CHAN          8
-#define RX_CAPTURE_LOG_COUNT         16
+
+/* Generous for 512 bytes; only has to bound a stall, not pace a real transfer. */
+#define RX_CAPTURE_TIMEOUT_MS 100
 
 static int16_t rx_capture_buf[RX_CAPTURE_NUM_CHAN * RX_CAPTURE_SAMPLES_PER_CHAN] __aligned(64);
 
@@ -123,6 +125,7 @@ static void rx_capture_dump(void)
 		.dest_burst_length = sizeof(int16_t),
 	};
 	struct dma_status status;
+	int64_t deadline;
 	int ret;
 
 	if (!device_is_ready(dmac)) {
@@ -142,13 +145,22 @@ static void rx_capture_dump(void)
 		return;
 	}
 
-	/* No interrupt wired to this core -- dma_get_status() self-pumps
-	 * the transfer on each poll, so it must be polled to completion.
+	/*
+	 * No interrupt wired to this core -- dma_get_status() self-pumps the
+	 * transfer on each poll, so it must be polled to completion. Bounded:
+	 * a stalled transfer must not hang a link that is already up.
 	 */
+	deadline = k_uptime_get() + RX_CAPTURE_TIMEOUT_MS;
 	do {
 		ret = dma_get_status(dmac, 0, &status);
 		if (ret) {
 			LOG_WRN("rx_dmac status read failed (%d)", ret);
+			return;
+		}
+
+		if (k_uptime_get() > deadline) {
+			LOG_WRN("rx_dmac transfer did not complete in %d ms",
+				RX_CAPTURE_TIMEOUT_MS);
 			return;
 		}
 	} while (status.busy);
@@ -156,10 +168,8 @@ static void rx_capture_dump(void)
 	sys_cache_data_invd_range(rx_capture_buf, sizeof(rx_capture_buf));
 
 	/*
-	 * All RX_CAPTURE_SAMPLES_PER_CHAN points for channel 0 alone, so a
-	 * fed-in AC tone's periodicity can actually be seen -- interleaved
-	 * multi-channel dumps only show 2 points per channel at
-	 * RX_CAPTURE_LOG_COUNT=16 and cannot show oscillation.
+	 * Channel 0 only, all its samples: a short interleaved dump gives too
+	 * few points per channel to show a fed-in tone's periodicity.
 	 */
 	LOG_INF("RX capture: ch0, all %u samples:", RX_CAPTURE_SAMPLES_PER_CHAN);
 	for (int i = 0; i < RX_CAPTURE_SAMPLES_PER_CHAN; i++) {
