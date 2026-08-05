@@ -558,7 +558,7 @@ static int ad9081_op_deframer_status_get(const struct device *dev,
 	return 0;
 }
 
-static const struct ad9081_driver_api ad9081_api = {
+static DEVICE_API(ad9081, ad9081_api) = {
 	.sync_oneshot = ad9081_op_sync_oneshot,
 	.sync_nco = ad9081_op_sync_nco,
 	.jesd_pll_status_get = ad9081_op_jesd_pll_status_get,

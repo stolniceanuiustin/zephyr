@@ -59,7 +59,7 @@ int ad9081_setup_datapath(const struct device *dev);
  * ad9081_probe(); the link ops additionally need ad9081_setup_datapath(),
  * because the vendor API requires its startup_tx()/startup_rx() first.
  */
-struct ad9081_driver_api {
+__subsystem struct ad9081_driver_api {
 	/*
 	 * One-shot SYNC. Subclass comes from the link node's adi,subclass, so
 	 * the caller does not restate it.
@@ -99,65 +99,54 @@ struct ad9081_driver_api {
 };
 
 /*
- * Plain `const struct`, not DEVICE_API(): that macro puts the API in an iterable
- * linker section whose start/end symbols are generated from the __subsystem tags
- * parse_syscalls.py finds, and it only scans include/, drivers/ and subsys/net.
- * A sample-local API class would get no section and fail to link. dev->api works
- * either way -- the section is only what DEVICE_API_IS() needs, and nothing here
- * type-checks a device at runtime. This becomes DEVICE_API() when the driver
- * moves in-tree and this header moves to include/zephyr/drivers/.
- */
-#define AD9081_API(dev) ((const struct ad9081_driver_api *)(dev)->api)
-
-/*
  * Wrappers, so call sites read as ad9081_*() rather than as api dereferences.
  * Every op is mandatory, so none of them is NULL-checked -- a driver that omits
  * one is a build-time hole, not a runtime one.
  */
 static inline int ad9081_sync_oneshot(const struct device *dev)
 {
-	return AD9081_API(dev)->sync_oneshot(dev);
+	return DEVICE_API_GET(ad9081, dev)->sync_oneshot(dev);
 }
 
 static inline int ad9081_sync_nco(const struct device *dev)
 {
-	return AD9081_API(dev)->sync_nco(dev);
+	return DEVICE_API_GET(ad9081, dev)->sync_nco(dev);
 }
 
 static inline int ad9081_jesd_pll_status_get(const struct device *dev,
 					     uint8_t *status)
 {
-	return AD9081_API(dev)->jesd_pll_status_get(dev, status);
+	return DEVICE_API_GET(ad9081, dev)->jesd_pll_status_get(dev, status);
 }
 
 static inline int ad9081_deframer_calibrate(const struct device *dev,
 					    bool force_reset, uint8_t boost_mask,
 					    bool run_bg_cal)
 {
-	return AD9081_API(dev)->deframer_calibrate(dev, force_reset, boost_mask,
+	return DEVICE_API_GET(ad9081, dev)->deframer_calibrate(dev, force_reset, boost_mask,
 						   run_bg_cal);
 }
 
 static inline int ad9081_deframer_buf_protect_disable(const struct device *dev)
 {
-	return AD9081_API(dev)->deframer_buf_protect_disable(dev);
+	return DEVICE_API_GET(ad9081, dev)->deframer_buf_protect_disable(dev);
 }
 
 static inline int ad9081_deframer_enable(const struct device *dev, bool enable)
 {
-	return AD9081_API(dev)->deframer_enable(dev, enable);
+	return DEVICE_API_GET(ad9081, dev)->deframer_enable(dev, enable);
 }
 
 static inline int ad9081_framer_status_get(const struct device *dev,
 					   uint16_t *status)
 {
-	return AD9081_API(dev)->framer_status_get(dev, status);
+	return DEVICE_API_GET(ad9081, dev)->framer_status_get(dev, status);
 }
 
 static inline int ad9081_deframer_status_get(const struct device *dev,
 					     uint16_t *status)
 {
-	return AD9081_API(dev)->deframer_status_get(dev, status);
+	return DEVICE_API_GET(ad9081, dev)->deframer_status_get(dev, status);
 }
 
 #endif /* ZEPHYR_INCLUDE_DRIVERS_MISC_AD9081_AD9081_H_ */
