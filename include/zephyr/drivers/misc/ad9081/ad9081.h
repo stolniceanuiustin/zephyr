@@ -9,8 +9,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-#ifndef AD9081_H_
-#define AD9081_H_
+#ifndef ZEPHYR_INCLUDE_DRIVERS_MISC_AD9081_AD9081_H_
+#define ZEPHYR_INCLUDE_DRIVERS_MISC_AD9081_AD9081_H_
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -43,8 +43,9 @@ int ad9081_setup_datapath(const struct device *dev);
  * ------------------------- bring-up ops --------------------------------------
  *
  * What the JESD204 bring-up sequence needs from the chip, as driver ops rather
- * than as the raw vendor handle. Before this, jesd_fsm.c reached the handle
- * through an ad9081_get_device() accessor and called adi_ad9081_* directly,
+ * than as the raw vendor handle. Before this, ad9081_bringup.c reached the
+ * handle through an ad9081_get_device() accessor and called adi_ad9081_*
+ * directly,
  * which meant the FSM included the vendor headers and named this part's register
  * bits -- so a second converter, or a different MxFE, could not be dropped in
  * behind the same FSM.
@@ -85,7 +86,7 @@ struct ad9081_driver_api {
 	/*
 	 * Clear the deframer's transport-layer elastic-buffer protection. Resets
 	 * to enabled and nothing else clears it on a 204B link -- see the call
-	 * site in jesd_fsm.c for why this is done and what it did not fix.
+	 * site in ad9081_bringup.c for why this is done and what it did not fix.
 	 */
 	int (*deframer_buf_protect_disable)(const struct device *dev);
 
@@ -159,4 +160,4 @@ static inline int ad9081_deframer_status_get(const struct device *dev,
 	return AD9081_API(dev)->deframer_status_get(dev, status);
 }
 
-#endif /* AD9081_H_ */
+#endif /* ZEPHYR_INCLUDE_DRIVERS_MISC_AD9081_AD9081_H_ */

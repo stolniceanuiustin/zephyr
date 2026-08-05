@@ -362,14 +362,20 @@ static int adxcvr_fsm_clks_enable(struct jesd204_dev *jdev,
 				  enum jesd204_state_op_reason reason,
 				  struct jesd204_link *lnk)
 {
+	int ret;
+
 	ARG_UNUSED(lnk);
 
 	if (reason != JESD204_STATE_OP_REASON_INIT) {
 		return JESD204_STATE_CHANGE_DONE;
 	}
 
-	return axi_adxcvr_enable(jesd204_dev_priv(jdev)) ?:
-	       JESD204_STATE_CHANGE_DONE;
+	ret = axi_adxcvr_enable(jesd204_dev_priv(jdev));
+	if (ret != 0) {
+		return ret;
+	}
+
+	return JESD204_STATE_CHANGE_DONE;
 }
 
 static const struct jesd204_dev_data adxcvr_jesd204_data = {
@@ -399,14 +405,20 @@ static int axi_jesd204_fsm_clks_enable(struct jesd204_dev *jdev,
 				       enum jesd204_state_op_reason reason,
 				       struct jesd204_link *lnk)
 {
+	int ret;
+
 	ARG_UNUSED(lnk);
 
 	if (reason != JESD204_STATE_OP_REASON_INIT) {
 		return JESD204_STATE_CHANGE_DONE;
 	}
 
-	return axi_jesd204_lane_clk_enable(jesd204_dev_priv(jdev)) ?:
-	       JESD204_STATE_CHANGE_DONE;
+	ret = axi_jesd204_lane_clk_enable(jesd204_dev_priv(jdev));
+	if (ret != 0) {
+		return ret;
+	}
+
+	return JESD204_STATE_CHANGE_DONE;
 }
 
 /*
