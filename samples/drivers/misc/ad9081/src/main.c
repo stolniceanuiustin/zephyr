@@ -68,16 +68,55 @@ LOG_MODULE_REGISTER(main, LOG_LEVEL_INF);
 #include "ad9081_bringup.h"
 
 /*
- * DAC output tone, matching no-OS axi_dac_data_setup()'s defaults:
- * 3 MHz at 0.05 of full scale (axi_dac_core.c:1229-1234).
+ * One-shot RX capture: enough samples to dump a few full periods of a
+ * fed-in signal per channel, not a real acquisition. 8 converters
+ * interleaved (M8), 16-bit signed each -- rx_tpl arms every channel with
+ * ADC_CHAN_FORMAT_SIGNEXT (axi_tpl.c).
  *
- * The rate the DDS phase accumulator runs at is the transport core's sample rate,
- * 250 MSPS for this link (4 GHz ADC / 4x main / 4x channel decimation on the
- * receive side, and the matching interpolation on transmit).
+ * A power of two so the capture window holds a whole number of cycles of the
+ * DAC tone below, which is what the loopback check depends on.
  */
-#define DAC_DDS_TONE_HZ      (3 * 1000 * 1000)
+#define RX_CAPTURE_SAMPLES_PER_CHAN 64
+#define RX_CAPTURE_NUM_CHAN         8
+
+/*
+ * Which DFT bin the DAC tone is expected in. 8 of 64 is a quarter of the way up
+ * the band: clear of DC and any ADC offset at the bottom, and clear of the
+ * decimation filter roll-off at the top.
+ */
+#define RX_CAPTURE_TONE_BIN 8
+
+/*
+ * Loopback pass threshold, as a percentage of captured energy that has to land
+ * in RX_CAPTURE_TONE_BIN. A clean loopback puts nearly all of it there; this is
+ * set low enough that cable loss, the attenuator and ADC noise cannot fail a
+ * working path, and high enough that noise alone cannot pass it -- 64 bins of
+ * pure noise would put about 1.5% in any one bin.
+ */
+#define RX_CAPTURE_TONE_MIN_PCT 25
+
+/*
+ * DAC output tone. The rate the DDS phase accumulator runs at is the transport
+ * core's sample rate, 250 MSPS for this link (4 GHz ADC / 4x main / 4x channel
+ * decimation on the receive side, and the matching interpolation on transmit).
+ *
+ * The tone is placed on an exact FFT bin of the RX capture below:
+ *
+ *     tone = sample_rate * RX_CAPTURE_TONE_BIN / RX_CAPTURE_SAMPLES_PER_CHAN
+ *          = 250e6 * 8 / 64 = 31.25 MHz
+ *
+ * which is what makes a DAC-to-ADC loopback readable from the raw sample dump:
+ * both NCOs shift by the same +2 GHz, so the tone returns to baseband and
+ * completes exactly RX_CAPTURE_TONE_BIN cycles in the captured window. An
+ * arbitrary frequency would straddle bins and smear across the dump instead.
+ *
+ * 3 MHz -- the frequency ADI's reference application uses -- is not usable for
+ * that: one cycle is 333 ns against a 256 ns capture window, so less than a
+ * full period is captured.
+ */
 #define DAC_DDS_SAMPLE_RATE  (250 * 1000 * 1000)
-#define DAC_DDS_SCALE_MICRO  (50 * 1000) /* 0.05 of full scale */
+#define DAC_DDS_TONE_HZ (DAC_DDS_SAMPLE_RATE / RX_CAPTURE_SAMPLES_PER_CHAN * RX_CAPTURE_TONE_BIN)
+#define DAC_DDS_SCALE_MICRO (250 * 1000) /* 0.25 of full scale */
 
 /*
  * Which HMC7044 output drives the GT reference clock. Taken from the transceiver
@@ -87,19 +126,95 @@ LOG_MODULE_REGISTER(main, LOG_LEVEL_INF);
  */
 #define GT_REFCLK_OUT DT_CLOCKS_CELL(DT_NODELABEL(tx_adxcvr), output)
 
-/*
- * One-shot RX capture: enough samples to dump a few full periods of a
- * fed-in signal per channel, not a real acquisition. 8 converters
- * interleaved (M8), 16-bit signed each -- rx_tpl arms every channel with
- * ADC_CHAN_FORMAT_SIGNEXT (axi_tpl.c).
- */
-#define RX_CAPTURE_SAMPLES_PER_CHAN  64
-#define RX_CAPTURE_NUM_CHAN          8
-
 /* Generous for 512 bytes; only has to bound a stall, not pace a real transfer. */
 #define RX_CAPTURE_TIMEOUT_MS 100
 
 static int16_t rx_capture_buf[RX_CAPTURE_NUM_CHAN * RX_CAPTURE_SAMPLES_PER_CHAN] __aligned(64);
+
+/*
+ * How much of channel 0's captured energy sits in RX_CAPTURE_TONE_BIN.
+ *
+ * A single-bin DFT (Goertzel would do the same with less arithmetic; at 64
+ * points the direct form is not worth optimising and is easier to check by
+ * eye). Integer throughout: the tone sits on an exact bin, so the basis
+ * function only ever needs the RX_CAPTURE_SAMPLES_PER_CHAN-point cosine table
+ * below, and a fixed-point table keeps this out of soft-float on a build that
+ * has no FPU enabled.
+ *
+ * This is what turns a DAC-to-ADC loopback cable into a pass/fail: it proves
+ * samples arrived, at the right frequency, with the right periodicity -- which
+ * a printed sample dump can only suggest.
+ *
+ * Reports rather than returns: the link is already up by the time this runs, and
+ * with no loopback cable fitted a failure here is the expected result, not an
+ * error.
+ */
+/*
+ * cos(2*pi*n/RX_CAPTURE_SAMPLES_PER_CHAN) * 4096, one full turn. Stated in full
+ * rather than folded from a quarter table: the folding is easy to get wrong by
+ * half a sample and the saving is 192 bytes of rodata.
+ */
+static const int32_t cos_q12[RX_CAPTURE_SAMPLES_PER_CHAN] = {
+	4096,  4076,  4017,  3920,  3784,  3612,  3406,  3166,  2896,  2598,  2276,  1931,  1567,
+	1189,  799,   401,   0,     -401,  -799,  -1189, -1567, -1931, -2276, -2598, -2896, -3166,
+	-3406, -3612, -3784, -3920, -4017, -4076, -4096, -4076, -4017, -3920, -3784, -3612, -3406,
+	-3166, -2896, -2598, -2276, -1931, -1567, -1189, -799,  -401,  0,     401,   799,   1189,
+	1567,  1931,  2276,  2598,  2896,  3166,  3406,  3612,  3784,  3920,  4017,  4076,
+};
+
+static void rx_capture_check_tone(void)
+{
+	int64_t re = 0, im = 0, energy = 0;
+	int32_t mean = 0;
+	unsigned int pct;
+
+	/*
+	 * Remove DC first. An ADC offset is a bin-0 term and does not leak into
+	 * bin 8 of an exact-bin DFT, but it does inflate the total energy the
+	 * fraction is taken against, which would understate a good tone.
+	 */
+	for (int n = 0; n < RX_CAPTURE_SAMPLES_PER_CHAN; n++) {
+		mean += rx_capture_buf[n * RX_CAPTURE_NUM_CHAN];
+	}
+	mean /= RX_CAPTURE_SAMPLES_PER_CHAN;
+
+	for (int n = 0; n < RX_CAPTURE_SAMPLES_PER_CHAN; n++) {
+		int32_t x = rx_capture_buf[n * RX_CAPTURE_NUM_CHAN] - mean;
+		/* sin(t) = cos(t - 90 degrees), i.e. a quarter turn back. */
+		int32_t phase = (RX_CAPTURE_TONE_BIN * n) % RX_CAPTURE_SAMPLES_PER_CHAN;
+		int32_t quarter = RX_CAPTURE_SAMPLES_PER_CHAN / 4;
+
+		re += (int64_t)x * cos_q12[phase];
+		im -= (int64_t)x * cos_q12[(phase + 3 * quarter) % RX_CAPTURE_SAMPLES_PER_CHAN];
+		energy += (int64_t)x * x;
+	}
+
+	if (energy == 0) {
+		LOG_WRN("RX capture: ch0 is flat -- no signal at the ADC input");
+		return;
+	}
+
+	/*
+	 * Parseval for a real signal: the bin and its negative-frequency mirror
+	 * hold 2*|X_k|^2/N of the total. Descale the two q12 factors in |X_k|^2
+	 * before dividing, so the ratio is taken between like units.
+	 */
+	re >>= 12;
+	im >>= 12;
+	pct = (unsigned int)((200ULL * (uint64_t)(re * re + im * im)) /
+			     ((uint64_t)energy * RX_CAPTURE_SAMPLES_PER_CHAN));
+
+	LOG_INF("RX capture: %u%% of ch0 energy in bin %u (%u MHz), DC %d", pct,
+		RX_CAPTURE_TONE_BIN, DAC_DDS_TONE_HZ / 1000000U, mean);
+
+	if (pct >= RX_CAPTURE_TONE_MIN_PCT) {
+		LOG_INF("SUCCESS: loopback tone present at %u MHz", DAC_DDS_TONE_HZ / 1000000U);
+	} else {
+		LOG_WRN("no loopback tone (want >=%u%%) -- expected unless DAC0 is "
+			"cabled to ADC0 through an attenuator",
+			RX_CAPTURE_TONE_MIN_PCT);
+	}
+}
 
 /*
  * Kick a single DEV_TO_MEM transfer on rx_dmac and dump the first few
@@ -166,6 +281,8 @@ static void rx_capture_dump(void)
 	} while (status.busy);
 
 	sys_cache_data_invd_range(rx_capture_buf, sizeof(rx_capture_buf));
+
+	rx_capture_check_tone();
 
 	/*
 	 * Channel 0 only, all its samples: a short interleaved dump gives too
