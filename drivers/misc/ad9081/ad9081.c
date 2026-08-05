@@ -129,12 +129,19 @@ static int32_t hal_spi_xfer(void *user_data, uint8_t *in_data,
 			    uint8_t *out_data, uint32_t size_bytes)
 {
 	const struct device *dev = user_data;
-	const struct ad9081_config *cfg = dev->config;
+	const struct ad9081_config *cfg;
 	uint32_t n = size_bytes & 0xFF;
-	const struct spi_buf txb = { .buf = in_data, .len = n };
-	const struct spi_buf rxb = { .buf = out_data, .len = n };
+	struct spi_buf txb = {.buf = in_data, .len = n};
+	struct spi_buf rxb = {.buf = out_data, .len = n};
 	const struct spi_buf_set txs = { .buffers = &txb, .count = 1 };
 	const struct spi_buf_set rxs = { .buffers = &rxb, .count = 1 };
+
+	/* Callback invoked from the vendor library, so validate its arguments. */
+	if (dev == NULL || in_data == NULL || out_data == NULL || n == 0) {
+		return API_CMS_ERROR_INVALID_PARAM;
+	}
+
+	cfg = dev->config;
 
 	if (spi_transceive_dt(&cfg->spi, &txs, &rxs) != 0) {
 		return API_CMS_ERROR_SPI_XFER;
@@ -156,7 +163,12 @@ static int32_t hal_delay_us(void *user_data, uint32_t us)
 static int32_t hal_reset_pin_ctrl(void *user_data, uint8_t enable)
 {
 	const struct device *dev = user_data;
-	const struct ad9081_config *cfg = dev->config;
+	const struct ad9081_config *cfg;
+
+	if (dev == NULL) {
+		return API_CMS_ERROR_INVALID_PARAM;
+	}
+	cfg = dev->config;
 
 	if (cfg->reset.port == NULL) {
 		return API_CMS_ERROR_OK; /* no reset line wired */
@@ -168,8 +180,13 @@ static int32_t hal_reset_pin_ctrl(void *user_data, uint8_t enable)
 static int32_t hal_log_write(void *user_data, int32_t log_type,
 			     const char *message, va_list argp)
 {
-	ARG_UNUSED(user_data);
 	char buf[128];
+
+	ARG_UNUSED(user_data);
+
+	if (message == NULL) {
+		return API_CMS_ERROR_INVALID_PARAM;
+	}
 
 	vsnprintk(buf, sizeof(buf), message, argp);
 
@@ -239,6 +256,11 @@ int ad9081_probe(const struct device *dev, uint16_t *prod_id)
 		LOG_ERR("device not ready");
 		return -ENODEV;
 	}
+
+	if (prod_id == NULL) {
+		return -EINVAL;
+	}
+
 	cfg = dev->config;
 	data = dev->data;
 
@@ -257,7 +279,11 @@ int ad9081_probe(const struct device *dev, uint16_t *prod_id)
 		/* Configure de-asserted; the library pulses it via
 		 * reset_pin_ctrl during device_reset (HARD_RESET).
 		 */
-		gpio_pin_configure_dt(&cfg->reset, GPIO_OUTPUT_INACTIVE);
+		err = gpio_pin_configure_dt(&cfg->reset, GPIO_OUTPUT_INACTIVE);
+		if (err != 0) {
+			LOG_ERR("reset GPIO configure failed (%d)", (int)err);
+			return -EIO;
+		}
 	}
 
 	ad9081_hal_bind(dev);
@@ -449,6 +475,10 @@ static int ad9081_op_jesd_pll_status_get(const struct device *dev,
 {
 	struct ad9081_data *data = dev->data;
 
+	if (status == NULL) {
+		return -EINVAL;
+	}
+
 	if (adi_ad9081_jesd_pll_lock_status_get(&data->dev, status)) {
 		return -EIO;
 	}
@@ -501,6 +531,10 @@ static int ad9081_op_framer_status_get(const struct device *dev,
 {
 	struct ad9081_data *data = dev->data;
 
+	if (status == NULL) {
+		return -EINVAL;
+	}
+
 	if (adi_ad9081_jesd_tx_link_status_get(&data->dev, AD9081_LINK,
 					       status)) {
 		return -EIO;
@@ -512,6 +546,10 @@ static int ad9081_op_deframer_status_get(const struct device *dev,
 					 uint16_t *status)
 {
 	struct ad9081_data *data = dev->data;
+
+	if (status == NULL) {
+		return -EINVAL;
+	}
 
 	if (adi_ad9081_jesd_rx_link_status_get(&data->dev, AD9081_LINK,
 					       status)) {
