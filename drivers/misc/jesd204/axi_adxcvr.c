@@ -728,44 +728,38 @@ static int adxcvr_init(const struct device *dev)
 	return 0;
 }
 
-#define ADXCVR_DEFINE(inst)                                                    \
-	BUILD_ASSERT(DT_INST_PROP(inst, adi_out_clk_select) !=                 \
-			     XCVR_OUTCLK_PCS &&                                \
-		     DT_INST_PROP(inst, adi_out_clk_select) !=                 \
-			     XCVR_OUTCLK_PMA,                                  \
-		     "PCS/PMA out-clk-select is not ported: the vendor DRP "   \
-		     "path only programs dividers for REFCLK and PROGDIV");    \
-									       \
-	static struct adxcvr adxcvr_data_##inst;                               \
-									       \
-	static const struct adxcvr_config adxcvr_config_##inst = {             \
-		.base = DT_INST_REG_ADDR(inst),                                \
-		.refclk_dev = DEVICE_DT_GET(DT_INST_CLOCKS_CTLR(inst)),        \
-		.refclk_out = DT_INST_CLOCKS_CELL(inst, output),               \
-		.refclk_subsys =                                               \
-			HMC7044_CLK_OUT(DT_INST_CLOCKS_CELL(inst, output)),    \
-		.lane_rate_khz = DT_INST_PROP(inst, adi_lane_rate_khz),        \
-		.sys_clk_sel = DT_INST_PROP(inst, adi_sys_clk_select),         \
-		.out_clk_sel = DT_INST_PROP(inst, adi_out_clk_select),         \
-		.lpm_enable = DT_INST_PROP(inst, adi_use_lpm_enable),          \
-		/*                                                             \
-		 * CPLL has one VCO and takes adi,vco-{min,max}-khz; QPLL has   \
-		 * two and takes the vco0/vco1 pairs. Fold them into one field  \
-		 * pair each, as the vendor struct has, so the CPLL/QPLL choice \
-		 * stays in one place (adi,sys-clk-select).                     \
-		 */                                                            \
-		.vco0_min = DT_INST_PROP_OR(inst, adi_vco_min_khz,             \
-			DT_INST_PROP_OR(inst, adi_vco0_min_khz, 0)),           \
-		.vco0_max = DT_INST_PROP_OR(inst, adi_vco_max_khz,             \
-			DT_INST_PROP_OR(inst, adi_vco0_max_khz, 0)),           \
-		.vco1_min = DT_INST_PROP_OR(inst, adi_vco1_min_khz, 0),        \
-		.vco1_max = DT_INST_PROP_OR(inst, adi_vco1_max_khz, 0),        \
-	};                                                                     \
-									       \
-	DEVICE_DT_INST_DEFINE(inst, adxcvr_init, NULL,                         \
-			      &adxcvr_data_##inst, &adxcvr_config_##inst,       \
-			      POST_KERNEL, CONFIG_AD9081_ADXCVR_INIT_PRIORITY, \
-			      NULL);
+/*
+ * CPLL has one VCO and takes adi,vco-{min,max}-khz; QPLL has two and takes the
+ * vco0/vco1 pairs. Both fold into one field pair below, as the vendor struct
+ * has, so the CPLL/QPLL choice stays in adi,sys-clk-select alone.
+ */
+#define ADXCVR_DEFINE(inst)                                                                        \
+	BUILD_ASSERT(DT_INST_PROP(inst, adi_out_clk_select) != XCVR_OUTCLK_PCS &&                  \
+			     DT_INST_PROP(inst, adi_out_clk_select) != XCVR_OUTCLK_PMA,            \
+		     "PCS/PMA out-clk-select is not ported: the vendor DRP "                       \
+		     "path only programs dividers for REFCLK and PROGDIV");                        \
+                                                                                                   \
+	static struct adxcvr adxcvr_data_##inst;                                                   \
+                                                                                                   \
+	static const struct adxcvr_config adxcvr_config_##inst = {                                 \
+		.base = DT_INST_REG_ADDR(inst),                                                    \
+		.refclk_dev = DEVICE_DT_GET(DT_INST_CLOCKS_CTLR(inst)),                            \
+		.refclk_out = DT_INST_CLOCKS_CELL(inst, output),                                   \
+		.refclk_subsys = HMC7044_CLK_OUT(DT_INST_CLOCKS_CELL(inst, output)),               \
+		.lane_rate_khz = DT_INST_PROP(inst, adi_lane_rate_khz),                            \
+		.sys_clk_sel = DT_INST_PROP(inst, adi_sys_clk_select),                             \
+		.out_clk_sel = DT_INST_PROP(inst, adi_out_clk_select),                             \
+		.lpm_enable = DT_INST_PROP(inst, adi_use_lpm_enable),                              \
+		.vco0_min = DT_INST_PROP_OR(inst, adi_vco_min_khz,                                 \
+					    DT_INST_PROP_OR(inst, adi_vco0_min_khz, 0)),           \
+		.vco0_max = DT_INST_PROP_OR(inst, adi_vco_max_khz,                                 \
+					    DT_INST_PROP_OR(inst, adi_vco0_max_khz, 0)),           \
+		.vco1_min = DT_INST_PROP_OR(inst, adi_vco1_min_khz, 0),                            \
+		.vco1_max = DT_INST_PROP_OR(inst, adi_vco1_max_khz, 0),                            \
+	};                                                                                         \
+                                                                                                   \
+	DEVICE_DT_INST_DEFINE(inst, adxcvr_init, NULL, &adxcvr_data_##inst, &adxcvr_config_##inst, \
+			      POST_KERNEL, CONFIG_JESD204_AXI_ADXCVR_INIT_PRIORITY, NULL);
 
 DT_INST_FOREACH_STATUS_OKAY(ADXCVR_DEFINE)
 
@@ -775,6 +769,5 @@ DT_INST_FOREACH_STATUS_OKAY(ADXCVR_DEFINE)
  * before the clock provider. The HMC7044 in turn asserts it is above
  * CONFIG_SPI_INIT_PRIORITY.
  */
-BUILD_ASSERT(CONFIG_AD9081_ADXCVR_INIT_PRIORITY >
-	     CONFIG_CLOCK_CONTROL_HMC7044_INIT_PRIORITY,
+BUILD_ASSERT(CONFIG_JESD204_AXI_ADXCVR_INIT_PRIORITY > CONFIG_CLOCK_CONTROL_HMC7044_INIT_PRIORITY,
 	     "adxcvr must initialise after its GT reference clock provider");

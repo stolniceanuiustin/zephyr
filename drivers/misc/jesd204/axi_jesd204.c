@@ -501,32 +501,30 @@ static int axi_jesd204_init(const struct device *dev)
  *   computed from one consistent geometry, and the BUILD_ASSERTs below pin the
  *   two nodes' shared parameters together.
  */
-#define JESD204_DEFINE(node, is_tx, magic_val, n_val, cs_val, s_val)           \
-	static struct axi_jesd204_data axi_jesd204_data_##node;                \
-									       \
-	static const struct axi_jesd204_config axi_jesd204_config_##node = {   \
-		.base = DT_REG_ADDR(node),                                     \
-		.magic = (magic_val),                                          \
-		.tx = (is_tx),                                                 \
-		.l = DT_PROP(node, adi_lanes_per_device),                      \
-		.m = DT_PROP(node, adi_converters_per_device),                 \
-		.f = DT_PROP(node, adi_octets_per_frame),                      \
-		.k = DT_PROP(node, adi_frames_per_multiframe),                 \
-		.n = (n_val),                                                  \
-		.np = DT_PROP(node, adi_bits_per_sample),                      \
-		.s = (s_val),                                                  \
-		.cs = (cs_val),                                                \
-		.hd = JESD204_DERIVE_HD(                                       \
-			DT_PROP(node, adi_converters_per_device), (s_val),      \
-			DT_PROP(node, adi_bits_per_sample),                    \
-			DT_PROP(node, adi_lanes_per_device)),                  \
-		.subclass = DT_PROP(node, adi_subclass),                       \
-	};                                                                     \
-									       \
-	DEVICE_DT_DEFINE(node, axi_jesd204_init, NULL,                         \
-			 &axi_jesd204_data_##node,                             \
-			 &axi_jesd204_config_##node, POST_KERNEL,              \
-			 CONFIG_AD9081_JESD204_INIT_PRIORITY, NULL);
+#define JESD204_DEFINE(node, is_tx, magic_val, n_val, cs_val, s_val)                               \
+	static struct axi_jesd204_data axi_jesd204_data_##node;                                    \
+                                                                                                   \
+	static const struct axi_jesd204_config axi_jesd204_config_##node = {                       \
+		.base = DT_REG_ADDR(node),                                                         \
+		.magic = (magic_val),                                                              \
+		.tx = (is_tx),                                                                     \
+		.l = DT_PROP(node, adi_lanes_per_device),                                          \
+		.m = DT_PROP(node, adi_converters_per_device),                                     \
+		.f = DT_PROP(node, adi_octets_per_frame),                                          \
+		.k = DT_PROP(node, adi_frames_per_multiframe),                                     \
+		.n = (n_val),                                                                      \
+		.np = DT_PROP(node, adi_bits_per_sample),                                          \
+		.s = (s_val),                                                                      \
+		.cs = (cs_val),                                                                    \
+		.hd = JESD204_DERIVE_HD(DT_PROP(node, adi_converters_per_device), (s_val),         \
+					DT_PROP(node, adi_bits_per_sample),                        \
+					DT_PROP(node, adi_lanes_per_device)),                      \
+		.subclass = DT_PROP(node, adi_subclass),                                           \
+	};                                                                                         \
+                                                                                                   \
+	DEVICE_DT_DEFINE(node, axi_jesd204_init, NULL, &axi_jesd204_data_##node,                   \
+			 &axi_jesd204_config_##node, POST_KERNEL,                                  \
+			 CONFIG_JESD204_AXI_LINK_INIT_PRIORITY, NULL);
 
 #define JESD204_DEFINE_TX(node)                                                \
 	JESD204_DEFINE(node, true, JESD204_TX_MAGIC,                           \

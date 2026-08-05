@@ -18,7 +18,7 @@ config AD9081_MXFE_INIT_PRIORITY
 	  SPI-attached, and Zephyr SPI controllers initialise at POST_KERNEL.
 	  There is a BUILD_ASSERT in ad9081.c for it.
 
-	  Also above CONFIG_AD9081_JESD204_INIT_PRIORITY: the chip node points
+	  Also above CONFIG_JESD204_AXI_LINK_INIT_PRIORITY: the chip node points
 	  at the two link cores with adi,jesd-{tx,rx}-link to read the link
 	  geometry from them, and Zephyr treats a phandle as an init dependency
 	  whether or not the driver dereferences the device at init (this one

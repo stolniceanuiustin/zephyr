@@ -412,20 +412,18 @@ static int axi_tpl_init(const struct device *dev)
 	return 0;
 }
 
-#define TPL_DEFINE(node, is_tx)                                                \
-	static struct axi_tpl_data axi_tpl_data_##node;                        \
-									       \
-	static const struct axi_tpl_config axi_tpl_config_##node = {           \
-		.base = DT_REG_ADDR(node),                                     \
-		.num_channels = DT_PROP(node, adi_num_channels),               \
-		.ver_min_major =                                               \
-			DT_PROP_OR(node, adi_pcore_version_min_major, 0),       \
-		.tx = (is_tx),                                                 \
-	};                                                                     \
-									       \
-	DEVICE_DT_DEFINE(node, axi_tpl_init, NULL, &axi_tpl_data_##node,        \
-			 &axi_tpl_config_##node, POST_KERNEL,                  \
-			 CONFIG_AD9081_TPL_INIT_PRIORITY, NULL);
+#define TPL_DEFINE(node, is_tx)                                                                    \
+	static struct axi_tpl_data axi_tpl_data_##node;                                            \
+                                                                                                   \
+	static const struct axi_tpl_config axi_tpl_config_##node = {                               \
+		.base = DT_REG_ADDR(node),                                                         \
+		.num_channels = DT_PROP(node, adi_num_channels),                                   \
+		.ver_min_major = DT_PROP_OR(node, adi_pcore_version_min_major, 0),                 \
+		.tx = (is_tx),                                                                     \
+	};                                                                                         \
+                                                                                                   \
+	DEVICE_DT_DEFINE(node, axi_tpl_init, NULL, &axi_tpl_data_##node, &axi_tpl_config_##node,   \
+			 POST_KERNEL, CONFIG_JESD204_AXI_TPL_INIT_PRIORITY, NULL);
 
 #define TPL_DEFINE_RX(node) TPL_DEFINE(node, false)
 #define TPL_DEFINE_TX(node) TPL_DEFINE(node, true)

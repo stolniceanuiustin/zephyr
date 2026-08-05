@@ -30,7 +30,7 @@ config JESD204_AXI_ADXCVR
 	  including the Xilinx GTH/GTY divider and DRP programming needed to
 	  hit a given lane rate from a given reference clock.
 
-config AD9081_ADXCVR_INIT_PRIORITY
+config JESD204_AXI_ADXCVR_INIT_PRIORITY
 	int "AXI-ADXCVR (GT transceiver) init priority"
 	depends on JESD204_AXI_ADXCVR
 	default 65
@@ -51,7 +51,7 @@ config JESD204_AXI_LINK
 	  ADI's axi_jesd204_rx / axi_jesd204_tx link-layer cores: code group
 	  synchronisation, ILAS, lane alignment and link status.
 
-config AD9081_JESD204_INIT_PRIORITY
+config JESD204_AXI_LINK_INIT_PRIORITY
 	int "AXI-JESD204 link-core init priority"
 	depends on JESD204_AXI_LINK
 	default 65
@@ -75,7 +75,7 @@ config JESD204_AXI_TPL
 	  converter samples. Downstream of the link: these are not JESD204
 	  bring-up participants.
 
-config AD9081_TPL_INIT_PRIORITY
+config JESD204_AXI_TPL_INIT_PRIORITY
 	int "AXI-AD9081 transport-core (TPL) init priority"
 	depends on JESD204_AXI_TPL
 	default 65
