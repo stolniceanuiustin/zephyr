@@ -279,6 +279,11 @@ int axi_tpl_enable(const struct device *rx, const struct device *tx)
 {
 	int ret;
 
+	if (!device_is_ready(rx) || !device_is_ready(tx)) {
+		LOG_ERR("both transport cores must be ready");
+		return -ENODEV;
+	}
+
 	/* Re-latch the DAC datapath against the now-running sample clock. */
 	tpl_write(tx, DAC_REG_SYNC_CONTROL, DAC_SYNC);
 
@@ -320,8 +325,13 @@ int axi_tpl_enable(const struct device *rx, const struct device *tx)
 int axi_tpl_tx_dds(const struct device *dev, uint32_t freq_hz,
 		   uint32_t sample_rate_hz, uint32_t scale_micro, bool enable)
 {
-	const struct axi_tpl_config *cfg = dev->config;
+	const struct axi_tpl_config *cfg;
 	uint32_t incr, scale;
+
+	if (!device_is_ready(dev)) {
+		return -ENODEV;
+	}
+	cfg = dev->config;
 
 	if (!enable) {
 		for (uint32_t c = 0; c < cfg->num_channels; c++) {

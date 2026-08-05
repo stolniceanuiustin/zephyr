@@ -524,11 +524,17 @@ static int adxcvr_query_ref_rate(const struct device *dev)
 
 int axi_adxcvr_configure(const struct device *dev)
 {
-	const struct adxcvr_config *cfg = dev->config;
-	struct adxcvr *x = dev->data;
+	const struct adxcvr_config *cfg;
+	struct adxcvr *x;
 	uint32_t synth;
 	uint32_t control;
 	int ret;
+
+	if (!device_is_ready(dev)) {
+		return -ENODEV;
+	}
+	cfg = dev->config;
+	x = dev->data;
 
 	/* Must precede the divider solve below -- it is one of its two inputs. */
 	ret = adxcvr_query_ref_rate(dev);
@@ -651,10 +657,15 @@ static int adxcvr_reset(const struct device *dev)
  */
 int axi_adxcvr_enable(const struct device *dev)
 {
-	struct adxcvr *x = dev->data;
+	struct adxcvr *x;
 	uint32_t status;
 	int retry = 100;
 	int ret;
+
+	if (!device_is_ready(dev)) {
+		return -ENODEV;
+	}
+	x = dev->data;
 
 	ret = adxcvr_reset(dev);
 	if (ret) {

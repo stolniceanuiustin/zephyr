@@ -318,7 +318,12 @@ int axi_jesd204_configure(const struct device *dev)
 
 int axi_jesd204_lane_clk_enable(const struct device *dev)
 {
-	const struct axi_jesd204_config *cfg = dev->config;
+	const struct axi_jesd204_config *cfg;
+
+	if (!device_is_ready(dev)) {
+		return -ENODEV;
+	}
+	cfg = dev->config;
 
 	/*
 	 * TX additionally clears the SYSREF status (write 0x3 to the sticky
@@ -382,9 +387,15 @@ static bool jesd_rx_check_lane_status(const struct device *dev, uint32_t lane)
  */
 int axi_jesd204_rx_watchdog(const struct device *dev)
 {
-	const struct axi_jesd204_config *cfg = dev->config;
-	struct axi_jesd204_data *data = dev->data;
+	const struct axi_jesd204_config *cfg;
+	struct axi_jesd204_data *data;
 	bool restart = false;
+
+	if (!device_is_ready(dev)) {
+		return -ENODEV;
+	}
+	cfg = dev->config;
+	data = dev->data;
 
 	/*
 	 * Framer-only: LANE_STATUS is an axi_jesd204_rx register. On the
@@ -428,16 +439,30 @@ static const char *const rx_status_label[] = { "RESET", "WAIT_PHY", "CGS",
 
 bool axi_jesd204_link_is_data(const struct device *dev)
 {
-	uint32_t status = jesd_read(dev, JESD204_REG_LINK_STATUS);
+	uint32_t status;
+
+	/* No errno to return: an unusable core is not carrying DATA. */
+	if (!device_is_ready(dev)) {
+		return false;
+	}
+
+	status = jesd_read(dev, JESD204_REG_LINK_STATUS);
 
 	return (status & 0x3) == JESD204_LINK_STATUS_DATA;
 }
 
 int axi_jesd204_status_read(const struct device *dev)
 {
-	const struct axi_jesd204_config *cfg = dev->config;
-	uint32_t state = jesd_read(dev, JESD204_RG_LINK_STATE) & 0x1;
-	uint32_t status = jesd_read(dev, JESD204_REG_LINK_STATUS);
+	const struct axi_jesd204_config *cfg;
+	uint32_t state, status;
+
+	if (!device_is_ready(dev)) {
+		return -ENODEV;
+	}
+
+	cfg = dev->config;
+	state = jesd_read(dev, JESD204_RG_LINK_STATE) & 0x1;
+	status = jesd_read(dev, JESD204_REG_LINK_STATUS);
 
 	LOG_INF("%s: link %s, status=0x%08x [%s]", dev->name,
 		state ? "disabled" : "enabled", status,
