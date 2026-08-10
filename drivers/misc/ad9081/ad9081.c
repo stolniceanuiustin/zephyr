@@ -472,9 +472,28 @@ int ad9081_setup_datapath(const struct device *dev)
 /* Chip-side link select: this profile is single-link, so link 0 on both ends. */
 #define AD9081_LINK AD9081_LINK_0
 
+/* SYSREF pulses averaged before oneshot sync, 2^n; max the 3-bit field takes. */
+#define AD9081_SYSREF_AVERAGE_CNT_EXP 7
+
 static int ad9081_op_sync_oneshot(const struct device *dev)
 {
 	struct ad9081_data *data = dev->data;
+	int ret = -EIO;
+
+	/*
+	 * Bracket the sync with SYSREF averaging: enable it, set the pulse
+	 * count, run the sync, then disable it again. Matches no-OS's
+	 * ad9081_jesd204_setup_stage1().
+	 */
+	if (adi_ad9081_hal_bf_set(&data->dev, REG_SYNC_DEBUG0_ADDR,
+				  BF_AVRG_FLOW_EN_INFO, 1)) {
+		return -EIO;
+	}
+	if (adi_ad9081_hal_bf_set(&data->dev, REG_SYSREF_AVERAGE_ADDR,
+				  BF_SYSREF_AVERAGE_INFO,
+				  BF_SYSREF_AVERAGE(AD9081_SYSREF_AVERAGE_CNT_EXP))) {
+		return -EIO;
+	}
 
 	/*
 	 * Subclass comes from the link geometry rather than from a literal here:
@@ -485,9 +504,21 @@ static int ad9081_op_sync_oneshot(const struct device *dev)
 		    &data->dev,
 		    (adi_cms_jesd_subclass_e)data->profile.tx_jesd_param
 			    .jesd_subclass)) {
+		goto out;
+	}
+	ret = 0;
+
+out:
+	if (adi_ad9081_hal_bf_set(&data->dev, REG_SYSREF_AVERAGE_ADDR,
+				  BF_SYSREF_AVERAGE_INFO,
+				  BF_SYSREF_AVERAGE(0))) {
 		return -EIO;
 	}
-	return 0;
+	if (adi_ad9081_hal_bf_set(&data->dev, REG_SYNC_DEBUG0_ADDR,
+				  BF_AVRG_FLOW_EN_INFO, 0)) {
+		return -EIO;
+	}
+	return ret;
 }
 
 static int ad9081_op_sync_nco(const struct device *dev)
