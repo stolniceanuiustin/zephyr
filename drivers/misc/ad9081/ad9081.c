@@ -414,6 +414,32 @@ int ad9081_setup_datapath(const struct device *dev)
 		LOG_ERR("device_startup_rx failed (%d)", err);
 		return -EIO;
 	}
+	/*
+	 * ADC Nyquist zone. Sets the front-end override bit (0x2110[0]) as well as
+	 * the per-ADC zone, so without this call the front end keeps its reset
+	 * default with the override off. Odd zone is DC to Fs/2, which is where
+	 * this board's band of interest sits.
+	 */
+	err = adi_ad9081_adc_nyquist_zone_set(chip, AD9081_ADC_ALL,
+					      AD9081_ADC_NYQUIST_ZONE_ODD);
+	if (err != API_CMS_ERROR_OK) {
+		LOG_ERR("adc_nyquist_zone_set failed (%d)", err);
+		return -EIO;
+	}
+
+	/*
+	 * PFIR input mux (0x0b12). device_startup_rx() leaves both ADC pairs at
+	 * (I=0, Q=0) on this die, which routes the wrong physical ADC into pair 1.
+	 */
+	err = adi_ad9081_adc_pfir_din_select_set(chip, AD9081_ADC_PFIR_ADC_PAIR0, 0, 1);
+	if (err == API_CMS_ERROR_OK) {
+		err = adi_ad9081_adc_pfir_din_select_set(chip, AD9081_ADC_PFIR_ADC_PAIR1, 3, 0);
+	}
+	if (err != API_CMS_ERROR_OK) {
+		LOG_ERR("adc_pfir_din_select_set failed (%d)", err);
+		return -EIO;
+	}
+
 	LOG_INF("RX datapath up: decim %u/%u, JTX framer mode %u (M%u L%u F%u)",
 		(unsigned int)cfg->rx_cddc_decim[0],
 		(unsigned int)cfg->rx_fddc_decim[0],
