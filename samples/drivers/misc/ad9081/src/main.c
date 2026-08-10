@@ -127,7 +127,7 @@ BUILD_ASSERT(IS_ENABLED(CONFIG_KERNEL_DIRECT_MAP),
  */
 #define DAC_DDS_SAMPLE_RATE  (250 * 1000 * 1000)
 #define DAC_DDS_TONE_HZ (DAC_DDS_SAMPLE_RATE / RX_CAPTURE_SAMPLES_PER_CHAN * RX_CAPTURE_TONE_BIN)
-#define DAC_DDS_SCALE_MICRO (250 * 1000) /* 0.25 of full scale */
+#define DAC_DDS_SCALE_MICRO (50 * 1000) /* 0.05 FS, as no-OS's example emits */
 
 /*
  * Which HMC7044 output drives the GT reference clock. Taken from the transceiver
