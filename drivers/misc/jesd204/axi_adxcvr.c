@@ -558,6 +558,16 @@ int axi_adxcvr_configure(const struct device *dev)
 		adxcvr_get_info(dev);
 	}
 
+	if (!x->tx_enable) {
+		for (uint32_t i = 0; i < x->num_lanes; i++) {
+			ret = xilinx_xcvr_configure_lpm_dfe_mode(&x->xlx_xcvr,
+					ADXCVR_DRP_PORT_CHANNEL(i), cfg->lpm_enable);
+			if (ret < 0) {
+				return ret;
+			}
+		}
+	}
+
 	/* Assert reset while we set the clock selection. */
 	adxcvr_write(dev, ADXCVR_REG_RESETN, 0);
 
