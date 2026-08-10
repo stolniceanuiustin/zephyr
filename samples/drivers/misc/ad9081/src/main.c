@@ -285,15 +285,13 @@ static void rx_capture_check_tone(void)
 }
 
 /*
- * Kick a single DEV_TO_MEM transfer on rx_dmac and dump the first few
- * captured words, so a signal fed into the ADC input can be confirmed
- * present in the digital samples without any host-side IIO tooling --
- * counterpart to the DAC's DDS tone being visible on a scope.
+ * Fill rx_capture_buf with one DMA transfer's worth of samples. Split out of
+ * rx_capture_dump() so a caller can re-capture without re-logging the
+ * per-channel report each time.
  *
- * Best-effort: a failure here does not affect the link, which is already
- * up by the time this runs, so it warns rather than returning an error.
+ * Returns 0 once rx_capture_buf holds fresh, cache-invalidated samples.
  */
-static void rx_capture_dump(void)
+static int rx_capture_fetch(void)
 {
 	const struct device *dmac = DEVICE_DT_GET(DT_NODELABEL(rx_dmac));
 	struct dma_block_config block = {
@@ -313,19 +311,19 @@ static void rx_capture_dump(void)
 
 	if (!device_is_ready(dmac)) {
 		LOG_WRN("rx_dmac not ready, skipping RX capture dump");
-		return;
+		return -ENODEV;
 	}
 
 	ret = dma_config(dmac, 0, &cfg);
 	if (ret) {
 		LOG_WRN("rx_dmac config failed (%d), skipping RX capture dump", ret);
-		return;
+		return ret;
 	}
 
 	ret = dma_start(dmac, 0);
 	if (ret) {
 		LOG_WRN("rx_dmac start failed (%d), skipping RX capture dump", ret);
-		return;
+		return ret;
 	}
 
 	/*
@@ -338,29 +336,51 @@ static void rx_capture_dump(void)
 		ret = dma_get_status(dmac, 0, &status);
 		if (ret) {
 			LOG_WRN("rx_dmac status read failed (%d)", ret);
-			return;
+			return ret;
 		}
 
 		if (k_uptime_get() > deadline) {
 			LOG_WRN("rx_dmac transfer did not complete in %d ms",
 				RX_CAPTURE_TIMEOUT_MS);
-			return;
+			return -ETIMEDOUT;
 		}
 	} while (status.busy);
 
 	sys_cache_data_invd_range(rx_capture_buf, sizeof(rx_capture_buf));
 
+	return 0;
+}
+
+/*
+ * Kick a single DEV_TO_MEM transfer on rx_dmac and dump the captured samples, so
+ * a signal fed into the ADC input can be confirmed present in the digital
+ * samples without any host-side IIO tooling -- counterpart to the DAC's DDS tone
+ * being visible on a scope.
+ *
+ * Best-effort: a failure here does not affect the link, which is already up by
+ * the time this runs, so it warns rather than returning an error.
+ */
+static void rx_capture_dump(void)
+{
+	if (rx_capture_fetch()) {
+		return;
+	}
+
 	rx_capture_check_tone();
 
+#if defined(RX_SAMPLE_DUMP)
 	/*
-	 * Channel 0 only, all its samples: a short interleaved dump gives too
-	 * few points per channel to show a fed-in tone's periodicity.
+	 * The raw samples, one line each. Only useful when the per-bin figures
+	 * above are themselves in doubt -- the DFT summarises the same 64 points
+	 * in one line, so this is off by default rather than 64 lines per
+	 * capture (128 per boot, since this runs before and after the DAC tone).
 	 */
 	LOG_INF("RX capture: ch0, all %u samples:", RX_CAPTURE_SAMPLES_PER_CHAN);
 	for (int i = 0; i < RX_CAPTURE_SAMPLES_PER_CHAN; i++) {
 		LOG_INF("  [%2d] ch0 = %6d", i,
 			rx_capture_buf[i * RX_CAPTURE_NUM_CHAN]);
 	}
+#endif
 }
 
 /*
@@ -568,17 +588,13 @@ int main(void)
 	}
 
 	/*
-	 * One-shot RX sample dump: confirms real captured data is reaching
-	 * the CPU over rx_dmac, for feeding a known signal into the ADC
-	 * input and checking it shows up here -- the RX counterpart of
-	 * scoping the DAC's DDS tone below.
-	 */
-	rx_capture_dump();
-
-	/*
 	 * Point the DAC converters at the transport core's DDS, which is what the
-	 * no-OS example emits: 3 MHz at 0.05 full scale, upconverted by the chip's
-	 * +2 GHz main NCO. Scope the DAC output to see it.
+	 * no-OS example emits, upconverted by the chip's +1 GHz main NCO. Scope
+	 * the DAC output to see it.
+	 *
+	 * This has to happen BEFORE the RX capture below. It used to run after,
+	 * which meant every capture measured a silent DAC and reported the
+	 * loopback dead while the datapath was in fact working.
 	 */
 	ret = axi_tpl_tx_dds(DEVICE_DT_GET(DT_NODELABEL(tx_tpl)),
 			     DAC_DDS_TONE_HZ, DAC_DDS_SAMPLE_RATE,
@@ -589,6 +605,13 @@ int main(void)
 	}
 	LOG_INF("SUCCESS: DAC emitting a %u MHz DDS tone at %u%% full scale",
 		DAC_DDS_TONE_HZ / 1000000U, DAC_DDS_SCALE_MICRO / 10000U);
+
+	/*
+	 * RX capture: confirms captured data is reaching the CPU over rx_dmac and
+	 * that the DAC tone above completes the loopback -- the receive
+	 * counterpart of scoping the DAC output.
+	 */
+	rx_capture_dump();
 
 	LOG_INF("=== bring-up complete ===");
 
