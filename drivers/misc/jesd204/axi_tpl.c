@@ -22,9 +22,8 @@
  * reads valid once the lanes are running -- is split into axi_tpl_enable() and
  * driven later by the bring-up sequence.
  *
- * Register offsets, field packing and the init sequence are transcribed from
- * no-OS axi_adc_core.c / axi_dac_core.c. Base addresses come from the on-board
- * bitstream (system.hwh) and now live in the devicetree nodes.
+ * Base addresses come from the on-board bitstream (system.hwh) and live in the
+ * devicetree nodes.
  *
  * SPDX-License-Identifier: Apache-2.0
  */
@@ -73,14 +72,14 @@ BUILD_ASSERT(IS_ENABLED(CONFIG_KERNEL_DIRECT_MAP),
 #define DAC_REG_DATA_SELECT(c) (0x0418 + (c) * 0x40) /* low nibble = source */
 #define DAC_DATA_SEL(x)       ((x) & 0xf)
 
-/* DAC data-source select codes (axi_dac_core.h). */
+/* DAC data-source select codes. */
 #define DAC_DATA_SEL_DDS 0 /* internal tone generator */
 #define DAC_DATA_SEL_DMA 2 /* converter samples from the DMA/JESD datapath */
 
 /*
  * DDS tone generator, one pair of registers per DDS (two DDSs per converter, so
- * the indexing is (dds >> 1) * 0x40 + (dds & 1) * 8). Same layout as no-OS
- * axi_dac_core.c. SCALE is a 1.14 fixed-point amplitude; INIT/INCR hold the phase
+ * the indexing is (dds >> 1) * 0x40 + (dds & 1) * 8).
+ * SCALE is a 1.14 fixed-point amplitude; INIT/INCR hold the phase
  * offset in the high half and the per-sample phase increment in the low half,
  * where a full 0xFFFF increment is one cycle per sample.
  */
@@ -123,10 +122,9 @@ static inline void tpl_write(const struct device *dev, uint32_t reg,
 }
 
 /*
- * 1:1 map every TPL node's register page before anything touches it. Still a
- * SYS_INIT rather than DEVICE_MMIO_MAP for the same reason as axi_adxcvr.c:
- * swapping the two is a behaviour change (different init level, different
- * failure reporting) and belongs in its own commit -- see PLAN step 3(b).
+ * 1:1 map every TPL node's register page before anything touches it. A SYS_INIT
+ * rather than DEVICE_MMIO_MAP because the map must happen at PRE_KERNEL_1, ahead
+ * of any driver init that might read a TPL register.
  */
 #define TPL_MAP_ONE(node)                                                                          \
 	do {                                                                                       \
@@ -151,7 +149,7 @@ static int axi_tpl_map(void)
 
 SYS_INIT(axi_tpl_map, PRE_KERNEL_1, 0);
 
-/* Reset the core: assert, then deassert MMCM + core reset (no-OS init step 1-2). */
+/* Reset the core: assert, then deassert MMCM + core reset. */
 static void tpl_reset(const struct device *dev)
 {
 	tpl_write(dev, TPL_REG_RSTN, 0);
@@ -159,9 +157,9 @@ static void tpl_reset(const struct device *dev)
 }
 
 /*
- * Read and (optionally) vet the PCORE version. no-OS checks major >= 9 on the
- * ADC core and does not check the DAC core at all, so the threshold is a
- * per-node property rather than a constant here.
+ * Read and (optionally) vet the PCORE version. The minimum differs per core --
+ * the ADC core requires major >= 9, the DAC core is unchecked -- so the
+ * threshold is a per-node devicetree property rather than a constant.
  */
 static int tpl_check_version(const struct device *dev)
 {
@@ -181,8 +179,8 @@ static int tpl_check_version(const struct device *dev)
 
 /*
  * Configure the RX (ADC) framer: reset, then arm each converter's datapath with
- * sign-extended, format-enabled, channel-enabled. Mirrors axi_adc_init() minus
- * the (link-dependent) status/clk read.
+ * sign-extended, format-enabled, channel-enabled. The link-dependent status/clk
+ * read is deferred to axi_tpl_enable().
  */
 static int tpl_configure_rx(const struct device *dev)
 {
@@ -211,8 +209,8 @@ static int tpl_configure_rx(const struct device *dev)
 
 /*
  * Configure the TX (DAC) deframer: reset, point each converter's datapath at the
- * DMA/JESD source, then latch with a SYNC pulse. Mirrors axi_dac_init() +
- * axi_dac_data_setup() minus the (link-dependent) status/clk read.
+ * DMA/JESD source, then latch with a SYNC pulse. The link-dependent status/clk
+ * read is deferred to axi_tpl_enable().
  */
 static int tpl_configure_tx(const struct device *dev)
 {
@@ -298,25 +296,17 @@ int axi_tpl_enable(const struct device *rx, const struct device *tx)
  * Point the TX transport core's converters at their internal FPGA DDS tone
  * generators instead of the DMA stream, or back again.
  *
- * This is what the no-OS example actually emits. Its app.c passes
- * `.channels = NULL` to axi_dac_init(), which sends axi_dac_data_setup() down its
- * else branch (axi_dac_core.c:1227-1238) and writes DATA_SELECT=0 -- DATA_SEL_DDS
- * -- to every converter. So the reference design's DAC output is an
- * FPGA-generated tone, and its DMA and data-offload cores are not in the
- * datapath at all: the TPL's dac_enable is only asserted for data_sel == 4'h2
- * (ad_ip_jesd204_tpl_dac_channel.v:144), so with DDS selected the transport core
- * never pulls a beat from the upack FIFO.
- *
- * That also means this path needs no DDR bandwidth whatsoever, which is why the
- * reference never has to care what the memory system can sustain.
+ * With DDS selected, DDR and the DMA engine drop out of the datapath entirely:
+ * the TPL's dac_enable is only asserted for data_sel == 4'h2
+ * (ad_ip_jesd204_tpl_dac_channel.v:144), so the transport core never pulls a beat
+ * from the upack FIFO. This path therefore needs no DDR bandwidth at all.
  *
  * The DDS sits at the TPL input inside the FPGA, so its samples still cross the
  * transport core, the serial lanes and the chip's deframer, then the chip's DAC
  * datapath and DUC. Everything except DDR and the DMA engine.
  *
- * scale_micro is in micro-units of full scale (1000000 == 1.0), matching no-OS
- * axi_dac_dds_set_scale(); the register is 1.14 fixed point, so the conversion is
- * scale * 0x4000 / 1000000.
+ * scale_micro is in micro-units of full scale (1000000 == 1.0); the register is
+ * 1.14 fixed point, so the conversion is scale * 0x4000 / 1000000.
  *
  * freq_hz is quantised by the 16-bit phase increment (freq * 0xFFFF / rate), so
  * the achieved tone only equals the request when it divides the sample rate
@@ -354,7 +344,7 @@ int axi_tpl_tx_dds(const struct device *dev, uint32_t freq_hz,
 		return -EINVAL;
 	}
 
-	/* Clamp as no-OS does, then convert micro-units to 1.14 fixed point. */
+	/* Clamp below 2.0 full scale, then convert micro-units to 1.14 fixed point. */
 	if (scale_micro >= 1999000U) {
 		scale_micro = 1999000U;
 	}
@@ -362,9 +352,9 @@ int axi_tpl_tx_dds(const struct device *dev, uint32_t freq_hz,
 
 	/*
 	 * Hold SYNC low across the whole reprogram so every DDS starts from the
-	 * same phase when it is released. no-OS toggles SYNC per register write;
-	 * doing it once around the batch is equivalent and leaves the converters
-	 * mutually aligned rather than staggered by write order.
+	 * same phase when it is released. Toggling SYNC once around the batch
+	 * rather than per register write leaves the converters mutually aligned
+	 * rather than staggered by write order.
 	 */
 	tpl_write(dev, DAC_REG_SYNC_CONTROL, 0);
 
@@ -373,16 +363,15 @@ int axi_tpl_tx_dds(const struct device *dev, uint32_t freq_hz,
 		uint32_t dds_q = c * 2 + 1;
 		/*
 		 * Both DDSs of a converter get the same frequency and phase, and
-		 * the phase alternates 90/0 degrees by converter index. That is
-		 * no-OS's default (axi_dac_core.c:1229-1234), not a quadrature
-		 * pair -- 0x4000 is 90 degrees of the 16-bit phase word.
+		 * the phase alternates 90/0 degrees by converter index -- not a
+		 * quadrature pair. 0x4000 is 90 degrees of the 16-bit phase word.
 		 */
 		uint32_t phase = (c % 2) ? 0U : 0x4000U;
 
 		tpl_write(dev, DAC_REG_DDS_SCALE(dds_i), scale);
 		tpl_write(dev, DAC_REG_DDS_SCALE(dds_q), scale);
 
-		/* Low bit of INCR enables the DDS, as no-OS ORs in. */
+		/* Low bit of INCR is the per-DDS enable. */
 		tpl_write(dev, DAC_REG_DDS_INIT_INCR(dds_i),
 			  DAC_DDS_INIT(phase) | DAC_DDS_INCR(incr) | 1U);
 		tpl_write(dev, DAC_REG_DDS_INIT_INCR(dds_q),
