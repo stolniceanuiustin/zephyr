@@ -514,7 +514,7 @@ static int adxcvr_query_ref_rate(const struct device *dev)
 	    logged_refclk_out != cfg->refclk_out) {
 		logged_refclk_dev = cfg->refclk_dev;
 		logged_refclk_out = cfg->refclk_out;
-		LOG_INF("GT refclk from %s out%u: %u kHz", cfg->refclk_dev->name,
+		LOG_DBG("GT refclk from %s out%u: %u kHz", cfg->refclk_dev->name,
 			cfg->refclk_out, rate_khz);
 	}
 
@@ -549,7 +549,7 @@ int axi_adxcvr_configure(const struct device *dev)
 	x->qpll_enable = (synth >> 20) & 1;
 	x->cpll_enable = (cfg->sys_clk_sel == ADXCVR_SYS_CLK_CPLL);
 
-	LOG_INF("%s @ 0x%08lx: PCORE v%u.%u.%u, %u lanes, type=%u, %s",
+	LOG_DBG("%s @ 0x%08lx: PCORE v%u.%u.%u, %u lanes, type=%u, %s",
 		dev->name, (unsigned long)cfg->base,
 		PCORE_VER_MAJOR(x->version), PCORE_VER_MINOR(x->version),
 		PCORE_VER_PATCH(x->version), x->num_lanes, x->xcvr_type,
@@ -584,7 +584,7 @@ int axi_adxcvr_configure(const struct device *dev)
 	control = adxcvr_control_word(dev);
 	adxcvr_write(dev, ADXCVR_REG_CONTROL, control);
 
-	LOG_INF("%s: CONTROL=0x%04x (sysclk=%u outclk=%u lpm=%u) enc=%s",
+	LOG_DBG("%s: CONTROL=0x%04x (sysclk=%u outclk=%u lpm=%u) enc=%s",
 		dev->name, control, cfg->sys_clk_sel, cfg->out_clk_sel,
 		cfg->lpm_enable,
 		x->xlx_xcvr.encoding == ENC_66B64B ? "64b/66b" : "8b/10b");
@@ -598,7 +598,7 @@ int axi_adxcvr_configure(const struct device *dev)
 		LOG_ERR("%s: GT divider programming failed (%d)", dev->name, ret);
 		return ret;
 	}
-	LOG_INF("%s: GT dividers programmed for %u kHz lane @ %u kHz ref",
+	LOG_DBG("%s: GT dividers programmed for %u kHz lane @ %u kHz ref",
 		dev->name, cfg->lane_rate_khz, x->ref_rate_khz);
 
 	return 0;

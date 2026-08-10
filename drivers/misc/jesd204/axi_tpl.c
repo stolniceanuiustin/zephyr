@@ -203,7 +203,7 @@ static int tpl_configure_rx(const struct device *dev)
 				  ADC_CHAN_ENABLE);
 	}
 
-	LOG_INF("%s @ 0x%08lx: pcore v%u, %u channels armed (signext|format|enable)",
+	LOG_DBG("%s @ 0x%08lx: pcore v%u, %u channels armed (signext|format|enable)",
 		dev->name, (unsigned long)cfg->base,
 		TPL_PCORE_VER_MAJOR(data->version), cfg->num_channels);
 	return 0;
@@ -235,7 +235,7 @@ static int tpl_configure_tx(const struct device *dev)
 	/* Latch the datapath configuration. */
 	tpl_write(dev, DAC_REG_SYNC_CONTROL, DAC_SYNC);
 
-	LOG_INF("%s @ 0x%08lx: pcore v%u, %u channels -> DMA source, synced",
+	LOG_DBG("%s @ 0x%08lx: pcore v%u, %u channels -> DMA source, synced",
 		dev->name, (unsigned long)cfg->base,
 		TPL_PCORE_VER_MAJOR(data->version), cfg->num_channels);
 	return 0;
@@ -270,7 +270,7 @@ static int tpl_check(const struct device *dev)
 		return -EIO;
 	}
 
-	LOG_INF("%s: status=0x%08x clk_freq=0x%08x clk_ratio=0x%08x", dev->name,
+	LOG_DBG("%s: status=0x%08x clk_freq=0x%08x clk_ratio=0x%08x", dev->name,
 		status, clk_freq, clk_ratio);
 	return 0;
 }
