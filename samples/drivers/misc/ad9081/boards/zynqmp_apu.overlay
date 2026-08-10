@@ -104,10 +104,20 @@
 				adi,tx-channel-interpolation = <8>;
 				adi,tx-dac-channel-crossbar =
 					<0x1 0x2 0x4 0x8>;
-				/* +2 GHz main NCO on all four DACs. */
+				/*
+				 * +1 GHz main NCO on all four DACs, matched by
+				 * the RX coarse NCO below so a loopback returns
+				 * to baseband.
+				 *
+				 * 1 GHz and not the 2 GHz this profile started
+				 * with: the ADC samples at 4 GHz, so Nyquist is
+				 * 2 GHz and a 2 GHz carrier sits on the fold,
+				 * where the front-end roll-off is. 1 GHz is
+				 * mid-band in the first Nyquist zone.
+				 */
 				adi,tx-main-nco-shift-hz =
-					<2000000000 2000000000
-					 2000000000 2000000000>;
+					<1000000000 1000000000
+					 1000000000 1000000000>;
 				adi,tx-channel-nco-shift-hz =
 					<0 0 0 0 0 0 0 0>;
 				/* 1024 = unity in the API's 1.10 format. */
@@ -126,9 +136,10 @@
 				adi,rx-coarse-decimation = <4 4 4 4>;
 				/* 0 marks a fine DDC the select mask disables. */
 				adi,rx-fine-decimation = <4 4 0 0 4 4 0 0>;
+				/* Must match the TX main NCO -- see above. */
 				adi,rx-coarse-nco-shift-hz =
-					<2000000000 2000000000
-					 2000000000 2000000000>;
+					<1000000000 1000000000
+					 1000000000 1000000000>;
 				adi,rx-fine-nco-shift-hz =
 					<0 0 0 0 0 0 0 0>;
 				adi,rx-logical-lane-mapping = <2 0 7 7 7 7 3 1>;
@@ -413,6 +424,7 @@
 			adi,frames-per-multiframe = <32>;
 			adi,bits-per-sample = <16>;
 			adi,subclass = <1>;
+			adi,lane-rate-khz = <10000000>;
 
 			/*
 			 * No adi,converter-resolution / -control-bits-per-sample
@@ -437,6 +449,7 @@
 			adi,frames-per-multiframe = <32>;
 			adi,bits-per-sample = <16>;
 			adi,subclass = <1>;
+			adi,lane-rate-khz = <10000000>;
 
 			/* ILAS-only, so the deframer carries these and the
 			 * framer does not.

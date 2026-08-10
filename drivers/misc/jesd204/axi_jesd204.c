@@ -56,6 +56,7 @@ BUILD_ASSERT(IS_ENABLED(CONFIG_KERNEL_DIRECT_MAP),
 #define JESD204_REG_SYNTH_NUM_LANES   0x10
 #define JESD204_REG_SYNTH_DATA_PATH_WIDTH 0x14
 #define JESD204_REG_LINK_DISABLE      0xc0
+#define JESD204_REG_LINK_CLK_RATIO    0xc8
 #define JESD204_REG_SYSREF_CONF       0x100
 #define JESD204_REG_SYSREF_LMFC_OFFSET 0x104
 #define JESD204_REG_SYSREF_STATUS     0x108
@@ -108,6 +109,17 @@ struct axi_jesd204_config {
 	uint32_t cs;
 	uint32_t hd;
 	uint32_t subclass;
+
+	/*
+	 * Raw serial lane rate in kHz, same value and property name as the
+	 * sibling adxcvr node's adi,lane-rate-khz (axi_adxcvr.c). Only used to
+	 * compute the "Reported Link Clock" / lane-rate / LMFC-LEMC lines of
+	 * axi_jesd204_status_read()'s table -- this driver still never queries
+	 * a rate to configure anything, so the earlier "no clock awareness"
+	 * design in adi,axi-jesd204-rx.yaml is unchanged for configuration; this
+	 * is a plain integer read once for a log line, not a phandle dependency.
+	 */
+	uint32_t lane_rate_khz;
 };
 
 /* Per-instance state -- RAM. Read back from the core at configure time. */
@@ -260,7 +272,7 @@ int axi_jesd204_configure(const struct device *dev)
 	data->data_path_width = 1 << JESD204_SYNTH_DATA_PATH_WIDTH_GET(dpw);
 	data->tpl_data_path_width = JESD204_TPL_DATA_PATH_WIDTH_GET(dpw);
 
-	LOG_INF("%s @ 0x%08lx: PCORE v%u.%u, %u lanes, dpw=%u tpl_dpw=%u",
+	LOG_DBG("%s @ 0x%08lx: PCORE v%u.%u, %u lanes, dpw=%u tpl_dpw=%u",
 		dev->name, (unsigned long)cfg->base,
 		PCORE_VER_MAJOR(data->version), PCORE_VER_MINOR(data->version),
 		data->num_lanes, data->data_path_width,
@@ -313,7 +325,7 @@ int axi_jesd204_configure(const struct device *dev)
 		}
 	}
 
-	LOG_INF("%s: configured (M%u L%u F%u K%u NP%u subclass%u), link held disabled",
+	LOG_DBG("%s: configured (M%u L%u F%u K%u NP%u subclass%u), link held disabled",
 		dev->name, cfg->m, cfg->l, cfg->f, cfg->k, cfg->np,
 		cfg->subclass);
 	return 0;
@@ -430,7 +442,7 @@ int axi_jesd204_rx_watchdog(const struct device *dev)
 		return -EAGAIN;
 	}
 
-	LOG_INF("%s: all %u lanes in sync", dev->name, data->num_lanes);
+	LOG_DBG("%s: all %u lanes in sync", dev->name, data->num_lanes);
 	return 0;
 }
 
@@ -454,23 +466,81 @@ bool axi_jesd204_link_is_data(const struct device *dev)
 	return (status & 0x3) == JESD204_LINK_STATUS_DATA;
 }
 
+/*
+ * Print the no-OS-style multi-line status table -- port of
+ * axi_jesd204_{rx,tx}_status_read(). MHz values are fixed-point (whole.thousandths),
+ * matching no-OS's own printf formatting, since this target has no libc float
+ * printf support wired up for %f.
+ */
+static void jesd_status_table(const struct device *dev, uint32_t state,
+			       uint32_t status)
+{
+	const struct axi_jesd204_config *cfg = dev->config;
+	uint32_t sysref_status = jesd_read(dev, JESD204_REG_SYSREF_STATUS);
+	uint32_t clk_ratio = jesd_read(dev, JESD204_REG_LINK_CLK_RATIO);
+	uint32_t sysref_conf = jesd_read(dev, JESD204_REG_SYSREF_CONF);
+	uint32_t link_conf0 = jesd_read(dev, JESD204_REG_CONF0);
+	uint32_t clk_rate, link_rate, lmfc_rate;
+
+	LOG_INF("%s status:", dev->name);
+	LOG_INF("  Link is %s", (state & 0x1) ? "disabled" : "enabled");
+
+	if (clk_ratio == 0) {
+		LOG_INF("  Measured Link Clock: off");
+	} else {
+		uint64_t r = (100000ULL * clk_ratio + (1ULL << 15)) >> 16;
+
+		LOG_INF("  Measured Link Clock: %u.%03u MHz",
+			(uint32_t)(r / 1000), (uint32_t)(r % 1000));
+	}
+
+	clk_rate = cfg->lane_rate_khz / 40;
+	LOG_INF("  Reported Link Clock: %u.%03u MHz", clk_rate / 1000,
+		clk_rate % 1000);
+
+	if (state & 0x1) {
+		LOG_INF("  External reset is %s",
+			(state & 0x2) ? "asserted" : "deasserted");
+		return;
+	}
+
+	clk_rate = cfg->lane_rate_khz;
+	link_rate = (clk_rate + 20) / 40;
+	lmfc_rate = clk_rate / (10 * ((link_conf0 & 0xff) + 1));
+
+	LOG_INF("  Lane rate: %u.%03u MHz", clk_rate / 1000, clk_rate % 1000);
+	LOG_INF("  Lane rate / 40: %u.%03u MHz", link_rate / 1000,
+		link_rate % 1000);
+	LOG_INF("  LMFC rate: %u.%03u MHz", lmfc_rate / 1000,
+		lmfc_rate % 1000);
+
+	if (cfg->tx) {
+		LOG_INF("  SYNC~: %s", (status & 0x10) ? "deasserted" : "asserted");
+	}
+
+	LOG_INF("  Link status: %s",
+		cfg->tx ? tx_status_label[status & 0x3]
+			: rx_status_label[status & 0x3]);
+	LOG_INF("  SYSREF captured: %s",
+		(sysref_conf & JESD204_SYSREF_CONF_SYSREF_DISABLE) ? "disabled"
+		: (sysref_status & 1) ? "Yes" : "No");
+	LOG_INF("  SYSREF alignment error: %s",
+		(sysref_conf & JESD204_SYSREF_CONF_SYSREF_DISABLE) ? "disabled"
+		: (sysref_status & 2) ? "Yes" : "No");
+}
+
 int axi_jesd204_status_read(const struct device *dev)
 {
-	const struct axi_jesd204_config *cfg;
 	uint32_t state, status;
 
 	if (!device_is_ready(dev)) {
 		return -ENODEV;
 	}
 
-	cfg = dev->config;
-	state = jesd_read(dev, JESD204_RG_LINK_STATE) & 0x1;
+	state = jesd_read(dev, JESD204_RG_LINK_STATE) & 0x3;
 	status = jesd_read(dev, JESD204_REG_LINK_STATUS);
 
-	LOG_INF("%s: link %s, status=0x%08x [%s]", dev->name,
-		state ? "disabled" : "enabled", status,
-		cfg->tx ? tx_status_label[status & 0x3]
-			: rx_status_label[status & 0x3]);
+	jesd_status_table(dev, state, status);
 
 	/* Carrying DATA (0x3) is the healthy end state. */
 	if ((status & 0x3) == JESD204_LINK_STATUS_DATA) {
@@ -517,6 +587,7 @@ static int axi_jesd204_init(const struct device *dev)
 					DT_PROP(node, adi_bits_per_sample),                        \
 					DT_PROP(node, adi_lanes_per_device)),                      \
 		.subclass = DT_PROP(node, adi_subclass),                                           \
+		.lane_rate_khz = DT_PROP(node, adi_lane_rate_khz),                                 \
 	};                                                                                         \
                                                                                                    \
 	DEVICE_DT_DEFINE(node, axi_jesd204_init, NULL, &axi_jesd204_data_##node,                   \

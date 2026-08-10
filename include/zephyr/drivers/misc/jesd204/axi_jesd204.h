@@ -91,10 +91,14 @@ int axi_jesd204_lane_clk_enable(const struct device *dev);
 int axi_jesd204_rx_watchdog(const struct device *dev);
 
 /**
- * @brief Read and log one core's link state.
+ * @brief Read and log one core's full link status table.
  *
- * Reports whether the link is enabled and which phase it is in (CGS / ILAS /
- * DATA). Meaningful only at the end of the bring-up sequence.
+ * Logs the same multi-line table as no-OS's axi_jesd204_{rx,tx}_status_read():
+ * link enabled/disabled, measured and reported link clock, lane rate, lane
+ * rate/40, LMFC (or SYNC~ state on TX) rate, link phase (CGS / ILAS / DATA),
+ * and SYSREF captured / alignment-error. Reported/lane rate and the LMFC
+ * derivation come from the node's adi,lane-rate-khz property. Meaningful only
+ * at the end of the bring-up sequence.
  *
  * Per core rather than both at once: the state labels differ by direction (the
  * deframer's 0x2 is ILAS, the framer's is CGS), so a shared reader would have to

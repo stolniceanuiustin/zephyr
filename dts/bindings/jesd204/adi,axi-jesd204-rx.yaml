@@ -24,7 +24,9 @@
 #     PL clock provider, and unlike the adxcvr nodes this driver never queries a
 #     rate: the link core is told its geometry, not its clock. A phandle nothing
 #     reads would add an init-ordering constraint to document a wiring fact the
-#     comments already state.
+#     comments already state. adi,lane-rate-khz below is not a reintroduction of
+#     this: it is a plain integer, read once by axi_jesd204_status_read() for a
+#     log line, with no init-ordering dependency on anything.
 #   #clock-cells / clock-output-names -- the lane clock this core exports in
 #     Linux is consumed through the Common Clock Framework, which this port does
 #     not have; the lane-clock enable is a direct call from the bring-up
@@ -114,3 +116,13 @@ properties:
       SYSREF is used for deterministic latency, so the driver leaves
       SYSREF_DISABLE clear and does not enable buffer-early-release -- both of
       which no-OS only does for subclass 0.
+
+  adi,lane-rate-khz:
+    type: int
+    required: true
+    description: |
+      Raw serial lane rate in kHz, same value and name as the sibling adxcvr
+      node's adi,lane-rate-khz. Used only by axi_jesd204_status_read() to
+      report "Reported/Lane rate" and derive the LMFC rate for the boot-log
+      status table (no-OS axi_jesd204_{rx,tx}_status_read()); never read to
+      configure anything, so the clocks/clock-names decision above stands.

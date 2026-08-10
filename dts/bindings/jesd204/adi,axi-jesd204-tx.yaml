@@ -23,7 +23,8 @@
 #
 # Properties of ADI's Linux node that are NOT ported (clocks/clock-names,
 # #clock-cells, clock-output-names, interrupts, jesd204-*): same reasons as the
-# RX binding, listed there.
+# RX binding, listed there. adi,lane-rate-khz below is not a reintroduction of
+# clock awareness -- see the same note in adi,axi-jesd204-rx.yaml.
 
 description: |
   ADI AXI-JESD204 TX link core: the transmit link layer between the TX
@@ -143,3 +144,13 @@ properties:
       Stated on this node and not on its peer: a phandle each way is a
       devicetree cycle. This is the direction that carries the properties the
       check needs, so it is the end that points.
+
+  adi,lane-rate-khz:
+    type: int
+    required: true
+    description: |
+      Raw serial lane rate in kHz, same value and name as the sibling adxcvr
+      node's adi,lane-rate-khz. Used only by axi_jesd204_status_read() to
+      report "Reported/Lane rate" and derive the LMFC rate for the boot-log
+      status table (no-OS axi_jesd204_{rx,tx}_status_read()); never read to
+      configure anything, so the clocks/clock-names decision above stands.
