@@ -262,6 +262,12 @@ improvement, and one of the few places the conversion makes testing *easier*.
 Also fold in: `axi_adxcvr_enable()` is dead code (0 call sites — the FSM calls
 the per-direction variants). Delete during the move.
 
+> **WRONG (resolved 2026-08-10).** `axi_adxcvr_enable()` is **live** — it is the
+> GT reset-release, called from the `CLOCKS_ENABLE` phase at
+> `src/ad9081_bringup.c:364`. Do not delete it. The same false claim was in
+> `CLAUDE.md` and in `HANDOFF_steps_7_8.md`; both are now corrected. Only
+> `axi_tpl_adc_pn_mon()` was ever really dead.
+
 ### 4.4 AXI JESD204 — link layer
 
 **Now:** two singletons, `configure()` / `{tx,rx}_lane_clk_enable()` /
@@ -292,6 +298,8 @@ place in the sample that produces observable analog output, and it is a
 reasonable `dac`-subsystem citizen if you want one: "set a channel's output."
 
 `axi_tpl_adc_pn_mon()` is dead code (0 call sites). Delete during the move.
+
+> **DONE (2026-08-10).** Deleted in `0cd63fb060c`; absent from the tree.
 
 The `DATA_SELECT` mux (0 = DDS, 2 = DMA) is where a future DMA streaming path
 attaches. Worth keeping as an explicit driver op rather than a side effect of

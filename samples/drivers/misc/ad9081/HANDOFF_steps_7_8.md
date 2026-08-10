@@ -190,8 +190,10 @@ block only. Keep both that way.
 ## Small corrections owed
 
 - CLAUDE.md's "dead code to delete (0 call sites)" names `axi_adxcvr_enable()`,
-  which has **two live call sites** (`jesd_fsm.c:277`, `:282`). Only
-  `axi_tpl_adc_pn_mon()` was actually dead, and it is gone (`0cd63fb060c`).
+  which has **a live call site** — since the `jesd_fsm.c` split it is
+  `src/ad9081_bringup.c:364`, the GT reset-release in the `CLOCKS_ENABLE` phase.
+  Only `axi_tpl_adc_pn_mon()` was actually dead, and it is gone
+  (`0cd63fb060c`). CLAUDE.md was corrected on 2026-08-10.
 - `src/spi_mmio_fixup.c` (98 lines) becomes deletable once the upstream spi_cdns
   fix lands. That fix is committed on branch `spi_cdns_bugfix` as `b11365f32b0`
   and not yet submitted. The file's own header comment (lines 30-35) already

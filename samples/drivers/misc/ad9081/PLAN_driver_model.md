@@ -226,6 +226,15 @@ adi_ad9081_jesd_oneshot_sync(chip(), JESD_SUBCLASS_1);
 (`->oneshot_sync(dev)`, `->link_enable(dev, on)`, ...) or nothing else can ever
 participate in the FSM. Same coupling as §1.6; solve it once, in steps 7–8.
 
+> **DONE (2026-08-10).** `jesd_fsm.c` no longer exists — it is split into
+> `src/jesd204_fsm.c` (generic phase walker) and `src/ad9081_bringup.c` (this
+> board's tables). `ad9081_get_device()` is gone and there are zero
+> `adi_ad9081_*` calls anywhere under `src/`; the phase callbacks reach the chip
+> only through the `ad9081_*()` ops in
+> `include/zephyr/drivers/misc/ad9081/ad9081.h`. What remains is board coupling,
+> not chip coupling: `ad9081_bringup.c` resolves `DT_NODELABEL(ad9081)`
+> directly, which is correct for a board file.
+
 ### 1.5 The two SPI mapping hooks stay — they are upstream's problem
 
 **Reversed from the handoff.** It proposed patching the Cadence SPI driver as a
@@ -266,6 +275,10 @@ own `reg`. Those `SYS_INIT` hooks all disappear as steps 2–4 land.
 `select KERNEL_DIRECT_MAP if MMU`. A `BUILD_ASSERT` is still worth adding as
 documentation of the `virt == phys` dependency, since every `sys_read32` here
 relies on it.
+
+> **DONE (2026-08-10).** `BUILD_ASSERT(IS_ENABLED(CONFIG_KERNEL_DIRECT_MAP))` is
+> present in all three PL drivers — `axi_adxcvr.c:53`, `axi_jesd204.c:49`,
+> `axi_tpl.c:50` — and in `src/main.c:64`.
 
 ### 1.6 The FSM: sample-local now, module later; topology stays in C
 
@@ -397,7 +410,7 @@ FI 1 and FI 4 are the point of those tests rather than a failure.
 
 | # | Step | Verify by |
 |---|---|---|
-| **0** | **Delete `axi_jesd.c`** — done, not yet booted | boot log identical minus one `SUCCESS:` line |
+| **0** | **Delete `axi_jesd.c`** — **done and booted** (file absent from the tree; many clean boots since) | boot log identical minus one `SUCCESS:` line |
 | **A** | **Capture + commit the golden boot log and FI output (§2.0)** — **done**: `boot_log.golden` + `boot_log_fi.golden`, both hardware-captured | — |
 | 1 | Consolidate the two SPI mapping hooks (§1.5); add `BUILD_ASSERT` for `virt == phys` — **done in `src/spi_mmio_fixup.c`, hardware-verified** | boot log identical |
 | 2 | Move `xilinx_transceiver.c` unchanged; add `dev` to the two `xcvr_shim.h` functions | boot log identical |
