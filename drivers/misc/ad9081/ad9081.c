@@ -3,8 +3,8 @@
  *
  * AD9081/AD9082 MxFE -- Zephyr driver over the ADI API library.
  *
- * The ADI API library (src/adi_api/, copied verbatim from no-OS) is fully
- * hardware-abstracted: it reaches the chip only through the function pointers in
+ * The ADI API library (modules/hal/adi/ad9081/) is fully hardware-abstracted: it
+ * reaches the chip only through the function pointers in
  * adi_ad9081_device_t.hal_info. This file implements those callbacks against
  * Zephyr SPI/GPIO and drives the library to init the device, read its ID and
  * configure the converter datapath.
@@ -122,22 +122,26 @@ struct ad9081_data {
 /*
  * Full-duplex SPI transfer. The library has already framed in_data (address
  * bytes with the R/W bit + payload); for MSB-first we transfer size_bytes as-is
- * and copy the miso bytes back into out_data. Matches no-OS ad9081_spi_xfer()
- * for the SPI_MSB_FIRST path.
+ * and copy the miso bytes back into out_data.
+ *
+ * size_bytes is rejected above 255 rather than masked to 8 bits: the library's
+ * longest transfer is a handful of bytes, so anything larger is a caller bug, and
+ * masking would turn 256 into a 0-length transfer and 257 into a silently
+ * truncated one.
  */
 static int32_t hal_spi_xfer(void *user_data, uint8_t *in_data,
 			    uint8_t *out_data, uint32_t size_bytes)
 {
 	const struct device *dev = user_data;
 	const struct ad9081_config *cfg;
-	uint32_t n = size_bytes & 0xFF;
-	struct spi_buf txb = {.buf = in_data, .len = n};
-	struct spi_buf rxb = {.buf = out_data, .len = n};
+	struct spi_buf txb = {.buf = in_data, .len = size_bytes};
+	struct spi_buf rxb = {.buf = out_data, .len = size_bytes};
 	const struct spi_buf_set txs = { .buffers = &txb, .count = 1 };
 	const struct spi_buf_set rxs = { .buffers = &rxb, .count = 1 };
 
 	/* Callback invoked from the vendor library, so validate its arguments. */
-	if (dev == NULL || in_data == NULL || out_data == NULL || n == 0) {
+	if (dev == NULL || in_data == NULL || out_data == NULL ||
+	    size_bytes == 0 || size_bytes > 255) {
 		return API_CMS_ERROR_INVALID_PARAM;
 	}
 
@@ -316,19 +320,19 @@ int ad9081_probe(const struct device *dev, uint16_t *prod_id)
 		return -ENODEV;
 	}
 
-	if (prod_id) {
-		*prod_id = chip_id.prod_id;
-	}
+	*prod_id = chip_id.prod_id;
 	return 0;
 }
 
 /*
  * ------------------------- MxFE datapath configuration ------------------------
  *
- * Every parameter now comes from devicetree (see boards/zynqmp_apu.overlay and
- * dts/bindings/adi,ad9081.yaml); the values there are the no-OS
- * zcu102_ad9081_m8_l4 profile. This function drives the ADI API in the same
- * order as no-OS ad9081_setup()/setup_tx()/setup_rx().
+ * Every parameter comes from devicetree (see boards/zynqmp_apu.overlay and
+ * dts/bindings/adi,ad9081.yaml), carrying the zcu102_ad9081_m8_l4 profile.
+ *
+ * Order is load-bearing: clocks and the device CLK PLL first, then the TX
+ * (deframer) datapath, then RX (framer). tools/check_profile.py cross-checks the
+ * devicetree values against the bitstream.
  */
 
 int ad9081_setup_datapath(const struct device *dev)
@@ -637,9 +641,7 @@ static int ad9081_init(const struct device *dev)
 /*
  * Decimation ratio -> vendor register code. The codes are not the ratios and
  * are not even monotonic in them (CDDC: DCM_2 is 0x0 but DCM_4 is 0x1, DCM_1 is
- * 0xC), so devicetree carries the ratio and this maps it. ADI's own Linux/no-OS
- * driver does exactly this -- no-OS drivers/adc/ad9081/ad9081.c:292 and :324 are
- * the same two switch statements, returning -1 for a ratio the part lacks.
+ * 0xC), so devicetree carries the ratio and this maps it.
  *
  * Unsupported ratios land on 0xFF, which AD9081_ASSERT_DCM below turns into a
  * build error rather than a silently wrong register write.
@@ -661,9 +663,8 @@ static int ad9081_init(const struct device *dev)
 	 (r) == 36 ? AD9081_CDDC_DCM_36 : AD9081_DCM_BAD)
 
 /*
- * 0 is not a ratio -- it is how the no-OS profile spells "this fine DDC is
- * disabled", for the fine DDCs the select mask leaves out. It maps to 0, which
- * is what the old hand-written rx_fddc_dcm[] carried in those slots.
+ * 0 is not a ratio -- it means "this fine DDC is disabled", for the fine DDCs the
+ * select mask leaves out. It maps to register code 0.
  */
 #define AD9081_FDDC_DCM_CODE(r)                                                \
 	((r) == 0  ? 0                  :                                      \
