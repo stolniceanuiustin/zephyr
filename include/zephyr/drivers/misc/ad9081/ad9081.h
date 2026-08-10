@@ -118,6 +118,13 @@ __subsystem struct ad9081_driver_api {
 
 	/** Deframer status word, diagnostic only. */
 	int (*deframer_status_get)(const struct device *dev, uint16_t *status);
+
+	/**
+	 * Retune the coarse (main) receive NCOs after bring-up. Diagnostic:
+	 * lets a caller sweep the downmix frequency without a reflash.
+	 */
+	int (*rx_coarse_nco_set)(const struct device *dev, uint8_t cddc_mask,
+				 int64_t shift_hz);
 };
 
 /**
@@ -215,6 +222,32 @@ static inline int ad9081_framer_status_get(const struct device *dev, uint16_t *s
 static inline int ad9081_deframer_status_get(const struct device *dev, uint16_t *status)
 {
 	return DEVICE_API_GET(ad9081, dev)->deframer_status_get(dev, status);
+}
+
+/**
+ * @brief Retune the coarse (main) receive NCOs.
+ *
+ * Re-programs the frequency tuning word of the selected coarse DDCs, which
+ * @ref ad9081_setup_datapath already set once from the devicetree. Provided so a
+ * caller can sweep the receive downmix frequency in a single boot: a tone that
+ * appears at one setting and not another localises the fault to the mix
+ * frequency, which a fixed devicetree value cannot distinguish from a dead
+ * datapath.
+ *
+ * Changing the mix frequency mid-run does not disturb the JESD204 link -- the
+ * sample rate and the framer geometry are unchanged, only the NCO phase
+ * increment. The devicetree value is not updated, so this does not survive a
+ * reset.
+ *
+ * @param dev       MxFE device.
+ * @param cddc_mask Coarse DDCs to retune, one bit per DDC (bit 0 = CDDC0).
+ * @param shift_hz  Downmix frequency in Hz. Negative shifts up in frequency.
+ * @return 0 on success, negative errno otherwise.
+ */
+static inline int ad9081_rx_coarse_nco_set(const struct device *dev, uint8_t cddc_mask,
+					   int64_t shift_hz)
+{
+	return DEVICE_API_GET(ad9081, dev)->rx_coarse_nco_set(dev, cddc_mask, shift_hz);
 }
 
 /** @} */

@@ -584,6 +584,27 @@ static int ad9081_op_deframer_status_get(const struct device *dev,
 	return 0;
 }
 
+/*
+ * Retune the coarse RX NCOs. The vendor call derives the FTW from the ADC
+ * sample rate it recorded at clk_config time, so passing Hz here keeps the
+ * conversion in one place rather than restating 2^48 / fs at the call site.
+ */
+static int ad9081_op_rx_coarse_nco_set(const struct device *dev,
+				       uint8_t cddc_mask, int64_t shift_hz)
+{
+	struct ad9081_data *data = dev->data;
+
+	if (cddc_mask == 0) {
+		return -EINVAL;
+	}
+
+	if (adi_ad9081_adc_ddc_coarse_nco_set(&data->dev, cddc_mask,
+					      shift_hz)) {
+		return -EIO;
+	}
+	return 0;
+}
+
 static DEVICE_API(ad9081, ad9081_api) = {
 	.sync_oneshot = ad9081_op_sync_oneshot,
 	.sync_nco = ad9081_op_sync_nco,
@@ -593,6 +614,7 @@ static DEVICE_API(ad9081, ad9081_api) = {
 	.deframer_enable = ad9081_op_deframer_enable,
 	.framer_status_get = ad9081_op_framer_status_get,
 	.deframer_status_get = ad9081_op_deframer_status_get,
+	.rx_coarse_nco_set = ad9081_op_rx_coarse_nco_set,
 };
 
 /*
