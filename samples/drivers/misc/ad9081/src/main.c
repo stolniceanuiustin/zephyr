@@ -68,6 +68,17 @@ LOG_MODULE_REGISTER(main, LOG_LEVEL_INF);
 #include "ad9081_bringup.h"
 
 /*
+ * Every raw sys_read32/sys_write32 of a PL core in this sample and in the
+ * jesd204 drivers assumes device_map() hands back virt == phys. On arm64 that is
+ * guaranteed rather than configured -- arch/arm64/core/Kconfig does
+ * `select KERNEL_DIRECT_MAP if MMU` -- but the dependency is invisible at every
+ * use site, so it is asserted once here.
+ */
+BUILD_ASSERT(IS_ENABLED(CONFIG_KERNEL_DIRECT_MAP),
+	     "This sample requires CONFIG_KERNEL_DIRECT_MAP: the PL core drivers "
+	     "rely on device_map() returning virt == phys.");
+
+/*
  * One-shot RX capture: enough samples to dump a few full periods of a
  * fed-in signal per channel, not a real acquisition. 8 converters
  * interleaved (M8), 16-bit signed each -- rx_tpl arms every channel with
