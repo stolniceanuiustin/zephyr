@@ -173,7 +173,7 @@ static const int32_t cos_q12[RX_CAPTURE_SAMPLES_PER_CHAN] = {
 	1567,  1931,  2276,  2598,  2896,  3166,  3406,  3612,  3784,  3920,  4017,  4076,
 };
 
-static unsigned int rx_capture_tone_pct(unsigned int chan)
+static unsigned int rx_capture_bin_pct(unsigned int chan, unsigned int bin)
 {
 	int64_t re = 0, im = 0, energy = 0;
 	int32_t mean = 0;
@@ -191,7 +191,7 @@ static unsigned int rx_capture_tone_pct(unsigned int chan)
 	for (int n = 0; n < RX_CAPTURE_SAMPLES_PER_CHAN; n++) {
 		int32_t x = rx_capture_buf[n * RX_CAPTURE_NUM_CHAN + chan] - mean;
 		/* sin(t) = cos(t - 90 degrees), i.e. a quarter turn back. */
-		int32_t phase = (RX_CAPTURE_TONE_BIN * n) % RX_CAPTURE_SAMPLES_PER_CHAN;
+		int32_t phase = (bin * n) % RX_CAPTURE_SAMPLES_PER_CHAN;
 		int32_t quarter = RX_CAPTURE_SAMPLES_PER_CHAN / 4;
 
 		re += (int64_t)x * cos_q12[phase];
@@ -227,10 +227,46 @@ static void rx_capture_check_tone(void)
 	unsigned int best_pct = 0, best_chan = 0;
 
 	for (unsigned int c = 0; c < RX_CAPTURE_NUM_CHAN; c++) {
-		unsigned int pct = rx_capture_tone_pct(c);
+		unsigned int pct = rx_capture_bin_pct(c, RX_CAPTURE_TONE_BIN);
+		unsigned int top_pct = 0, top_bin = 0;
+		int16_t peak = 0;
 
-		LOG_INF("RX capture: ch%u has %u%% of its energy in bin %u (%u MHz)", c, pct,
-			RX_CAPTURE_TONE_BIN, DAC_DDS_TONE_HZ / 1000000U);
+		/*
+		 * Which bin actually holds the most, and how large the samples are.
+		 * Without these, a tone at the wrong frequency and no tone at all look
+		 * identical -- both just report a low fraction in the expected bin.
+		 */
+		for (unsigned int b = 1; b < RX_CAPTURE_SAMPLES_PER_CHAN / 2; b++) {
+			unsigned int p = rx_capture_bin_pct(c, b);
+
+			if (p > top_pct) {
+				top_pct = p;
+				top_bin = b;
+			}
+		}
+
+		for (int n = 0; n < RX_CAPTURE_SAMPLES_PER_CHAN; n++) {
+			int16_t v = rx_capture_buf[n * RX_CAPTURE_NUM_CHAN + c];
+
+			if (v > peak) {
+				peak = v;
+			}
+		}
+
+		/*
+		 * One line per channel only when a channel is unexpected: a
+		 * channel carrying the tone, or one whose energy piles into some
+		 * other bin. Channels at the noise floor say nothing -- four of
+		 * the eight are the unconnected ADC's, so they are the normal
+		 * case, not a finding.
+		 */
+		if (pct >= RX_CAPTURE_TONE_MIN_PCT || top_pct >= RX_CAPTURE_TONE_MIN_PCT) {
+			LOG_INF("RX capture: ch%u bin%u=%u%%, strongest bin%u=%u%% (%u MHz), peak %d",
+				c, RX_CAPTURE_TONE_BIN, pct, top_bin, top_pct,
+				top_bin * (DAC_DDS_SAMPLE_RATE / 1000000U) /
+					RX_CAPTURE_SAMPLES_PER_CHAN,
+				peak);
+		}
 
 		if (pct > best_pct) {
 			best_pct = pct;
