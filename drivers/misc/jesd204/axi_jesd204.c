@@ -9,7 +9,7 @@
  * disabled here; the actual lane-clock enable + SYSREF + status check happen
  * later, driven by the bring-up sequence, since a JESD204 link only comes alive
  * when the transceiver, link cores, SYSREF and the AD9082 are activated
- * together (see project notes / no-OS jesd204 FSM).
+ * together.
  *
  * Two compatibles rather than one node type with a direction flag, following
  * ADI's Linux drivers: the framer and the deframer share the
@@ -19,9 +19,8 @@
  * them separate compatibles, separate bindings and separate drivers; the
  * direction is which IP core this is, not configuration of a common one.
  *
- * Register offsets, field packing and the ILAS layout are transcribed from
- * no-OS axi_jesd204_{rx,tx}.c. Link geometry comes from the devicetree nodes,
- * named as ADI's Linux binding names them
+ * Link geometry comes from the devicetree nodes, named as ADI's Linux binding
+ * names them
  * (Documentation/devicetree/bindings/iio/jesd204/adi,jesd204-{rx,tx}.txt).
  *
  * SPDX-License-Identifier: Apache-2.0
@@ -58,7 +57,6 @@ BUILD_ASSERT(IS_ENABLED(CONFIG_KERNEL_DIRECT_MAP),
 #define JESD204_REG_LINK_DISABLE      0xc0
 #define JESD204_REG_LINK_CLK_RATIO    0xc8
 #define JESD204_REG_SYSREF_CONF       0x100
-#define JESD204_REG_SYSREF_LMFC_OFFSET 0x104
 #define JESD204_REG_SYSREF_STATUS     0x108
 
 /* TX uses CONF0 at 0x210; RX uses LINK_CONF0 at 0x210 (same offset). */
@@ -66,7 +64,6 @@ BUILD_ASSERT(IS_ENABLED(CONFIG_KERNEL_DIRECT_MAP),
 #define JESD204_REG_LINK_CONF4        0x21C
 #define JESD204_RG_LINK_STATE         0xc4
 #define JESD204_REG_LINK_STATUS       0x280
-#define JESD204_RX_REG_LINK_CONF2     0x240
 #define JESD204_TX_REG_ILAS(x, y)     (((x) * 32 + (y) * 4) + 0x310)
 
 /* Per-lane RX status/error counters (axi_jesd204_rx only). */
@@ -78,7 +75,6 @@ BUILD_ASSERT(IS_ENABLED(CONFIG_KERNEL_DIRECT_MAP),
 
 /* Field bits. */
 #define JESD204_SYSREF_CONF_SYSREF_DISABLE   BIT(0)
-#define JESD204_RX_LINK_CONF2_BUFFER_EARLY_RELEASE BIT(16)
 
 /* SYNTH_DATA_PATH_WIDTH packing. */
 #define JESD204_SYNTH_DATA_PATH_WIDTH_GET(x) ((x) & 0xff)
@@ -113,11 +109,9 @@ struct axi_jesd204_config {
 	/*
 	 * Raw serial lane rate in kHz, same value and property name as the
 	 * sibling adxcvr node's adi,lane-rate-khz (axi_adxcvr.c). Only used to
-	 * compute the "Reported Link Clock" / lane-rate / LMFC-LEMC lines of
-	 * axi_jesd204_status_read()'s table -- this driver still never queries
-	 * a rate to configure anything, so the earlier "no clock awareness"
-	 * design in adi,axi-jesd204-rx.yaml is unchanged for configuration; this
-	 * is a plain integer read once for a log line, not a phandle dependency.
+	 * compute the "Reported Link Clock" / lane-rate / LMFC lines of
+	 * axi_jesd204_status_read()'s table. Nothing is configured from it, so
+	 * this stays a plain integer rather than a clock phandle dependency.
 	 */
 	uint32_t lane_rate_khz;
 };
@@ -146,10 +140,9 @@ static inline void jesd_write(const struct device *dev, uint32_t reg,
 }
 
 /*
- * 1:1 map every link core's register page before anything touches it. Still a
- * SYS_INIT rather than DEVICE_MMIO_MAP for the same reason as axi_adxcvr.c and
- * axi_tpl.c: swapping the two is a behaviour change (different init level,
- * different failure reporting) and belongs in its own commit -- PLAN step 3(b).
+ * 1:1 map every link core's register page before anything touches it. A SYS_INIT
+ * rather than DEVICE_MMIO_MAP because the mapping must land at PRE_KERNEL_1,
+ * ahead of any driver init that might read a PL register.
  */
 #define JESD204_MAP_ONE(node)                                                                      \
 	do {                                                                                       \
@@ -174,7 +167,7 @@ static int axi_jesd204_map(void)
 
 SYS_INIT(axi_jesd204_map, PRE_KERNEL_1, 0);
 
-/* ILAS checksum (sum of link fields, low 8 bits) -- no-OS calc_ilas_chksum. */
+/* ILAS checksum: sum of the announced link fields, low 8 bits. */
 static uint8_t jesd_ilas_chksum(const struct device *dev, uint32_t lane_id)
 {
 	const struct axi_jesd204_config *cfg = dev->config;
@@ -201,8 +194,7 @@ static uint8_t jesd_ilas_chksum(const struct device *dev, uint32_t lane_id)
 
 /*
  * Program the TX deframer's ILAS (Initial Lane Alignment Sequence) words for one
- * lane. These are the link parameters the TX will announce during ILAS. Layout
- * from no-OS axi_jesd204_tx_set_lane_ilas_legacy().
+ * lane. These are the link parameters the TX will announce during ILAS.
  */
 static void jesd_tx_set_lane_ilas(const struct device *dev, uint32_t lane)
 {
@@ -238,8 +230,8 @@ static void jesd_tx_set_lane_ilas(const struct device *dev, uint32_t lane)
 
 /*
  * Configure one link core: verify identity, hold the link disabled, and program
- * the multiframe/frame geometry (+ ILAS for TX). Mirrors no-OS
- * axi_jesd204_{tx,rx}_init + apply_config_legacy, configure-phase only.
+ * the multiframe/frame geometry (+ ILAS for TX). Configure phase only -- the
+ * lane-clock enable and status check happen later, from the bring-up sequence.
  */
 int axi_jesd204_configure(const struct device *dev)
 {
@@ -312,8 +304,10 @@ int axi_jesd204_configure(const struct device *dev)
 	}
 
 	/*
-	 * subclass 1 -> SYSREF is used, so we do NOT set SYSREF_DISABLE. (no-OS
-	 * only disables SYSREF / sets buffer-early-release for subclass 0.)
+	 * subclass 1 -> SYSREF is used, so SYSREF_DISABLE stays clear. The
+	 * subclass-0 registers (SYSREF_LMFC_OFFSET, RX LINK_CONF2's
+	 * buffer-early-release) are deliberately not touched, and not defined
+	 * above, since nothing on this board runs subclass 0.
 	 */
 
 	if (cfg->tx) {
@@ -343,8 +337,8 @@ int axi_jesd204_lane_clk_enable(const struct device *dev)
 	/*
 	 * TX additionally clears the SYSREF status (write 0x3 to the sticky
 	 * captured/alignment-error bits) so the first SYSREF after the link is
-	 * enabled is what the status reports. no-OS does this on the deframer
-	 * only; the framer's equivalent bits are not consulted here.
+	 * enabled is what the status reports. Deframer only -- the framer's
+	 * equivalent bits are not consulted anywhere in this driver.
 	 */
 	if (cfg->tx) {
 		jesd_write(dev, JESD204_REG_SYSREF_STATUS, 0x3);
@@ -355,7 +349,7 @@ int axi_jesd204_lane_clk_enable(const struct device *dev)
 }
 
 /*
- * Per-lane desync check -- port of no-OS axi_jesd204_rx_check_lane_status().
+ * Per-lane desync check.
  *
  * Returns true if this lane needs the link restarted. For 8B/10B a *non-zero*
  * low two bits means the lane is fine (CGS/frame sync achieved); all-zero means
@@ -383,8 +377,7 @@ static bool jesd_rx_check_lane_status(const struct device *dev, uint32_t lane)
 }
 
 /*
- * Link watchdog -- port of no-OS axi_jesd204_rx_watchdog(), called once after
- * bring-up (no-OS app.c:448).
+ * Link watchdog, called once after bring-up.
  *
  * A link can reach DATA with one lane already unhappy: the aggregate status only
  * reports the link state, so a lane that lost alignment during ILAS stays
@@ -395,10 +388,9 @@ static bool jesd_rx_check_lane_status(const struct device *dev, uint32_t lane)
  * still negotiating has lanes legitimately mid-alignment, and disabling it then
  * would interrupt a bring-up that was going to succeed.
  *
- * One deliberate deviation: no-OS compares the whole status word against 3,
- * while this masks the state field. On this core the RX word reads exactly 0x3,
- * so both agree; masking only makes it tolerant of status bits above the state
- * field rather than silently skipping the check.
+ * The DATA test masks the state field rather than comparing the whole status
+ * word, so a core that sets status bits above the state field still gets
+ * checked instead of silently skipped.
  */
 int axi_jesd204_rx_watchdog(const struct device *dev)
 {
@@ -431,6 +423,13 @@ int axi_jesd204_rx_watchdog(const struct device *dev)
 		return 0;
 	}
 
+	/*
+	 * num_lanes, not cfg->l -- the opposite choice from the ILAS loop in
+	 * configure(). LANE_STATUS is a real register per *synthesised* lane, so
+	 * iterating a larger declared L would read past the core's map. ILAS is
+	 * the reverse case: those words are what we announce, so every declared
+	 * lane must get them even if the bitstream has fewer.
+	 */
 	for (uint32_t lane = 0; lane < data->num_lanes; lane++) {
 		restart |= jesd_rx_check_lane_status(dev, lane);
 	}
@@ -467,10 +466,13 @@ bool axi_jesd204_link_is_data(const struct device *dev)
 }
 
 /*
- * Print the no-OS-style multi-line status table -- port of
- * axi_jesd204_{rx,tx}_status_read(). MHz values are fixed-point (whole.thousandths),
- * matching no-OS's own printf formatting, since this target has no libc float
- * printf support wired up for %f.
+ * Print the multi-line link status table. MHz values are fixed-point
+ * (whole.thousandths) because this target has no libc float printf support wired
+ * up for %f.
+ *
+ * "Reported Link Clock" is computed as lane_rate_khz / 40 rather than read from a
+ * clock provider: this driver has no clock phandle, and for 8B/10B the link clock
+ * is the lane rate over 40 by definition.
  */
 static void jesd_status_table(const struct device *dev, uint32_t state,
 			       uint32_t status)
