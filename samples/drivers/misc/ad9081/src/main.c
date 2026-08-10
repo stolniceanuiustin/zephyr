@@ -3,50 +3,37 @@
  *
  * AD9081/AD9082 + HMC7044 JESD204B bring-up.
  *
- * A Zephyr counterpart to the no-OS ad9081 example
- * (no-OS/projects/ad9081/src/app.c), profile zcu102_ad9081_m8_l4: same board,
- * same M8/L4/F4/K32/S1/NP16 geometry, TX link-mode 9, RX link-mode 10, 8B10B
- * subclass 1.
+ * Board profile zcu102_ad9081_m8_l4: M8/L4/F4/K32/S1/NP16 geometry, TX link-mode
+ * 9, RX link-mode 10, 8B10B subclass 1.
  *
- * The sequence below is app.c's, step for step:
+ * The bring-up sequence:
  *
- *   app_clock_init()            -> the adi,hmc7044 clock_control
- *                                  driver's own init()         (app.c:343)
- *   app_jesd_init()             -> axi_adxcvr_configure() +
- *                                  axi_jesd204_configure()     (app.c:347)
- *   ad9081_init()               -> ad9081_setup_datapath()     (app.c:367)
- *   jesd204_fsm_start()         -> jesd204_bringup()           (app.c:446)
- *   axi_jesd204_rx_watchdog()   -> axi_jesd204_rx_watchdog()   (app.c:448)
- *   axi_jesd204_{tx,rx}_status_read() -> axi_jesd204_status_read()
- *                                                              (app.c:450-451)
- *   axi_dac_init()/axi_adc_init() -> axi_tpl_configure() +
- *                                    axi_tpl_tx_dds()          (app.c:453-454)
+ *   1. the adi,hmc7044 clock_control driver's own init()
+ *   2. axi_adxcvr_configure() + axi_jesd204_configure()
+ *   3. ad9081_setup_datapath()
+ *   4. jesd204_fsm_start()
+ *   5. axi_jesd204_rx_watchdog(), then axi_jesd204_{tx,rx}_status_read()
+ *   6. axi_tpl_configure() + axi_tpl_tx_dds()
  *
  * What this delivers at the DAC
  * -----------------------------
- * The same thing no-OS delivers: an FPGA-generated tone from the TX transport
- * core's DDS. no-OS passes `.channels = NULL` to axi_dac_init(), which makes
- * axi_dac_data_setup() take its else branch (axi_dac_core.c:1227-1238) and write
- * DATA_SELECT=0 (DATA_SEL_DDS) to every converter at 3 MHz and 0.05 full scale.
+ * An FPGA-generated tone from the TX transport core's DDS: DATA_SELECT=0
+ * (DATA_SEL_DDS) on every converter, 3 MHz at 0.05 full scale.
  *
- * So the DMA engines and the axi_data_offload cores are deliberately absent here:
- * with DDS selected the transport core's dac_enable is never asserted
- * (ad_ip_jesd204_tpl_dac_channel.v:144), so they are not in the datapath. The
- * reference design does not stream from DDR -- in its default build (IIOD=n) it
- * starts no DMA transfer in either direction, and axi_dmac_init() only detects
- * capabilities (axi_dmac.c:326-350). See COMPARE_noos_vs_zephyr.md.
+ * The DMA engines and the axi_data_offload cores are deliberately absent: with
+ * DDS selected the transport core's dac_enable is never asserted
+ * (ad_ip_jesd204_tpl_dac_channel.v:144), so they are not in the datapath at all.
  *
- * Note on order: no-OS configures the transport cores *after* the link reaches
+ * Note on order: the transport cores are configured *after* the link reaches
  * DATA, because the DAC core's SYNC pulse and its CLK_FREQ/CLK_RATIO readback are
- * only meaningful against a running sample clock. That order is preserved --
- * axi_tpl_configure() writes the datapath registers and axi_tpl_enable(), driven
- * from inside the bring-up sequence, re-latches SYNC once the clocks are live.
+ * only meaningful against a running sample clock. axi_tpl_configure() writes the
+ * datapath registers, and axi_tpl_enable(), driven from inside the bring-up
+ * sequence, re-latches SYNC once the clocks are live.
  *
  * IMPORTANT: JESD204 is a negotiated multi-device link -- the transceiver, link
  * cores, SYSREF and the AD9082 cannot be brought up or status-checked in
  * isolation. Each block only *configures* here; activation and the single
- * meaningful status check happen together in the bring-up FSM, mirroring the
- * no-OS/Linux jesd204 state machine.
+ * meaningful status check happen together in the bring-up FSM.
  *
  * SPDX-License-Identifier: Apache-2.0
  */
@@ -127,7 +114,7 @@ BUILD_ASSERT(IS_ENABLED(CONFIG_KERNEL_DIRECT_MAP),
  */
 #define DAC_DDS_SAMPLE_RATE  (250 * 1000 * 1000)
 #define DAC_DDS_TONE_HZ (DAC_DDS_SAMPLE_RATE / RX_CAPTURE_SAMPLES_PER_CHAN * RX_CAPTURE_TONE_BIN)
-#define DAC_DDS_SCALE_MICRO (50 * 1000) /* 0.05 FS, as no-OS's example emits */
+#define DAC_DDS_SCALE_MICRO (50 * 1000) /* 0.05 full scale */
 
 /*
  * Which HMC7044 output drives the GT reference clock. Taken from the transceiver
@@ -604,8 +591,7 @@ int main(void)
 
 	/*
 	 * Bring the link up: activate the transceiver, link cores and the chip's
-	 * framer/deframer together, then read link status. This is the counterpart
-	 * of no-OS jesd204_fsm_start() (app.c:446).
+	 * framer/deframer together, then read link status.
 	 */
 	ret = jesd204_bringup();
 	if (ret) {
@@ -615,8 +601,7 @@ int main(void)
 	LOG_INF("SUCCESS: JESD204B link up");
 
 	/*
-	 * Per-lane check, as no-OS does immediately after its FSM (app.c:448).
-	 * Reaching DATA does not guarantee every lane is aligned; if one is not,
+	 * Per-lane check, immediately after the FSM. Reaching DATA does not guarantee every lane is aligned; if one is not,
 	 * the watchdog bounces the link and returns -EAGAIN. Re-read the status
 	 * afterwards rather than treating that as fatal.
 	 */
@@ -626,7 +611,7 @@ int main(void)
 	}
 
 	/*
-	 * no-OS app.c:450-451 -- the one meaningful link status check. Both ends
+	 * The one meaningful link status check. Both ends
 	 * are read and logged before either verdict is taken, so a failure on TX
 	 * does not hide RX's state.
 	 */
@@ -641,8 +626,7 @@ int main(void)
 
 	/*
 	 * Verify the transport layer, now that the link underneath it is carrying
-	 * DATA. This is no-OS's axi_dac_init()/axi_adc_init() position: after
-	 * jesd204_fsm_start() returns, not inside a phase (app.c:454-455). The TPL
+	 * DATA -- after jesd204_bringup() returns, not inside a phase. The TPL
 	 * cores are downstream of the link -- they only map JESD frames onto
 	 * converters -- so they are not JESD204 topology devices.
 	 *
@@ -656,8 +640,8 @@ int main(void)
 	}
 
 	/*
-	 * Point the DAC converters at the transport core's DDS, which is what the
-	 * no-OS example emits, upconverted by the chip's +1 GHz main NCO. Scope
+	 * Point the DAC converters at the transport core's DDS, upconverted by the
+	 * chip's +1 GHz main NCO. Scope
 	 * the DAC output to see it.
 	 *
 	 * This has to happen BEFORE the RX capture below. It used to run after,

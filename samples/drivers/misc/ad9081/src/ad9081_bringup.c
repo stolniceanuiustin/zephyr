@@ -17,36 +17,31 @@
  * That order lives in the tables below rather than in a hand-written sequence.
  * Each participating device registers callbacks against the phases it cares
  * about, and jesd204_fsm_start() (jesd204_fsm.c) walks the phases op-major:
- * every device completes a phase before any device starts the next. This is the
- * structure of the no-OS/Linux jesd204 framework -- see
- * no-OS drivers/frequency/hmc7044/hmc7044.c:1441 and
- * drivers/axi_core/jesd204/axi_jesd204_rx.c:840 for the reference tables.
+ * every device completes a phase before any device starts the next.
  *
- * TWO LINKS, as in no-OS. The AD9082's JTX framer (chip transmits JESD, analogue
+ * TWO LINKS. The AD9082's JTX framer (chip transmits JESD, analogue
  * in -- the RX datapath) and its JRX deframer (chip receives JESD, analogue out
  * -- the TX datapath) are separate JESD204 links with separate IDs, and the
  * framework visits each in turn within every phase. The IDs and the naming are
- * the converter's, from no-OS drivers/adc/ad9081/ad9081.h:239-241.
+ * the converter's.
  *
- * `is_transmit` throughout is from the converter's point of view (no-OS
- * ad9081.c:923, `is_transmit = !jtx`): true on DEFRAMER_LINK0_TX, false on
+ * `is_transmit` throughout is from the converter's point of view: true on
+ * DEFRAMER_LINK0_TX, false on
  * FRAMER_LINK0_RX. It is the switch every per-link callback below uses to decide
  * which of its two instances the phase applies to.
  *
- * Phase assignment here, and where it comes from in no-OS:
+ * Phase assignment, and why each phase is the right one:
  *
  *   CLK_SYNC_STAGE1  chip one-shot SYNC (subclass 1). The clock-sync phases are
- *                    where no-OS's HMC7044 driver does its tree sync
- *                    (hmc7044.c:1447-1458); this chip's SYNC belongs in the same
- *                    window.
+ *                    the window in which the clock tree is synchronised, so the
+ *                    chip's SYNC belongs there too.
  *   CLK_SYNC_STAGE2  chip NCO sync.
  *   CLOCKS_ENABLE    GT reset-release, then FPGA lane clocks, then -- because the
  *                    converter is the topology's top device and top devices are
  *                    visited last -- the chip's JESD PLL lock check and 204C
- *                    calibration. That is exactly no-OS's order: adxcvr before
- *                    the link cores (jesd204_clk.c:44-66), converter last
- *                    (jesd204-fsm.c:42-53), and the PLL check needs a running GT
- *                    to be meaningful.
+ *                    calibration. adxcvr must precede the link cores (they need a
+ *                    running GT clock), and the PLL check needs a running GT to be
+ *                    meaningful, so the converter goes last.
  *   LINK_ENABLE      chip JRX deframer enable, after clearing the JRX
  *                    transport-layer buffer protection. TX link only -- the JTX
  *                    framer runs once its digital reset is released and SYSREF
@@ -57,10 +52,10 @@
  * Ordering *within* a phase is: non-top devices in the order they appear in
  * board_topology_devs[] below, then the top device. Nothing else. The rank
  * mechanism a previous version of this file used is gone -- `is_top_device` is
- * what keeps the converter last, and it is what no-OS uses.
+ * what keeps the converter last.
  *
- * SYSREF: the HMC7044 emits DEV_SYSREF / FPGA_SYSREF continuously at 1.953 MHz
- * (hmc7044.c), so no device registers a sysref_cb and no phase requests a pulse.
+ * SYSREF: the HMC7044 emits DEV_SYSREF / FPGA_SYSREF continuously at 1.953 MHz,
+ * so no device registers a sysref_cb and no phase requests a pulse.
  * Subclass-1 alignment happens against that free-running SYSREF as each end is
  * enabled. The framework hook exists for a board that gates SYSREF instead.
  *
@@ -84,10 +79,8 @@ LOG_MODULE_REGISTER(jesd_fsm, LOG_LEVEL_INF);
 #include "jesd204_fsm.h"
 
 /*
- * Link IDs, from no-OS drivers/adc/ad9081/ad9081.h:239-241. The values matter
- * only in that the two links differ; they are the converter's convention and are
- * kept identical to it so a topology copied from a no-OS project ports without
- * renumbering.
+ * Link IDs. The values matter only in that the two links differ; these are the
+ * converter's own convention, kept as-is rather than renumbered to 0/1.
  */
 #define DEFRAMER_LINK0_TX 0
 #define FRAMER_LINK0_RX   2
@@ -112,7 +105,7 @@ BUILD_ASSERT(DT_PROP_LEN(AD9081_NODE, adi_jesd204_devices) == 4,
 
 /*
  * Every callback returns JESD204_STATE_CHANGE_DONE on success and a negative
- * errno on failure, as in no-OS. On UNINIT most of them have nothing to undo:
+ * errno on failure. On UNINIT most of them have nothing to undo:
  * the phase is a no-op on the way down and says so by returning DONE.
  */
 #define JESD204_STATE_CHANGE_DONE 1
@@ -165,16 +158,15 @@ static int ad9081_fsm_nco_sync(struct jesd204_dev *jdev,
 /*
  * JESD PLL lock check, plus the deframer's serdes calibration on the TX link.
  *
- * no-OS splits it the same way (ad9081.c:1047-1100): the PLL status read is
- * unconditional, and the calibration is guarded by lnk->is_transmit because it
- * touches the JRX deframer, which only the TX link has. no-OS additionally
- * guards the calibration on JESD204_VERSION_C; this port is 204B-only, and the
- * calibration is run anyway because it was measured to be needed on this
- * silicon.
+ * The PLL status read is unconditional; the calibration is guarded by
+ * lnk->is_transmit because it touches the JRX deframer, which only the TX link
+ * has. The reference code additionally guards the calibration on
+ * JESD204_VERSION_C; this port is 204B-only, and the calibration is run anyway
+ * because it was measured to be needed on this silicon.
  *
  * Being a per-link callback on the top device, the PLL status read happens once
- * per link -- two identical reads and two identical log lines. That is what
- * no-OS does too, and it is left that way rather than hoisted to a per_device
+ * per link -- two identical reads and two identical log lines. That is left as-is
+ * rather than hoisted to a per_device
  * callback: per_device would run before any link's per_link work in this phase,
  * which is a different position in the sequence, not just a different log.
  */
@@ -213,8 +205,8 @@ static int ad9081_fsm_clks_enable(struct jesd204_dev *jdev,
 }
 
 /*
- * Enable the chip's JRX deframer. TX link only, as in no-OS
- * (ad9081.c:1125-1132, guarded on lnk->is_transmit): the JTX framer has no
+ * Enable the chip's JRX deframer. TX link only (guarded on lnk->is_transmit):
+ * the JTX framer has no
  * equivalent enable here -- it runs once its digital reset is released, which
  * startup_rx already did, and SYSREF arrives.
  */
@@ -243,7 +235,8 @@ static int ad9081_fsm_link_enable(struct jesd204_dev *jdev,
 	 * deframer output when the elastic-buffer phase is judged marginal. It
 	 * resets to 1 -- measured 0x4A1 = 0x41 on this board -- and nothing
 	 * clears it on a 204B link: the vendor API clears only bit7
-	 * BUF_PROTECTION, and no-OS clears bit6 only for 204C on rev<3 silicon.
+	 * BUF_PROTECTION, and the reference code clears bit6 only for 204C on
+	 * rev<3 silicon.
 	 * A 204B port therefore inherits it enabled, so this write brings the
 	 * link in line with what the reference code does for 204C.
 	 *
@@ -271,13 +264,11 @@ static int ad9081_fsm_link_enable(struct jesd204_dev *jdev,
 
 /*
  * Read the chip-side status word for this link: the JRX deframer's on the TX
- * link, the JTX framer's on the RX link. no-OS splits it the same way
- * (ad9081.c:1157-1165).
+ * link, the JTX framer's on the RX link.
  *
  * Reported, not gated. The chip status words are diagnostic here -- the
  * authoritative DATA check is the FPGA link core's own, in
- * axi_jesd204_fsm_link_running(). no-OS treats them the same way (app.c:450-451
- * prints them and acts on neither).
+ * axi_jesd204_fsm_link_running().
  */
 static int ad9081_fsm_link_running(struct jesd204_dev *jdev,
 				   enum jesd204_state_op_reason reason,
@@ -311,10 +302,10 @@ static int ad9081_fsm_link_running(struct jesd204_dev *jdev,
 }
 
 /*
- * max_num_links = 2: this chip serves both its framer and its deframer link.
- * no-OS declares 4 (ad9081.c:1425) because the part supports dual-link in each
- * direction; this board's bitstream does not, so 2 is the honest bound and the
- * framework rejects a topology that hands it more.
+ * max_num_links = 2: this chip serves both its framer and its deframer link. The
+ * part itself supports dual-link in each direction (so 4), but this board's
+ * bitstream does not, so 2 is the honest bound and the framework rejects a
+ * topology that hands it more.
  */
 static const struct jesd204_dev_data ad9081_jesd204_data = {
 	.max_num_links = 2,
@@ -351,12 +342,12 @@ static struct jesd204_dev ad9081_jdev = {
  *
  * One jesd204_dev per adxcvr instance, each carrying its Zephyr device in
  * `priv`, so the phase table is shared and the topology says which instance
- * serves which link. That is how no-OS's link cores work
- * (axi_jesd204_rx.c:735-736 recovers its instance from jesd204_dev_priv()); the
- * GT itself is not a topology device in no-OS, where it is reached through the
- * lane-clock abstraction instead (jesd204_clk.c:48-52). Making it one here is
- * the same sequence expressed as a device: adxcvr before the link cores, both
- * before the converter.
+ * serves which link -- each callback recovers its instance from
+ * jesd204_dev_priv().
+ *
+ * The GT is a topology device here rather than being reached through a lane-clock
+ * abstraction: the sequence is the same either way, and expressing it as a device
+ * makes it explicit -- adxcvr before the link cores, both before the converter.
  */
 static int adxcvr_fsm_clks_enable(struct jesd204_dev *jdev,
 				  enum jesd204_state_op_reason reason,
@@ -424,9 +415,8 @@ static int axi_jesd204_fsm_clks_enable(struct jesd204_dev *jdev,
 /*
  * The authoritative link check: this link's FPGA core reporting DATA.
  *
- * no-OS polls here rather than assuming -- axi_jesd204_rx.c:818-823 retries the
- * status read 20 times at 4 ms, per core, which is what this does now that each
- * core is its own device on its own link.
+ * Polled rather than assumed: the status read is retried 20 times at 4 ms, per
+ * core, since each core is its own device on its own link.
  */
 static int axi_jesd204_fsm_link_running(struct jesd204_dev *jdev,
 					enum jesd204_state_op_reason reason,
@@ -442,8 +432,8 @@ static int axi_jesd204_fsm_link_running(struct jesd204_dev *jdev,
 	}
 
 	/*
-	 * Poll quietly, then log the outcome once. 20 attempts at 4 ms is no-OS's
-	 * budget (axi_jesd204_rx.c:813, :819-823); logging inside the loop would
+	 * Poll quietly, then log the outcome once. 20 attempts at 4 ms is the
+	 * budget the reference code allows; logging inside the loop would
 	 * emit a line per attempt and bury the failure it is waiting on.
 	 */
 	for (int attempt = 0; attempt < 20 && !is_data; attempt++) {
@@ -487,13 +477,12 @@ static struct jesd204_dev tx_jesd_jdev = {
  * The TPL transport cores are deliberately NOT in this topology.
  *
  * They are downstream of the link: they only sample-map JESD frames onto
- * converters, and their verify step needs a link that is already running. no-OS
- * treats them the same way -- axi_dac_init()/axi_adc_init() are called after
- * jesd204_fsm_start() returns (app.c:454-455), not from a phase. An earlier
- * version of this file gave them an OPT_POST_RUNNING_STAGE row, which put the
- * same work inside the walk; the position was right but it made a transport
+ * converters, and their verify step needs a link that is already running, so they
+ * are configured after jesd204_fsm_start() returns rather than from a phase. An
+ * earlier version of this file gave them an OPT_POST_RUNNING_STAGE row, which put
+ * the same work inside the walk; the position was right but it made a transport
  * driver look like a link participant. axi_tpl_enable() is called from main()
- * after jesd204_bringup(), where no-OS calls it.
+ * after jesd204_bringup() instead.
  */
 
 /* ------------------------------------------------------------ topology --- */
@@ -501,12 +490,6 @@ static struct jesd204_dev tx_jesd_jdev = {
 /*
  * THE BOARD TOPOLOGY. This array is what a port to another board edits, and in
  * most cases the only thing.
- *
- * Its shape is no-OS's (projects/ad9081/src/app.c:387-441) so that a topology
- * from a no-OS project ports by substituting the device handle:
- *
- *     no-OS:   .jdev = rx_jesd->jdev
- *     here:    .jdev = &rx_jesd_jdev
  *
  * Two rules govern what this array can say, both enforced by
  * jesd204_topology_init():
@@ -525,10 +508,10 @@ static struct jesd204_dev tx_jesd_jdev = {
  *
  * Not in this array: the HMC7044. It is a Zephyr clock_control driver that has
  * the tree locked and SYSREF running before any of this, and it registers no
- * phase callbacks -- so a row for it would be visited and do nothing. no-OS
- * lists it (app.c:388-393) because there its clock-tree sync happens inside the
- * CLK_SYNC phases and it is the SYSREF provider. If a board ever needs gated
- * SYSREF, that is the row to add, with .is_sysref_provider = true.
+ * phase callbacks -- so a row for it would be visited and do nothing. A design
+ * where the clock-tree sync happens inside the CLK_SYNC phases, or where the
+ * clock chip gates SYSREF, would list it: that is the row to add, with
+ * .is_sysref_provider = true.
  */
 static const struct jesd204_topology_dev board_topology_devs[] = {
 	{
@@ -567,9 +550,8 @@ static const struct jesd204_topology_dev board_topology_devs[] = {
 static struct jesd204_topology topology;
 
 /*
- * Built once, on first use, from board_topology_devs[]. no-OS calls
- * jesd204_topology_init() from application code before the FSM (app.c:443-444);
- * doing it lazily here keeps jesd204_bringup() a single call for the sample and
+ * Built once, on first use, from board_topology_devs[]. Doing it lazily rather
+ * than from application code before the FSM keeps jesd204_bringup() a single call for the sample and
  * for the fault-injection suite, which brings the link up more than once.
  */
 static int topology_ready(void)

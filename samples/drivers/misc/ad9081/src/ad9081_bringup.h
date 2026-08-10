@@ -25,13 +25,12 @@ int jesd204_bringup(void);
 
 /*
  * Tear the link down: the same phase tables walked in reverse with
- * REASON_UNINIT, as no-OS jesd204_fsm_stop() does.
+ * REASON_UNINIT.
  *
  * Currently that means one thing only -- disabling the chip's JRX deframer. The
  * GT transceivers, the FPGA lane clocks and the HMC7044 clock tree all stay
- * running, because none of the blocks here has a disable entry point yet
- * (no-OS has adxcvr_clk_disable() / axi_jesd204_*_lane_clk_disable(); this port
- * has not needed them). So this is a link stop, not a full unwind.
+ * running, because none of the blocks here has a disable entry point yet -- this
+ * port has not needed one. So this is a link stop, not a full unwind.
  *
  * That partial unwind is nevertheless enough to re-bring-up from: tearing the
  * link down and calling jesd204_bringup() again reaches DATA the second time

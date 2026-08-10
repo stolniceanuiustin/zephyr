@@ -4,14 +4,12 @@
  * JESD204 bring-up framework -- topology construction and the state machine
  * walk.
  *
- * Port of no-OS jesd204/jesd204-core.c (jesd204_topology_init) and
- * jesd204/jesd204-fsm.c (jesd204_fsm_start / jesd204_fsm_stop). The walk is four
- * nested loops -- phase, link, device, and the device's own link list -- and
- * everything that makes a link come up in the right order is expressed in the
- * device tables and in the topology, not here.
+ * The walk is four nested loops -- phase, link, device, and the device's own link
+ * list -- and everything that makes a link come up in the right order is
+ * expressed in the device tables and in the topology, not here.
  *
  * The visit order within a phase is the part worth being careful about, because
- * it is the part hardware notices. Forward (jesd204-fsm.c:21-53):
+ * it is the part hardware notices. Forward:
  *
  *     for each link:
  *         for each non-top device that serves this link, in array order:
@@ -19,7 +17,7 @@
  *         top device's per_link
  *     top device's per_device
  *
- * Reverse (jesd204-fsm.c:71-97) mirrors it: the top device's per_device first,
+ * Reverse mirrors it: the top device's per_device first,
  * then per link in reverse, the top device's per_link before the non-top devices
  * in reverse array order.
  *
@@ -72,8 +70,8 @@ static bool top_declares_link(const struct jesd204_dev_top *top,
 
 /*
  * Shape checks on one row, applied to top and non-top rows alike. See the
- * jesd204_topology_init() comment in the header for why these exist when no-OS
- * has none of them.
+ * jesd204_topology_init() comment in the header for why a malformed topology is
+ * rejected rather than trusted.
  */
 static int check_row(const struct jesd204_topology_dev *row, unsigned int idx)
 {
@@ -95,9 +93,9 @@ static int check_row(const struct jesd204_topology_dev *row, unsigned int idx)
 	}
 
 	/*
-	 * max_num_links is what the driver says it can serve. no-OS carries the
-	 * field and never checks it; a device handed more links than it declares
-	 * would run its per-link callback for a link it has no state for.
+	 * max_num_links is what the driver says it can serve. Checked here
+	 * because a device handed more links than it declares would run its
+	 * per-link callback for a link it has no state for.
 	 */
 	if (row->jdev->dev_data->max_num_links &&
 	    row->links_number > row->jdev->dev_data->max_num_links) {
@@ -145,8 +143,8 @@ int jesd204_topology_init(struct jesd204_topology *topology,
 	/*
 	 * First pass: find the top device and validate every row. The top row has
 	 * to be known before the non-top rows can be checked against its link
-	 * set, and it may appear anywhere in the array (no-OS's ad9081 project
-	 * puts it last, app.c:434-439).
+	 * set, and it may appear anywhere in the array -- on this board it is the
+	 * last row.
 	 */
 	for (unsigned int i = 0; i < devs_number; i++) {
 		ret = check_row(&devs[i], i);
@@ -188,7 +186,7 @@ int jesd204_topology_init(struct jesd204_topology *topology,
 	}
 
 	/*
-	 * The top device declares the topology's links (jesd204-core.c:104-109).
+	 * The top device declares the topology's links.
 	 * active_links[] is what per-link callbacks are handed, so the direction
 	 * is stamped in here, once, from the row that owns the link set.
 	 */
@@ -220,10 +218,10 @@ int jesd204_topology_init(struct jesd204_topology *topology,
 		}
 
 		/*
-		 * post_state_sysref is only honoured on the top device, as in
-		 * no-OS (jesd204-fsm.c:44-52 tests jdev_top's ops and no
-		 * others). Silently ignoring it on a non-top device would leave
-		 * a board author waiting for a SYSREF that never comes.
+		 * post_state_sysref is only honoured on the top device -- the
+		 * walk below tests jdev_top's ops and no others. Silently
+		 * ignoring it on a non-top device would leave a board author
+		 * waiting for a SYSREF that never comes.
 		 */
 		for (enum jesd204_dev_op op = 0; op < __JESD204_MAX_OPS; op++) {
 			if (devs[i].jdev->dev_data->state_ops[op].post_state_sysref) {
@@ -260,7 +258,7 @@ int jesd204_sysref_async(struct jesd204_topology *topology)
 	}
 
 	/*
-	 * No provider is not an error (no-OS jesd204-core.c:358-360). On this
+	 * No provider is not an error. On this
 	 * board it is the expected case: the HMC7044 emits DEV_SYSREF/FPGA_SYSREF
 	 * continuously, so subclass-1 alignment happens against the free-running
 	 * pulse train rather than an on-demand one.
@@ -278,11 +276,8 @@ int jesd204_sysref_async(struct jesd204_topology *topology)
 
 /*
  * Run one callback and count it. A callback returning JESD204_STATE_CHANGE_DONE
- * (1) or DEFER (0) is a success; no-OS uses those as its "state advanced" signal
- * and discards them entirely (jesd204-fsm.c:31-43). Negative is a failure. That
- * means a callback here can report a real error where in no-OS it would vanish
- * -- the FSM still does not abort on it, but it is counted and logged rather
- * than lost.
+ * (1) or DEFER (0) is a success; only a negative return is a failure. The FSM
+ * does not abort on a failure, but it is counted and logged rather than lost.
  */
 static int run_dev_cb(struct jesd204_dev *jdev, enum jesd204_dev_op op,
 		      enum jesd204_state_op_reason reason)
@@ -394,8 +389,7 @@ int jesd204_fsm_start(struct jesd204_topology *topology, unsigned int link_idx)
 	for (enum jesd204_dev_op op = 0; op < __JESD204_MAX_OPS; op++) {
 		/*
 		 * One flag per non-top device per phase: a device serving two
-		 * links must not run its per_device callback twice
-		 * (jesd204-fsm.c:13-14, :19-24).
+		 * links must not run its per_device callback twice.
 		 */
 		bool per_device_done[JESD204_MAX_DEVS] = { false };
 		int failures = 0;
@@ -430,7 +424,7 @@ int jesd204_fsm_start(struct jesd204_topology *topology, unsigned int link_idx)
 				}
 			}
 
-			/* Top device last within the link (jesd204-fsm.c:42-48). */
+			/* Top device last within the link. */
 			if (top->jdev->dev_data->state_ops[op].per_link) {
 				failures += run_link_cb(top->jdev, op,
 					JESD204_STATE_OP_REASON_INIT, lnk);
@@ -441,7 +435,7 @@ int jesd204_fsm_start(struct jesd204_topology *topology, unsigned int link_idx)
 			}
 		}
 
-		/* Then once for the phase (jesd204-fsm.c:49-53). */
+		/* Then once for the phase. */
 		if (top->jdev->dev_data->state_ops[op].per_device) {
 			failures += run_dev_cb(top->jdev, op,
 					       JESD204_STATE_OP_REASON_INIT);
@@ -496,8 +490,7 @@ int jesd204_fsm_stop(struct jesd204_topology *topology, unsigned int link_idx)
 		/*
 		 * Mirror image of the forward walk: the top device's per_device
 		 * comes first here, then each link in reverse with the top
-		 * device's per_link ahead of the non-top devices
-		 * (jesd204-fsm.c:74-96).
+		 * device's per_link ahead of the non-top devices.
 		 */
 		if (top->jdev->dev_data->state_ops[op].per_device) {
 			failures += run_dev_cb(top->jdev, op,

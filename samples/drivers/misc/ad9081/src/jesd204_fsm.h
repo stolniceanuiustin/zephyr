@@ -3,9 +3,6 @@
  *
  * JESD204 bring-up framework -- state machine types.
  *
- * A port of the no-OS/Linux jesd204 framework (no-OS include/jesd204.h,
- * jesd204/jesd204-priv.h, jesd204/jesd204-core.c and jesd204/jesd204-fsm.c).
- *
  * The point of the framework is *ordering*. A JESD204 link only comes up when
  * every device -- clock chip, converter, FPGA transceiver, FPGA link cores --
  * passes through the same phases together. Rather than hand-writing that order
@@ -16,41 +13,22 @@
  * follows from the tables rather than from the order statements happen to be
  * written in.
  *
- * The shape of a topology is deliberately identical to no-OS's, because this
- * sample is meant to be the thing a customer copies. A no-OS topology
- * declaration (no-OS projects/ad9081/src/app.c:387-441) ports to this framework
- * by substituting the device handle and nothing else:
- *
- *     no-OS:   { .jdev = rx_jesd->jdev, .link_ids = {FRAMER_LINK0_RX}, ... }
- *     Zephyr:  { .jdev = &rx_jesd_jdev, .link_ids = {FRAMER_LINK0_RX}, ... }
- *
- * Ordering rules, all inherited from no-OS and all load-bearing:
+ * Ordering rules, all load-bearing:
  *
  *   - Within a phase, non-top devices are visited in topology array order, and
- *     the device marked is_top_device is visited *last* (jesd204-fsm.c:16-48:
- *     the devs[] loop runs first, then jdev_top). That is how no-OS gets the GT
- *     out of reset before the converter checks its JESD PLL -- the converter is
- *     the top device, so it is always last.
+ *     the device marked is_top_device is visited *last*. That is what gets the
+ *     GT out of reset before the converter checks its JESD PLL -- the converter
+ *     is the top device, so it is always last.
  *   - A device registered against several links runs its per_link callback once
- *     per link, but its per_device callback only once per phase
- *     (per_device_op_done[], jesd204-fsm.c:13-14, :19-24).
+ *     per link, but its per_device callback only once per phase.
  *   - jesd204_fsm_stop() walks phases in reverse, and devices in reverse, with
- *     the top device *first* (jesd204-fsm.c:60-101).
+ *     the top device *first*.
  *
- * Deliberately not ported from no-OS:
- *   - dynamic allocation. no-OS calloc()s the topology, the top device and the
- *     link array (jesd204-core.c:86-110); here the caller owns one
- *     struct jesd204_topology by value, so a bring-up cannot fail for want of
- *     heap. jesd204_topology_init() fills one in rather than allocating it.
- *   - sizeof_priv and the allocation behind it. no-OS allocates each device's
- *     private area when the driver registers (jesd204-core.c). Devices here are
- *     static, so a driver points `priv` straight at what it already owns --
- *     jesd204_dev_priv() reads the same way, without the allocation.
- *   - num_retries. The field exists in no-OS's struct but its FSM never reads
- *     it, so porting it would only add dead code.
- *   - jdev_sysref_sec, the fallback SYSREF provider. One provider is enough for
- *     any board this sample targets, and an unused second one would be a code
- *     path with no way to reach it.
+ * Everything here is statically allocated: the caller owns one
+ * struct jesd204_topology by value, so a bring-up cannot fail for want of heap,
+ * and a driver points `priv` straight at state it already owns. There is
+ * deliberately only one SYSREF provider -- a fallback second one would be a code
+ * path with no way to reach it.
  *
  * SPDX-License-Identifier: Apache-2.0
  */
@@ -64,7 +42,6 @@
 /*
  * Why a state op ran. Every callback must handle both: INIT on the way up,
  * UNINIT on the way down (jesd204_fsm_stop() walks the phases in reverse).
- * no-OS callbacks all switch on this -- see hmc7044.c:1213-1214.
  */
 enum jesd204_state_op_reason {
 	JESD204_STATE_OP_REASON_INIT,
@@ -72,11 +49,10 @@ enum jesd204_state_op_reason {
 };
 
 /*
- * Whether a phase's work is per-device or per-link (no-OS jesd204.h:174-176).
+ * Whether a phase's work is per-device or per-link.
  *
  * Declarative only: which callback runs is decided by which function pointer is
- * populated, not by this field, and the walker never reads it. no-OS is the same
- * -- its FSM tests the pointers too (jesd204-fsm.c:29-40). Kept because the
+ * populated, not by this field, and the walker never reads it. Kept because the
  * device tables read as documentation and this records the author's intent.
  */
 enum jesd204_state_op_mode {
@@ -85,9 +61,9 @@ enum jesd204_state_op_mode {
 };
 
 /*
- * The phase list, in order, from no-OS jesd204.h:197-215. Not every phase is
- * used on this board; unpopulated table slots are simply skipped, which is how
- * the framework lets a device opt into only the phases it cares about.
+ * The phase list, in order. Not every phase is used on this board; unpopulated
+ * table slots are simply skipped, which is how the framework lets a device opt
+ * into only the phases it cares about.
  */
 enum jesd204_dev_op {
 	JESD204_OP_DEVICE_INIT,
@@ -112,17 +88,15 @@ enum jesd204_dev_op {
 };
 
 /*
- * Link parameters handed to per-link callbacks. no-OS carries the full
- * negotiated JESD204 parameter set here; this board programs those into the
- * cores at configure time, so only the identity and direction of the link is
- * needed.
+ * Link parameters handed to per-link callbacks. Only the identity and direction
+ * of the link is needed -- the full JESD204 parameter set is programmed into the
+ * cores at configure time, from devicetree.
  *
- * is_transmit is from the *converter's* point of view, as in no-OS
- * (ad9081.c:923, `link->jesd204_link.is_transmit = !jtx`): true means the chip
+ * is_transmit is from the *converter's* point of view: true means the chip
  * receives JESD data on its JRX deframer and transmits analogue -- the TX
  * datapath. The framework never sets it; the topology declares it per link,
- * because the link-id-to-direction convention belongs to the converter
- * (ad9081.h:239-241) and not to the walker.
+ * because the link-id-to-direction convention belongs to the converter and not
+ * to the walker.
  */
 struct jesd204_link {
 	unsigned int link_id;
@@ -139,7 +113,7 @@ typedef int (*jesd204_link_cb)(struct jesd204_dev *jdev,
 typedef int (*jesd204_sysref_cb)(struct jesd204_dev *jdev);
 
 /*
- * One device's work for one phase (no-OS jesd204.h:189-194).
+ * One device's work for one phase.
  *
  * post_state_sysref asks the framework to issue a SYSREF once the phase
  * completes, via whichever device in the topology was marked
@@ -152,7 +126,7 @@ struct jesd204_state_op {
 	bool post_state_sysref;
 };
 
-/* A device's registration with the framework (no-OS jesd204.h:227-233). */
+/* A device's registration with the framework. */
 struct jesd204_dev_data {
 	jesd204_sysref_cb sysref_cb;
 	unsigned int max_num_links;
@@ -160,19 +134,17 @@ struct jesd204_dev_data {
 };
 
 /*
- * A participating device (no-OS jesd204-priv.h:22-30).
+ * A participating device.
  *
  * `name` is for logging; `dev_data` is its phase table. Devices here are static,
- * so there is no jesd204_dev_register() -- a driver defines one of these next to
- * its phase table and the topology points at it. `is_top` is set by
+ * so there is no register() call -- a driver defines one of these next to its
+ * phase table and the topology points at it. `is_top` is set by
  * jesd204_topology_init(), not by the driver.
  *
  * `priv` is how one phase table serves several instances: the RX and TX link
  * cores run identical callbacks against different registers, so each gets its own
- * jesd204_dev with the same dev_data and a different priv. no-OS does the same
- * (axi_jesd204_rx.c:735 reads it back through jesd204_dev_priv()), except that
- * no-OS allocates the area and this port points at state the driver already
- * owns -- usually the Zephyr struct device *.
+ * jesd204_dev with the same dev_data and a different priv -- usually the Zephyr
+ * struct device *.
  */
 struct jesd204_dev {
 	const char *name;
@@ -181,22 +153,19 @@ struct jesd204_dev {
 	bool is_top;
 };
 
-/* no-OS jesd204-core.c:401. */
 static inline void *jesd204_dev_priv(struct jesd204_dev *jdev)
 {
 	return jdev->priv;
 }
 
-/* no-OS jesd204.h:236. */
+/* Bound on the links one topology can declare. */
 #define JESD204_MAX_TOPOLOGY_LINKS 16
 
-/* Bound on one topology's non-top devices. no-OS has no equivalent -- it
- * calloc()s exactly devs_number - 1 rows.
- */
+/* Bound on one topology's non-top devices. */
 #define JESD204_MAX_DEVS 8
 
 /*
- * One row of the client-written topology array (no-OS jesd204.h:239-246).
+ * One row of the client-written topology array.
  *
  * This is the structure a board port fills in, and the only one it needs to
  * understand:
@@ -205,20 +174,17 @@ static inline void *jesd204_dev_priv(struct jesd204_dev *jdev)
  *                      converter (ADC/DAC/transceiver); it is visited last in
  *                      every forward phase and first in every reverse phase. It
  *                      also declares the topology's link set -- num_links and
- *                      the link IDs come from this row (jesd204-core.c:104-109)
- *                      -- so its link_ids[] must be the union of every other
- *                      row's.
+ *                      the link IDs come from this row -- so its link_ids[] must
+ *                      be the union of every other row's.
  *   is_sysref_provider at most one row. Its device's dev_data->sysref_cb is what
  *                      jesd204_sysref_async() calls.
  *   link_ids           which links this device takes part in. A device is only
- *                      visited for a link it lists (jesd204-fsm.c:17-18).
+ *                      visited for a link it lists.
  *   is_transmit        direction of each link, positionally matching link_ids[].
  *                      Only read from the top device's row, since that row is
- *                      what defines the topology's links. no-OS has no such
- *                      field -- its converter driver fills is_transmit into the
- *                      link struct it owns (ad9081.c:923). This port's converter
- *                      driver does not own the link struct, so the direction has
- *                      to be declared where the link is.
+ *                      what defines the topology's links. Declared here rather
+ *                      than in the converter driver because the converter does
+ *                      not own the link struct in this design.
  */
 struct jesd204_topology_dev {
 	struct jesd204_dev *jdev;
@@ -230,9 +196,8 @@ struct jesd204_topology_dev {
 };
 
 /*
- * The top device, split out of the topology array by jesd204_topology_init()
- * (no-OS jesd204-priv.h:55-70). Owns the link set every other device is matched
- * against.
+ * The top device, split out of the topology array by jesd204_topology_init().
+ * Owns the link set every other device is matched against.
  */
 struct jesd204_dev_top {
 	struct jesd204_dev *jdev;
@@ -243,9 +208,8 @@ struct jesd204_dev_top {
 };
 
 /*
- * A prepared topology (no-OS jesd204.h:248-252). Produced by
- * jesd204_topology_init() from the client's array; `devs` holds the non-top rows
- * only, in the order the client wrote them.
+ * A prepared topology. Produced by jesd204_topology_init() from the client's
+ * array; `devs` holds the non-top rows only, in the order the client wrote them.
  *
  * Held by value rather than allocated, so a board declares one at file scope and
  * bring-up cannot fail for want of heap.
@@ -257,12 +221,11 @@ struct jesd204_topology {
 	bool initialised;
 };
 
-/* Walk every link in the topology (no-OS jesd204.h:49). */
+/* Walk every link in the topology. */
 #define JESD204_LINKS_ALL ((unsigned int)(-1))
 
 /*
- * Prepare `topology` from a client-written device array (no-OS
- * jesd204_topology_init(), jesd204-core.c:73-125).
+ * Prepare `topology` from a client-written device array.
  *
  * Splits out the is_top_device row, adopts its link set as the topology's, and
  * records the SYSREF provider. Returns 0, or -EINVAL if the array is malformed:
@@ -272,13 +235,12 @@ struct jesd204_topology {
  * dev_data->max_num_links is smaller than the number of links it is given, or
  * more non-top rows than JESD204_MAX_DEVS.
  *
- * no-OS validates none of that and would produce a topology that walks silently
- * wrong. The checks are here because a missing or misplaced is_top_device is the
- * one mistake this API makes easy to make, and its symptom -- the converter
- * visited in the wrong position within a phase -- is a link that comes up
- * looking fine on a good board and intermittently on a marginal one. It was a
- * real bug in this port's own history: the converter was listed first, which
- * moved its JESD PLL check ahead of the GT reset-release.
+ * Validated rather than trusted because a missing or misplaced is_top_device is
+ * the one mistake this API makes easy to make, and its symptom -- the converter
+ * visited in the wrong position within a phase -- is a link that comes up looking
+ * fine on a good board and intermittently on a marginal one. It was a real bug in
+ * this port's own history: the converter was listed first, which moved its JESD
+ * PLL check ahead of the GT reset-release.
  */
 int jesd204_topology_init(struct jesd204_topology *topology,
 			  const struct jesd204_topology_dev *devs,
@@ -293,8 +255,8 @@ int jesd204_topology_init(struct jesd204_topology *topology,
  * topology array order, then the top device. per_device callbacks fire once per
  * phase regardless of link count; per_link callbacks fire once per link.
  *
- * Like no-OS's jesd204_fsm_start(), this is best-effort: a callback's return
- * value does not abort the walk, because a JESD204 link stalls at the *first*
+ * Best-effort by design: a callback's return value does not abort the walk,
+ * because a JESD204 link stalls at the *first*
  * broken phase and aborting there would hide the state of everything
  * downstream. Failures are counted and logged per phase; the return value is
  * the number of failed callbacks, so 0 means a clean walk.
@@ -308,7 +270,7 @@ int jesd204_fsm_start(struct jesd204_topology *topology, unsigned int link_idx);
 
 /*
  * Walk every phase in reverse with REASON_UNINIT: the top device first, then the
- * non-top devices in reverse array order (no-OS jesd204-fsm.c:60-101).
+ * non-top devices in reverse array order.
  *
  * How much actually gets undone is up to the device tables: a phase whose
  * callbacks return DONE on UNINIT without doing anything is a no-op on the way
