@@ -53,7 +53,7 @@ LOG_MODULE_REGISTER(axi_adxcvr, LOG_LEVEL_INF);
 BUILD_ASSERT(IS_ENABLED(CONFIG_KERNEL_DIRECT_MAP),
 	     "adxcvr assumes virt == phys for the PL pages");
 
-/* Register offsets (no-OS axi_adxcvr.c). */
+/* Register offsets. */
 #define ADXCVR_REG_VERSION 0x0000
 #define ADXCVR_REG_FPGA_INFO    0x001C
 #define ADXCVR_REG_FPGA_VOLTAGE 0x0140
@@ -62,7 +62,7 @@ BUILD_ASSERT(IS_ENABLED(CONFIG_KERNEL_DIRECT_MAP),
 #define ADXCVR_REG_CONTROL 0x0020
 #define ADXCVR_REG_SYNTH   0x0024
 
-/* FPGA info decode (no-OS xilinx_transceiver.h AXI_INFO_*). */
+/* FPGA info decode. */
 #define ADXCVR_INFO_TECH(x)        ((x) >> 24)
 #define ADXCVR_INFO_FAMILY(x)      (((x) >> 16) & 0xff)
 #define ADXCVR_INFO_SPEED_GRADE(x) (((x) >> 8) & 0xff)
@@ -71,10 +71,9 @@ BUILD_ASSERT(IS_ENABLED(CONFIG_KERNEL_DIRECT_MAP),
 
 /* Link-mode field of REG_SYNTH: 1 = 204B (8b/10b), 2 = 204C (64b/66b). */
 #define ADXCVR_SYNTH_LINK_MODE(x)  (((x) >> 12) & 0x3)
-#define ADXCVR_LINK_MODE_204B      1
 #define ADXCVR_LINK_MODE_204C      2
 
-/* DRP indirection registers (no-OS axi_adxcvr.c). */
+/* DRP indirection registers. */
 #define ADXCVR_REG_DRP_SEL(x)    (0x0040 + (x))
 #define ADXCVR_REG_DRP_CTRL(x)   (0x0044 + (x))
 #define ADXCVR_DRP_CTRL_WR       BIT(28)
@@ -114,14 +113,11 @@ BUILD_ASSERT(IS_ENABLED(CONFIG_KERNEL_DIRECT_MAP),
 #define ADXCVR_SYNTH_XCVR_TYPE(x) (((x) >> 16) & 0xf)
 
 /*
- * sys_clk_sel / out_clk_sel values. These come from devicetree now, where they
- * are spelled XCVR_CPLL / XCVR_QPLL / XCVR_PROGDIV_CLK
- * (<zephyr/dt-bindings/jesd204/adxcvr.h>) -- the same numbers ADI's Linux devicetrees
- * use, which are the IP's REG_CONTROL field encodings. Kept here only for the
- * two places the driver has to reason about the choice rather than write it.
+ * sys_clk_sel / out_clk_sel values come from devicetree, spelled XCVR_CPLL /
+ * XCVR_QPLL / XCVR_PROGDIV_CLK (<zephyr/dt-bindings/jesd204/adxcvr.h>). The two
+ * kept here are the ones the driver has to reason about rather than just write.
  */
 #define ADXCVR_SYS_CLK_CPLL  0x00
-#define ADXCVR_SYS_CLK_QPLL1 0x02
 #define ADXCVR_PROGDIV_CLK   5
 
 /* xcvr_type: UltraScale+ GTH4 as reported in REG_SYNTH for this board. */
@@ -196,8 +192,7 @@ static inline void adxcvr_write(const struct device *dev, uint32_t reg,
  * DRP (Dynamic Reconfiguration Port) accessors. The verbatim GT divider math in
  * xilinx_transceiver.c reaches the transceiver only through these two functions
  * (declared in xcvr_shim.h), passing back the struct adxcvr * it was handed.
- * Ports of no-OS adxcvr_drp_read/write + adxcvr_drp_wait_idle; plain AXI MMIO
- * under the hood.
+ * Plain AXI MMIO under the hood.
  */
 static int adxcvr_drp_wait_idle(struct adxcvr *x, uint32_t drp_addr)
 {
@@ -262,9 +257,9 @@ int adxcvr_drp_write(struct adxcvr *x, unsigned int drp_port,
  * AXI access to an unmapped PL page faults, so this has to happen before any
  * register touch.
  *
- * Still a SYS_INIT over both nodes rather than DEVICE_MMIO_MAP in each device's
- * own init(): that swap is a behaviour change (different init level, different
- * failure reporting) and this commit is the structural half. See PLAN step 3.
+ * A SYS_INIT over both nodes rather than DEVICE_MMIO_MAP in each device's own
+ * init(), because the mapping must land at PRE_KERNEL_1 -- ahead of any driver
+ * init that might read a PL register.
  */
 #define ADXCVR_MAP_ONE(inst)                                                                       \
 	do {                                                                                       \
@@ -291,8 +286,7 @@ SYS_INIT(axi_adxcvr_map, PRE_KERNEL_1, 0);
 /*
  * Read the FPGA identity registers into xlx_xcvr. The verbatim VCO-range setup
  * (xilinx_xcvr_setup_cpll/qpll_vco_range) consults tech/family/speed/package/
- * voltage when PCORE major > 0x10, so they must be populated. Port of no-OS
- * adxcvr_get_info().
+ * voltage when PCORE major > 0x10, so they must be populated.
  */
 static void adxcvr_get_info(const struct device *dev)
 {
@@ -308,11 +302,12 @@ static void adxcvr_get_info(const struct device *dev)
 }
 
 /*
- * Program the GT dividers over DRP for the target lane rate. Verbatim port of
- * no-OS adxcvr_clk_set_rate(): solve the CPLL/QPLL config, then write OUT_DIV,
- * PROGDIV (+rate), CDR and CLK25_DIV per lane. This is the step the "trust the
- * bitstream" build skipped -- without it the GT output clock never runs and
- * RESET_DONE never asserts (STATUS stays 0x0).
+ * Program the GT dividers over DRP for the target lane rate: solve the CPLL/QPLL
+ * config, then write OUT_DIV, PROGDIV (+rate), CDR and CLK25_DIV per lane.
+ *
+ * Not optional even though the Wizard synthesised divider attributes: skipping
+ * this leaves the GT output clock stopped, so RESET_DONE never asserts and STATUS
+ * stays 0x0.
  */
 static int adxcvr_clk_set_rate(const struct device *dev, unsigned long rate,
 			       unsigned long parent_rate)
@@ -458,9 +453,6 @@ static uint32_t adxcvr_control_word(const struct device *dev)
  * `clocks = <&hmc7044 12>` names the output wired to the GT refclk input; the
  * HMC7044 driver knows its rate because it programmed the divider.
  */
-static const struct device *logged_refclk_dev;
-static uint32_t logged_refclk_out;
-
 static int adxcvr_query_ref_rate(const struct device *dev)
 {
 	const struct adxcvr_config *cfg = dev->config;
@@ -503,20 +495,8 @@ static int adxcvr_query_ref_rate(const struct device *dev)
 
 	x->ref_rate_khz = rate_khz;
 
-	/*
-	 * Reported once per distinct clock output, not once per transceiver: the
-	 * rate is a property of the HMC7044 output, and both directions take the
-	 * same one here, so a line per instance would just repeat itself. The
-	 * comparison (rather than a plain "first time" flag) keeps the report
-	 * correct if the two ever point at different outputs.
-	 */
-	if (logged_refclk_dev != cfg->refclk_dev ||
-	    logged_refclk_out != cfg->refclk_out) {
-		logged_refclk_dev = cfg->refclk_dev;
-		logged_refclk_out = cfg->refclk_out;
-		LOG_DBG("GT refclk from %s out%u: %u kHz", cfg->refclk_dev->name,
-			cfg->refclk_out, rate_khz);
-	}
+	LOG_DBG("%s: GT refclk from %s out%u: %u kHz", dev->name,
+		cfg->refclk_dev->name, cfg->refclk_out, rate_khz);
 
 	return 0;
 }
@@ -590,8 +570,8 @@ int axi_adxcvr_configure(const struct device *dev)
 		x->xlx_xcvr.encoding == ENC_66B64B ? "64b/66b" : "8b/10b");
 
 	/*
-	 * Program the GT dividers over DRP (no-OS did this in adxcvr_init). Held
-	 * in reset above; the FSM releases reset later in axi_adxcvr_enable().
+	 * Program the GT dividers over DRP. Held in reset above; the FSM releases
+	 * reset later in axi_adxcvr_enable().
 	 */
 	ret = adxcvr_clk_set_rate(dev, cfg->lane_rate_khz, x->ref_rate_khz);
 	if (ret) {
@@ -605,9 +585,9 @@ int axi_adxcvr_configure(const struct device *dev)
 }
 
 /*
- * Pulse the core reset and poll for transceiver-ready. Mirrors no-OS
- * adxcvr_reset()/adxcvr_status_error(): up to two reset attempts, each polling
- * STATUS bit0 for <=100 ms. Returns 0 when ready, -ETIMEDOUT otherwise.
+ * Pulse the core reset and poll for transceiver-ready: up to two reset attempts,
+ * each polling STATUS bit0 for <=100 ms. Returns 0 when ready, -ETIMEDOUT
+ * otherwise.
  */
 static int adxcvr_reset(const struct device *dev)
 {
@@ -651,8 +631,8 @@ static int adxcvr_reset(const struct device *dev)
 }
 
 /*
- * Bring one transceiver's lane clock up. Mirrors no-OS adxcvr_clk_enable():
- * reset+status, then (on PCORE >= 17.5a) clear elastic-buffer under/overflow.
+ * Bring one transceiver's lane clock up: reset+status, then (on PCORE >= 17.5a)
+ * clear elastic-buffer under/overflow.
  */
 int axi_adxcvr_enable(const struct device *dev)
 {
