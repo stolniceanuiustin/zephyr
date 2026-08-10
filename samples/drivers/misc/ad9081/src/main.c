@@ -384,6 +384,74 @@ static void rx_capture_dump(void)
 }
 
 /*
+ * Sweep the receive coarse NCO and report where the tone lands.
+ *
+ * Every fixed-frequency attempt so far has produced noise at the expected bin
+ * while the DDC registers read back exactly as configured, which a fixed mix
+ * frequency cannot tell apart from a datapath that carries nothing. Sweeping
+ * separates them in one boot: a peak at some offset means the tone is real and
+ * the downmix frequency is wrong by that offset, and a flat result across the
+ * whole range means the fault is not frequency-related at all -- which rules out
+ * the NCO, the sample rate and the Nyquist zone together.
+ *
+ * Reported per step is the best bin over all channels rather than bin 8 alone:
+ * if the mix frequency is off, the tone is by definition not in bin 8, so
+ * looking only there would report nothing at every step including the right one.
+ */
+__maybe_unused static void rx_nco_sweep(const struct device *mxfe)
+{
+	const int64_t centre_hz = 1000000000;
+	const int64_t span_hz = 200000000;
+	const int64_t step_hz = 25000000;
+
+	if (!device_is_ready(mxfe)) {
+		LOG_WRN("mxfe not ready, skipping RX NCO sweep");
+		return;
+	}
+
+	LOG_INF("RX NCO sweep: %lld..%lld MHz in %lld MHz steps",
+		(long long)((centre_hz - span_hz) / 1000000),
+		(long long)((centre_hz + span_hz) / 1000000),
+		(long long)(step_hz / 1000000));
+
+	for (int64_t f = centre_hz - span_hz; f <= centre_hz + span_hz; f += step_hz) {
+		unsigned int best_pct = 0, best_bin = 0, best_chan = 0;
+		int ret;
+
+		ret = ad9081_rx_coarse_nco_set(mxfe, 0xf, f);
+		if (ret) {
+			LOG_WRN("rx_coarse_nco_set(%lld Hz) failed (%d)",
+				(long long)f, ret);
+			continue;
+		}
+
+		k_msleep(2);
+
+		if (rx_capture_fetch()) {
+			return;
+		}
+
+		for (unsigned int c = 0; c < RX_CAPTURE_NUM_CHAN; c++) {
+			for (unsigned int b = 1; b < RX_CAPTURE_SAMPLES_PER_CHAN / 2; b++) {
+				unsigned int p = rx_capture_bin_pct(c, b);
+
+				if (p > best_pct) {
+					best_pct = p;
+					best_bin = b;
+					best_chan = c;
+				}
+			}
+		}
+
+		LOG_INF("RX NCO sweep: %4lld MHz -> best ch%u bin%u = %u%%",
+			(long long)(f / 1000000), best_chan, best_bin, best_pct);
+	}
+
+	(void)ad9081_rx_coarse_nco_set(mxfe, 0xf, centre_hz);
+	LOG_INF("RX NCO sweep: restored %lld MHz", (long long)(centre_hz / 1000000));
+}
+
+/*
  * The HMC7044 is a clock_control driver, so it programmes itself at POST_KERNEL
  * before main() runs -- there is no hmc7044_probe()/setup_clocks() call to make.
  * Report what it achieved instead, so the boot log keeps the two lines the
@@ -612,6 +680,10 @@ int main(void)
 	 * counterpart of scoping the DAC output.
 	 */
 	rx_capture_dump();
+
+#if defined(RX_NCO_SWEEP)
+	rx_nco_sweep(DEVICE_DT_GET(DT_NODELABEL(ad9081)));
+#endif
 
 	LOG_INF("=== bring-up complete ===");
 
