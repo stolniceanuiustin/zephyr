@@ -1,0 +1,60 @@
+# Copyright (c) 2026 Analog Devices, Inc.
+# SPDX-License-Identifier: Apache-2.0
+
+description: |
+  Exposes one direction of an ADI JESD204 datapath as an IIO device, so a libiio
+  client can stream converter samples over IIOD.
+
+  This node owns no registers of its own. It pairs a transport core (which holds
+  the per-converter datapath controls) with the DMA engine that moves samples
+  between that core and memory, and presents the pair as an IIO device.
+
+  Direction is not a property: it is derived from the compatible of the node that
+  adi,tpl points at, so it cannot contradict the hardware.
+
+  Example:
+
+      rx_iio: jesd-iio-rx {
+              compatible = "adi,axi-jesd-iio";
+              io-name = "axi-ad9081-rx-hpc";
+              adi,tpl = <&rx_tpl>;
+              dmas = <&rx_dmac 0>;
+              dma-names = "rx";
+              adi,converters-per-device = <8>;
+      };
+
+compatible: "adi,axi-jesd-iio"
+
+include: base.yaml
+
+properties:
+  io-name:
+    type: string
+    description: |
+      Device name reported to IIOD clients. Falls back to the Zephyr device name
+      when unset. Set this to the name the client-side tooling expects, which for
+      an AD9081 HPC carrier is axi-ad9081-rx-hpc / axi-ad9081-tx-hpc.
+
+  adi,tpl:
+    type: phandle
+    required: true
+    description: |
+      The transport core for this direction: adi,axi-ad9081-rx-1.0 for capture or
+      adi,axi-ad9081-tx-1.0 for playback. Supplies the per-converter datapath
+      controls the buffer enable toggles, and fixes this node's direction.
+
+  dmas:
+    required: true
+    description: The DMA channel that moves samples for this direction.
+
+  dma-names:
+    required: true
+    description: Must be a single entry, "rx" for capture or "tx" for playback.
+
+  adi,converters-per-device:
+    type: int
+    required: true
+    description: |
+      Number of converters this IIO device exposes, one IIO channel each. Must
+      equal the transport core's adi,num-channels, which the driver asserts at
+      build time; both are the link's M.

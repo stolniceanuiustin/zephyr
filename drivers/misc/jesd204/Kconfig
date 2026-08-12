@@ -89,4 +89,50 @@ config JESD204_AXI_TPL_INIT_PRIORITY
 	  register work is an explicit axi_tpl_configure() call from the
 	  bring-up sequence.
 
+config JESD204_AXI_JESD_IIO
+	bool "Expose the JESD204 datapath as libiio devices"
+	default y
+	depends on DT_HAS_ADI_AXI_JESD_IIO_ENABLED
+	depends on LIBIIO && LIBIIO_IIO_DEVICE
+	depends on JESD204_AXI_TPL && DMA
+	help
+	  Presents one direction of the AD9081 JESD204 datapath as an IIO
+	  device, so an IIOD client can stream converter samples over the
+	  transport core and the AXI DMAC.
+
+	  Streaming only: the datapath's own bring-up stays with the JESD204
+	  sequence, and this driver adds no chip attributes.
+
+if JESD204_AXI_JESD_IIO
+
+config JESD204_AXI_JESD_IIO_BUF_SIZE
+	int "DMA staging buffer size per IIO device (bytes)"
+	default 32768
+	help
+	  Size of the cache-line-aligned DMA staging buffer allocated for each
+	  adi,axi-jesd-iio node. Client blocks are copied through it, because a
+	  block from the libiio core carries no alignment guarantee and a cyclic
+	  playback transfer outlives the writebuf() call that armed it.
+
+	  Capture blocks larger than this are transferred in chunks, losing the
+	  samples that arrive between chunks. Playback blocks larger than this
+	  are refused, since splitting a cyclic transfer would break the repeat.
+
+	  Must be a whole number of 64-byte cache lines; the driver asserts this
+	  at build time.
+
+config JESD204_AXI_JESD_IIO_INIT_PRIORITY
+	int "JESD204 IIO device init priority"
+	default 66
+	help
+	  Initialisation priority within POST_KERNEL. Must be after
+	  JESD204_AXI_TPL_INIT_PRIORITY and after the DMA driver, because init()
+	  requires both the transport core and the DMA engine to be ready.
+
+module = JESD204_AXI_JESD_IIO
+module-str = axi_jesd_iio
+source "subsys/logging/Kconfig.template.log_config"
+
+endif # JESD204_AXI_JESD_IIO
+
 endif # JESD204_AXI
