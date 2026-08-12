@@ -575,3 +575,40 @@
 	};
 
 };
+
+/*
+ * IIO views of the two datapath directions, for streaming to a libiio client
+ * over IIOD.
+ *
+ * At the root rather than inside the amba bus: these nodes own no registers, so
+ * they have no reg to place them on a bus whose children are all addressed.
+ *
+ * adi,converters-per-device repeats the transport cores' adi,num-channels here
+ * because an IIO device's channel count is its own property; the driver
+ * BUILD_ASSERTs the two against each other so they cannot drift.
+ */
+/ {
+	rx_iio: jesd-iio-rx {
+		compatible = "adi,axi-jesd-iio";
+
+		/* Name ADI's client tooling expects for an AD9081 HPC carrier. */
+		io-name = "axi-ad9081-rx-hpc";
+
+		adi,tpl = <&rx_tpl>;
+		dmas = <&rx_dmac 0>;
+		dma-names = "rx";
+		adi,converters-per-device = <8>;
+		status = "okay";
+	};
+
+	tx_iio: jesd-iio-tx {
+		compatible = "adi,axi-jesd-iio";
+		io-name = "axi-ad9081-tx-hpc";
+
+		adi,tpl = <&tx_tpl>;
+		dmas = <&tx_dmac 0>;
+		dma-names = "tx";
+		adi,converters-per-device = <8>;
+		status = "okay";
+	};
+};

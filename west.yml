@@ -302,7 +302,9 @@ manifest:
     - name: libiio
       remote: fork
       repo-path: libiio_arecibo
-      revision: 278e98860879d9ab32f0e0b6de083f61e5f65a2b
+      # Branch, not a SHA: the Zephyr buffer support this port needs lives here,
+      # so west update must not drag the tree back to a commit without it.
+      revision: zephyr-iio-buffer-support
       path: modules/lib/libiio
     - name: liblc3
       revision: 48bbd3eacd36e99a57317a0a4867002e0b09e183
