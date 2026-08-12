@@ -94,6 +94,30 @@ int axi_tpl_enable(const struct device *rx, const struct device *tx);
 int axi_tpl_tx_dds(const struct device *dev, uint32_t freq_hz, uint32_t sample_rate_hz,
 		   uint32_t scale_micro, bool enable);
 
+/**
+ * @brief Enable or disable one RX converter's datapath channel.
+ *
+ * axi_tpl_configure() arms every converter, which is what the DDS/DMA bring-up
+ * path wants. A buffered capture client instead selects a subset, and a disabled
+ * channel contributes no samples to the DMA stream -- so the transfer size and the
+ * sample layout follow which channels are enabled here.
+ *
+ * Read-modify-write: the sample format bits the RX core was configured with are
+ * preserved, only the enable bit changes.
+ *
+ * RX only. The TX core's per-converter register at the same offset is the DDS
+ * scale, not a channel enable; use axi_tpl_tx_dds() to switch the TX source.
+ *
+ * @param dev    RX transport core (adi,axi-ad9081-rx-1.0).
+ * @param chan   Converter index, less than the node's adi,num-channels.
+ * @param enable true to include this converter in the capture stream.
+ * @retval 0 on success.
+ * @retval -ENODEV if @p dev is not ready.
+ * @retval -ENOTSUP if @p dev is a TX core.
+ * @retval -EINVAL if @p chan is out of range.
+ */
+int axi_tpl_rx_chan_enable(const struct device *dev, uint32_t chan, bool enable);
+
 /** @} */
 
 #ifdef __cplusplus

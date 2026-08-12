@@ -390,6 +390,39 @@ int axi_tpl_tx_dds(const struct device *dev, uint32_t freq_hz,
 }
 
 /*
+ * Per-converter capture enable, for buffered clients that want a subset of the
+ * converters. tpl_configure_rx() arms all of them; this flips one back and forth
+ * without disturbing the sample-format bits it set.
+ */
+int axi_tpl_rx_chan_enable(const struct device *dev, uint32_t chan, bool enable)
+{
+	const struct axi_tpl_config *cfg;
+	uint32_t val;
+
+	if (!device_is_ready(dev)) {
+		return -ENODEV;
+	}
+	cfg = dev->config;
+
+	if (cfg->tx) {
+		return -ENOTSUP;
+	}
+	if (chan >= cfg->num_channels) {
+		return -EINVAL;
+	}
+
+	val = tpl_read(dev, ADC_REG_CHAN_CNTRL(chan));
+	if (enable) {
+		val |= ADC_CHAN_ENABLE;
+	} else {
+		val &= ~ADC_CHAN_ENABLE;
+	}
+	tpl_write(dev, ADC_REG_CHAN_CNTRL(chan), val);
+
+	return 0;
+}
+
+/*
  * init() only exists so device_is_ready() means something. The real work is an
  * explicit axi_tpl_configure() call from the bring-up sequence, in the order
  * relative to the link and GT cores that it needs -- init-level ordering cannot
