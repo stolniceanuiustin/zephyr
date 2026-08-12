@@ -299,6 +299,11 @@ manifest:
     - name: hostap
       path: modules/lib/hostap
       revision: e97765d250aad14e0d2495a3fd5d4d9354a408df
+    - name: libiio
+      remote: fork
+      repo-path: libiio_arecibo
+      revision: 278e98860879d9ab32f0e0b6de083f61e5f65a2b
+      path: modules/lib/libiio
     - name: liblc3
       revision: 48bbd3eacd36e99a57317a0a4867002e0b09e183
       path: modules/lib/liblc3
