@@ -752,27 +752,38 @@ int main(void)
 	LOG_INF("SUCCESS: JESD204B link up");
 
 	/*
-	 * Per-lane check, immediately after the FSM. Reaching DATA does not guarantee every lane is aligned; if one is not,
-	 * the watchdog bounces the link and returns -EAGAIN. Re-read the status
-	 * afterwards rather than treating that as fatal.
+	 * Per-lane check, immediately after the FSM. Reaching DATA does not
+	 * guarantee every lane is aligned; if one is not, the watchdog bounces the
+	 * link and returns -EAGAIN. Re-read the status afterwards rather than
+	 * treating that as fatal.
 	 */
 	ret = axi_jesd204_rx_watchdog(DEVICE_DT_GET(DT_NODELABEL(rx_jesd)));
 	if (ret == -EAGAIN) {
+		/*
+		 * Only a restart makes a second status read worth its 22 lines. The
+		 * FSM's link_running phase already read and logged both cores and
+		 * returned -EIO on anything but DATA, which jesd204_bringup() turns
+		 * into the early return above -- so in the normal case reading again
+		 * here printed the same two blocks a second time, 3 ms later.
+		 *
+		 * A watchdog restart invalidates that: the state the FSM logged is
+		 * from before the bounce. Both ends are read and logged before either
+		 * verdict is taken, so a failure on TX does not hide RX's state.
+		 */
 		LOG_WRN("link was restarted after a lane desync, re-reading status");
-	}
 
-	/*
-	 * The one meaningful link status check. Both ends
-	 * are read and logged before either verdict is taken, so a failure on TX
-	 * does not hide RX's state.
-	 */
-	ret = axi_jesd204_status_read(DEVICE_DT_GET(DT_NODELABEL(tx_jesd)));
-	if (axi_jesd204_status_read(DEVICE_DT_GET(DT_NODELABEL(rx_jesd)))) {
-		ret = -EIO;
-	}
-	if (ret) {
-		LOG_ERR("=== link is not carrying DATA ===");
-		return ret;
+		ret = axi_jesd204_status_read(DEVICE_DT_GET(DT_NODELABEL(tx_jesd)));
+		if (axi_jesd204_status_read(DEVICE_DT_GET(DT_NODELABEL(rx_jesd)))) {
+			ret = -EIO;
+		}
+		if (ret) {
+			LOG_ERR("=== link is not carrying DATA after the restart ===");
+			return ret;
+		}
+	} else if (ret) {
+		/* Not fatal, and not a restart: nothing to re-read, so just say so. */
+		LOG_WRN("per-lane check failed (%d), link status is as logged above",
+			ret);
 	}
 
 	/*
