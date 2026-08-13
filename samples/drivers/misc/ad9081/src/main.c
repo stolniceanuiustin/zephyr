@@ -158,11 +158,17 @@ static int16_t rx_capture_buf[RX_CAPTURE_NUM_CHAN * RX_CAPTURE_SAMPLES_PER_CHAN]
 #define TX_DMA_SAMPLES_PER_CONV (TX_DMA_PERIODS * TX_DMA_PERIOD_SAMPLES)
 
 /*
- * 0.05 * 32767 rounded, and that amplitude times cos(45 deg): the only two
+ * 0.10 * 32767 rounded, and that amplitude times cos(45 deg): the only two
  * magnitudes an fs/8 tone takes, since the other two phases are 0 and +-full.
+ *
+ * 0.10 rather than the DDS's DAC_DDS_SCALE_MICRO of 0.05 because the transport
+ * core sums the *two* DDSs of a converter, so 0.05 per DDS puts 0.10 of full
+ * scale at the converter. Matching that here keeps the power at the SMA the same
+ * across a source switch, which is what makes the two measurements comparable --
+ * a 6 dB step at the receiver would otherwise look like a datapath fault.
  */
-#define TX_DMA_AMPLITUDE      1638
-#define TX_DMA_AMPLITUDE_HALF 1158
+#define TX_DMA_AMPLITUDE      3277
+#define TX_DMA_AMPLITUDE_HALF 2317
 
 static int16_t tx_dma_buf[TX_DMA_NUM_CONV * TX_DMA_SAMPLES_PER_CONV] __aligned(64);
 
