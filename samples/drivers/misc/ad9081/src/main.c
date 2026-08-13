@@ -130,6 +130,43 @@ BUILD_ASSERT(IS_ENABLED(CONFIG_KERNEL_DIRECT_MAP),
 static int16_t rx_capture_buf[RX_CAPTURE_NUM_CHAN * RX_CAPTURE_SAMPLES_PER_CHAN] __aligned(64);
 
 /*
+ * Host-generated playback tone, for the one part of the TX chain the DDS above
+ * cannot reach: DDR -> tx_dmac (MEM_TO_DEV) -> the transport core's upack FIFO.
+ * With DATA_SEL_DDS the core's dac_enable is never asserted, so no beat is ever
+ * pulled from that FIFO and the DMA engine is out of the datapath entirely.
+ *
+ * Same frequency as the DDS tone -- 31.25 MHz, which is exactly
+ * DAC_DDS_SAMPLE_RATE / 8 -- so this reuses the whole existing frequency plan
+ * (RF = 1 GHz main NCO + 31.25 MHz) and the RX capture's bin-8 loopback check
+ * without changing either. fs/8 also means the phase advances exactly 45 degrees
+ * per sample, so the sample values come from an 8-entry table of exact
+ * quadrant/half-quadrant values -- no libm, no soft-float, and no rounding drift
+ * that would smear the tone across bins.
+ *
+ * A whole number of periods per buffer (TX_DMA_PERIODS of them) is what makes
+ * cyclic replay seamless: the engine wraps to sample 0 with the phase continuing
+ * where it left off, so there is no discontinuity to widen the spectrum.
+ *
+ * RF LEVEL: the amplitude below is 5% of int16 full scale, deliberately the same
+ * as DAC_DDS_SCALE_MICRO, so switching to this source does not change the power
+ * at the SMA. A Pluto RX is safe at that level and not much above it -- do not
+ * raise TX_DMA_AMPLITUDE with a receiver cabled to the DAC.
+ */
+#define TX_DMA_NUM_CONV       8 /* M8: the DMA stream interleaves all converters */
+#define TX_DMA_PERIOD_SAMPLES 8 /* fs/8 -> 45 degrees per sample */
+#define TX_DMA_PERIODS        128
+#define TX_DMA_SAMPLES_PER_CONV (TX_DMA_PERIODS * TX_DMA_PERIOD_SAMPLES)
+
+/*
+ * 0.05 * 32767 rounded, and that amplitude times cos(45 deg): the only two
+ * magnitudes an fs/8 tone takes, since the other two phases are 0 and +-full.
+ */
+#define TX_DMA_AMPLITUDE      1638
+#define TX_DMA_AMPLITUDE_HALF 1158
+
+static int16_t tx_dma_buf[TX_DMA_NUM_CONV * TX_DMA_SAMPLES_PER_CONV] __aligned(64);
+
+/*
  * How much of channel 0's captured energy sits in RX_CAPTURE_TONE_BIN.
  *
  * A single-bin DFT (Goertzel would do the same with less arithmetic; at 64
@@ -368,6 +405,114 @@ static void rx_capture_dump(void)
 			rx_capture_buf[i * RX_CAPTURE_NUM_CHAN]);
 	}
 #endif
+}
+
+/*
+ * Fill tx_dma_buf with an fs/8 complex tone, interleaved across all M8
+ * converters the way the transport core consumes them: sample-major, one 16-bit
+ * word per converter, which is the transmit mirror of rx_capture_buf's layout.
+ *
+ * The converter pairs are (0,1), (2,3), (4,5), (6,7) -- even is I, odd is Q --
+ * and every pair gets the same tone. Only pair 0 reaches DAC0 on this profile
+ * (adi,tx-dac-channel-crossbar routes DUC n to DAC n), but filling all four costs
+ * nothing and keeps the buffer independent of which SMA is cabled.
+ */
+static void tx_dma_fill_tone(void)
+{
+	/*
+	 * cos and sin at 0, 45, 90 ... 315 degrees, scaled to TX_DMA_AMPLITUDE.
+	 * Written out rather than computed so no float or rounding is involved:
+	 * at fs/8 these eight phases are the only ones the tone ever takes.
+	 */
+	static const int16_t cos45[TX_DMA_PERIOD_SAMPLES] = {
+		TX_DMA_AMPLITUDE,       TX_DMA_AMPLITUDE_HALF,  0,
+		-TX_DMA_AMPLITUDE_HALF, -TX_DMA_AMPLITUDE,      -TX_DMA_AMPLITUDE_HALF,
+		0,                      TX_DMA_AMPLITUDE_HALF,
+	};
+	static const int16_t sin45[TX_DMA_PERIOD_SAMPLES] = {
+		0,                     TX_DMA_AMPLITUDE_HALF,  TX_DMA_AMPLITUDE,
+		TX_DMA_AMPLITUDE_HALF, 0,                      -TX_DMA_AMPLITUDE_HALF,
+		-TX_DMA_AMPLITUDE,     -TX_DMA_AMPLITUDE_HALF,
+	};
+
+	for (uint32_t n = 0; n < TX_DMA_SAMPLES_PER_CONV; n++) {
+		uint32_t phase = n % TX_DMA_PERIOD_SAMPLES;
+		int16_t *frame = &tx_dma_buf[n * TX_DMA_NUM_CONV];
+
+		for (uint32_t c = 0; c < TX_DMA_NUM_CONV; c += 2) {
+			frame[c] = cos45[phase];
+			frame[c + 1] = sin45[phase];
+		}
+	}
+}
+
+/*
+ * Replace the FPGA DDS with a tone streamed from DDR, which is the only way to
+ * put tx_dmac and the transport core's upack FIFO into the datapath.
+ *
+ * Order matters: the DMA transfer is started while the converters are still on
+ * the DDS source, so the engine primes the FIFO before anything consumes from it.
+ * Switching DATA_SELECT afterwards asserts dac_enable against a FIFO that already
+ * has data, rather than against an empty one.
+ *
+ * The transfer is cyclic, so it never completes and there is nothing to poll:
+ * the engine wraps to the start of the buffer indefinitely and the DAC keeps
+ * emitting. tx_dmac reports hardware cyclic support, so the wrap is done in the
+ * core rather than by the driver's software resubmission.
+ *
+ * Best-effort like rx_capture_dump(): the link is already up, so a failure here
+ * warns and leaves the DDS tone in place rather than failing the bring-up.
+ */
+static int tx_dma_tone_start(void)
+{
+	const struct device *dmac = DEVICE_DT_GET(DT_NODELABEL(tx_dmac));
+	const struct device *tpl = DEVICE_DT_GET(DT_NODELABEL(tx_tpl));
+	struct dma_block_config block = {
+		.source_address = (uintptr_t)tx_dma_buf,
+		.block_size = sizeof(tx_dma_buf),
+	};
+	struct dma_config cfg = {
+		.channel_direction = MEMORY_TO_PERIPHERAL,
+		.block_count = 1,
+		.head_block = &block,
+		.source_data_size = sizeof(int16_t),
+		.source_burst_length = sizeof(int16_t),
+		.cyclic = 1,
+	};
+	int ret;
+
+	if (!device_is_ready(dmac)) {
+		LOG_WRN("tx_dmac not ready, staying on the DDS tone");
+		return -ENODEV;
+	}
+
+	tx_dma_fill_tone();
+	/* The engine reads DDR directly; the CPU's writes are still in cache. */
+	sys_cache_data_flush_range(tx_dma_buf, sizeof(tx_dma_buf));
+
+	ret = dma_config(dmac, 0, &cfg);
+	if (ret) {
+		LOG_WRN("tx_dmac config failed (%d), staying on the DDS tone", ret);
+		return ret;
+	}
+
+	ret = dma_start(dmac, 0);
+	if (ret) {
+		LOG_WRN("tx_dmac start failed (%d), staying on the DDS tone", ret);
+		return ret;
+	}
+
+	/* enable=false puts every converter back on DAC_DATA_SEL_DMA and syncs. */
+	ret = axi_tpl_tx_dds(tpl, 0, 0, 0, false);
+	if (ret) {
+		LOG_WRN("could not switch the converters to the DMA source (%d)", ret);
+		return ret;
+	}
+
+	LOG_INF("SUCCESS: DAC playing a %u MHz tone from memory over tx_dmac "
+		"(%u samples/converter, cyclic)",
+		DAC_DDS_TONE_HZ / 1000000U, TX_DMA_SAMPLES_PER_CONV);
+	return 0;
 }
 
 /*
@@ -664,6 +809,17 @@ int main(void)
 	 * counterpart of scoping the DAC output.
 	 */
 	rx_capture_dump();
+
+	/*
+	 * Hand the DAC over to a tone streamed from DDR. This runs after the RX
+	 * capture above so that capture still measures the DDS -- the two tones are
+	 * the same frequency, so the loopback check reads the same either way, but
+	 * keeping the DDS as the thing under test there leaves the DMA path as the
+	 * only variable in whatever measures the DAC afterwards.
+	 */
+	if (tx_dma_tone_start()) {
+		LOG_WRN("TX DMA playback did not start (the DDS tone is still up)");
+	}
 
 #if defined(RX_NCO_SWEEP)
 	rx_nco_sweep(DEVICE_DT_GET(DT_NODELABEL(ad9081)));
