@@ -219,7 +219,8 @@ static int axi_jesd_iio_add_channels(const struct device *dev,
 
 	for (uint32_t i = 0; i < cfg->num_channels; i++) {
 		struct iio_channel *chn;
-		char id[16];
+		/* "voltage" + up to 10 digits of a uint32 + NUL. */
+		char id[24];
 
 		snprintk(id, sizeof(id), "voltage%u", i);
 
