@@ -65,12 +65,6 @@
 #include <zephyr/kernel.h>
 
 #include <zephyr/logging/log.h>
-/*
- * Module name deliberately unchanged after this file was renamed from
- * jesd_fsm.c: it prefixes every line this file logs, and boot_log.golden was
- * captured with it. Renaming it would make a pure file rename produce a
- * different boot log.
- */
 LOG_MODULE_REGISTER(jesd_fsm, LOG_LEVEL_INF);
 
 #include <zephyr/drivers/misc/ad9081/ad9081.h>

@@ -3,8 +3,7 @@
 # HMC7044 -- 14-output, dual-PLL, SPI-programmed jitter-attenuating clock
 # generator, modelled as a Zephyr clock controller.
 #
-# Property names follow ADI's Linux binding
-# (Documentation/devicetree/bindings/iio/frequency/hmc7044.txt) so that a
+# Property names follow ADI's Linux binding so that a
 # devicetree written for ADI Linux transfers with only syntax changes. The
 # subset here is what the single-chip HMC7044 (non-HMC7043) PLL1/PLL2/VCO/
 # output-divider/SYSREF programming path actually consumes.

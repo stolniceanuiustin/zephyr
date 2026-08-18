@@ -9,15 +9,8 @@
 #include <zephyr/dt-bindings/jesd204/adxcvr.h>
 
 /*
- * Everything this sample needs is defined here in the overlay, so no shared
- * SoC/board devicetree files have to be touched. The arm64 zynqmp_a53.dtsi
- * ships without the PS SPI and PS GPIO controllers; we add them under /soc
- * (overlay nodes merge into the existing soc node).
- *
  * SPI0 -> AD9081/AD9082 (CS0), SPI1 -> HMC7044 (CS0), both PS Cadence SPI
  * routed over EMIO to the FMC. SPI reference clock is 100 MHz
- * (SPI0/1_REF_CTRL from the AD9081 XSA). On ZynqMP, no-OS maps the AD9081 to
- * PSU_SPI_0 / PHY_CS=0 and the HMC7044 to PSU_SPI_1 / CLK_CS=0.
  */
 / {
 	soc {
