@@ -1,0 +1,607 @@
+/*
+ * Copyright (c) 2026 Analog Devices, Inc.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+#include <zephyr/dt-bindings/gpio/gpio.h>
+#include <zephyr/dt-bindings/interrupt-controller/arm-gic.h>
+#include <zephyr/dt-bindings/jesd204/adxcvr.h>
+
+/*
+ * SPI0 -> AD9081/AD9082 (CS0), SPI1 -> HMC7044 (CS0), both PS Cadence SPI
+ * routed over EMIO to the FMC. SPI reference clock is 100 MHz
+ */
+/ {
+	soc {
+		spi0: spi@ff040000 {
+			compatible = "cdns,spi";
+			reg = <0x0 0xff040000 0x0 0x1000>;
+			status = "okay";
+			interrupts = <GIC_SPI 19 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+			fifo-width = <8>;
+			rx-fifo-depth = <128>;
+			tx-fifo-depth = <128>;
+			clock-frequency = <100000000>;
+
+			/*
+			 * AD9082 MxFE. Every value below is the no-OS
+			 * zcu102_ad9081_m8_l4 profile
+			 * (projects/ad9081/profiles/zcu102_ad9081_m8_l4/
+			 * app_config.h), which is the ground truth for this
+			 * board's wiring, cross-checked by
+			 * tools/check_profile.py.
+			 *
+			 * Rates are in kHz: Zephyr's `type: int` is one 32-bit
+			 * cell and the DAC runs at 12 GHz. NCO shifts stay in
+			 * Hz -- they fit, and the vendor API takes Hz.
+			 *
+			 * Deliberately NOT here: the link geometry (M, L, F, K,
+			 * N, NP, CS, S, subclass). It already lives in the
+			 * tx_jesd/rx_jesd nodes below, once per direction, and
+			 * a copy here is a third place for it to drift. The
+			 * adi,jesd-{tx,rx}-link phandles point at those nodes
+			 * and the driver reads it from them.
+			 */
+			ad9081: ad9081@0 {
+				compatible = "adi,ad9081";
+				reg = <0>;
+				/* AD9081/AD9082 SPI: mode 0, MSB first.
+				 * 10 MHz is safe for register access.
+				 */
+				spi-max-frequency = <10000000>;
+				/*
+				 * RSTB. no-OS zcu102 PHY_RESET =
+				 * GPIO_OFFSET(78) + 55 = global PS GPIO 133 =
+				 * EMIO pin 55 = bank4 (EMIO[63:32]) pin 23.
+				 * Active low.
+				 */
+				reset-gpios = <&psgpio_bank4 23 GPIO_ACTIVE_LOW>;
+
+				/*
+				 * DAC 12 GHz, ADC 4 GHz, device REFCLK
+				 * 250 MHz. REFCLK != DAC, so the vendor API
+				 * engages the on-chip CLK PLL. The 250 MHz is
+				 * the HMC7044's DEV_REFCLK (out2, divider 12
+				 * off 3 GHz PLL2) above -- check_profile.py
+				 * cross-checks the two.
+				 */
+				adi,dac-frequency-khz = <12000000>;
+				adi,adc-frequency-khz = <4000000>;
+				adi,ref-clk-frequency-khz = <250000>;
+				adi,ref-clk-source = <&hmc7044_c2>;
+
+				adi,jesd-tx-link = <&tx_jesd>;
+				adi,jesd-rx-link = <&rx_jesd>;
+
+				/*
+				 * FSM topology participants, fixed order
+				 * (tx_adxcvr, rx_adxcvr, tx_jesd, rx_jesd) --
+				 * see adi,jesd204-devices in adi,ad9081.yaml.
+				 */
+				adi,jesd204-devices =
+					<&tx_adxcvr &rx_adxcvr &tx_jesd &rx_jesd>;
+
+				/* Vendor link-mode table indices. */
+				adi,tx-jesd-mode-id = <9>;
+				adi,rx-jesd-mode-id = <10>;
+
+				/*
+				 * TX (chip JRX / deframer). 6 * 8 = 48x total
+				 * interpolation: 12 GHz DAC / 48 = 250 MSPS,
+				 * the link's sample rate.
+				 */
+				adi,tx-main-interpolation = <6>;
+				adi,tx-channel-interpolation = <8>;
+				adi,tx-dac-channel-crossbar =
+					<0x1 0x2 0x4 0x8>;
+				/*
+				 * +1 GHz main NCO on all four DACs, matched by
+				 * the RX coarse NCO below so a loopback returns
+				 * to baseband.
+				 *
+				 * 1 GHz and not the 2 GHz this profile started
+				 * with: the ADC samples at 4 GHz, so Nyquist is
+				 * 2 GHz and a 2 GHz carrier sits on the fold,
+				 * where the front-end roll-off is. 1 GHz is
+				 * mid-band in the first Nyquist zone.
+				 */
+				adi,tx-main-nco-shift-hz =
+					<1000000000 1000000000
+					 1000000000 1000000000>;
+				adi,tx-channel-nco-shift-hz =
+					<0 0 0 0 0 0 0 0>;
+				/* 1024 = unity in the API's 1.10 format. */
+				adi,tx-channel-gains =
+					<1024 1024 1024 1024 0 0 0 0>;
+				/* Board SERDES wiring; 7 = unconnected. */
+				adi,tx-logical-lane-mapping = <0 2 7 7 1 7 7 3>;
+
+				/*
+				 * RX (chip JTX / framer). 4 * 4 = 16x total
+				 * decimation: 4 GHz ADC / 16 = 250 MSPS, the
+				 * same link rate from the other side.
+				 */
+				adi,rx-coarse-ddc-select = <0xf>;
+				adi,rx-fine-ddc-select = <0x33>;
+				adi,rx-coarse-decimation = <4 4 4 4>;
+				/* 0 marks a fine DDC the select mask disables. */
+				adi,rx-fine-decimation = <4 4 0 0 4 4 0 0>;
+				/* Must match the TX main NCO -- see above. */
+				adi,rx-coarse-nco-shift-hz =
+					<1000000000 1000000000
+					 1000000000 1000000000>;
+				adi,rx-fine-nco-shift-hz =
+					<0 0 0 0 0 0 0 0>;
+				adi,rx-logical-lane-mapping = <2 0 7 7 7 7 3 1>;
+				/*
+				 * Virtual converter -> physical converter. Only
+				 * the first M (8) entries are meaningful; the
+				 * rest pad the vendor struct.
+				 */
+				adi,rx-link-converter-select =
+					<0 1 2 3 8 9 10 11
+					 0 0 0 0 0 0 0 0>;
+
+				/*
+				 * No adi,rx-{coarse,fine}-complex-to-real: the
+				 * link carries complex samples, so both are
+				 * all-zero and the driver defaults them.
+				 */
+			};
+		};
+
+		spi1: spi@ff050000 {
+			compatible = "cdns,spi";
+			reg = <0x0 0xff050000 0x0 0x1000>;
+			status = "okay";
+			interrupts = <GIC_SPI 20 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+			fifo-width = <8>;
+			rx-fifo-depth = <128>;
+			tx-fifo-depth = <128>;
+			clock-frequency = <100000000>;
+
+			/*
+			 * HMC7044 clock generator, zcu102 + AD9082-FMC-EBZ-A2
+			 * profile. Values are the no-OS PLATFORM_ZYNQMP
+			 * (non-MCS) profile from projects/ad9081/src/
+			 * app_clock.c, which is the ground truth for this
+			 * board: 100 MHz VCXO/XO variant, 3 GHz PLL2.
+			 *
+			 * PLL2 is 3 GHz, so an output divider N gives
+			 * 3000/N MHz. Every rate below is derived that way
+			 * and is queryable at runtime with
+			 * clock_control_get_rate().
+			 */
+			hmc7044: hmc7044@0 {
+				compatible = "adi,hmc7044";
+				reg = <0>;
+				/* HMC7044 SPI: mode 0, MSB first.
+				 * 10 MHz is safe for register access.
+				 */
+				spi-max-frequency = <10000000>;
+
+				#clock-cells = <1>;
+				#address-cells = <1>;
+				#size-cells = <0>;
+
+				/* CLKIN0 100 MHz, CLKIN1 10 MHz, CLKIN2/3 unused. */
+				adi,pll1-clkin-frequencies =
+					<100000000 10000000 0 0>;
+				adi,vcxo-frequency = <100000000>;
+				adi,pll2-output-frequency = <3000000000>;
+
+				adi,pll1-loop-bandwidth-hz = <200>;
+				adi,pll1-ref-prio-ctrl = <0xe4>;
+				adi,sysref-timer-divider = <1024>;
+				adi,pulse-generator-mode = <0>;
+				adi,sync-pin-mode = <1>;
+
+				/* 0x07 = AC-coupled diff on CLKIN0/1,
+				 * 0x15 = DC-coupled on OSCIN, CLKIN2/3 off.
+				 */
+				adi,clkin0-buffer-mode = <0x07>;
+				adi,clkin1-buffer-mode = <0x07>;
+				adi,clkin2-buffer-mode = <0x00>;
+				adi,clkin3-buffer-mode = <0x00>;
+				adi,oscin-buffer-mode = <0x15>;
+
+				adi,gpi-controls = <0x00 0x00 0x00 0x00>;
+				adi,gpo-controls = <0x37 0x33 0x00 0x00>;
+
+				/*
+				 * Outputs. Any output without a node here is
+				 * left disabled by the driver, which is how the
+				 * unused half of the 14 are handled.
+				 */
+				hmc7044_c0: channel@0 {
+					reg = <0>;
+					adi,extended-name = "CORE_CLK_RX";
+					adi,divider = <12>;    /* 250 MHz */
+					adi,driver-mode = <2>; /* LVDS */
+				};
+
+				hmc7044_c2: channel@2 {
+					reg = <2>;
+					adi,extended-name = "DEV_REFCLK";
+					adi,divider = <12>;    /* 250 MHz */
+					adi,driver-mode = <2>;
+				};
+
+				hmc7044_c3: channel@3 {
+					reg = <3>;
+					adi,extended-name = "DEV_SYSREF";
+					adi,divider = <1536>;  /* 1.953 MHz */
+					adi,driver-mode = <2>;
+					adi,jesd204-sysref-chan;
+				};
+
+				hmc7044_c6: channel@6 {
+					reg = <6>;
+					adi,extended-name = "CORE_CLK_TX";
+					adi,divider = <12>;    /* 250 MHz */
+					adi,driver-mode = <2>;
+				};
+
+				hmc7044_c8: channel@8 {
+					reg = <8>;
+					adi,extended-name = "CORE_CLK_RX_2";
+					adi,divider = <6>;     /* 500 MHz */
+					adi,driver-mode = <2>;
+				};
+
+				hmc7044_c10: channel@a {
+					reg = <10>;
+					adi,extended-name = "CORE_CLK_RX_ALT";
+					adi,divider = <12>;    /* 250 MHz */
+					adi,driver-mode = <2>;
+				};
+
+				/*
+				 * The GT reference clock. Both adxcvr nodes
+				 * below take clocks = <&hmc7044 12> and query
+				 * this output's rate for their DRP divider
+				 * solve rather than hardcoding 500 MHz.
+				 */
+				hmc7044_c12: channel@c {
+					reg = <12>;
+					adi,extended-name = "FPGA_REFCLK";
+					adi,divider = <6>;     /* 500 MHz */
+					adi,driver-mode = <2>;
+				};
+
+				hmc7044_c13: channel@d {
+					reg = <13>;
+					adi,extended-name = "FPGA_SYSREF";
+					adi,divider = <1536>;  /* 1.953 MHz */
+					adi,driver-mode = <2>;
+					adi,jesd204-sysref-chan;
+				};
+			};
+		};
+
+		/*
+		 * AD9081 datapath DMA engines in the PL (ADI AXI DMAC). Addresses
+		 * from the on-board bitstream (system.hwh): RX is S2MM (device ->
+		 * memory, ADC capture), TX is MM2S (memory -> device, DAC playback).
+		 * Direction / data width / cyclic support are auto-probed by the
+		 * driver from the core, so we only need reg here. No interrupt line
+		 * is wired to the PS GIC for these cores; the driver falls back to
+		 * its polling path (dma_get_status pumps the transfer).
+		 *
+		 * Bound but not driven, matching no-OS: its app.c calls
+		 * axi_dmac_init() on both cores (app.c:456-457), which only reads
+		 * back their capabilities and starts no transfer. The DAC is fed
+		 * from the transport core's DDS instead, so neither engine is in the
+		 * datapath -- see the note in src/main.c.
+		 */
+		rx_dmac: dma@9c420000 {
+			compatible = "adi,axi-dmac";
+			reg = <0x0 0x9c420000 0x0 0x10000>;
+			#dma-cells = <1>;
+			status = "okay";
+		};
+
+		tx_dmac: dma@9c430000 {
+			compatible = "adi,axi-dmac";
+			reg = <0x0 0x9c430000 0x0 0x10000>;
+			#dma-cells = <1>;
+			status = "okay";
+		};
+
+		/*
+		 * GT transceivers (ADI AXI-ADXCVR around Xilinx GTH4), one node
+		 * per JESD204 direction. Addresses from the on-board bitstream
+		 * (system.hwh); node names and property values match ADI's Linux
+		 * overlay for this board
+		 * (zynqmp-zcu102-rev10-ad9081-m8-l4-overlay.dts:434-472) except
+		 * for the two clock-mux selections, which differ deliberately --
+		 * see below.
+		 *
+		 * reg covers a full 64 KiB page, not ADI's 0x1000: the register
+		 * block is smaller, but this is what gets device_map()ed and the
+		 * MMU granularity here is a page.
+		 */
+		tx_adxcvr: adxcvr@84b60000 {
+			compatible = "adi,axi-adxcvr-1.0";
+			reg = <0x0 0x84b60000 0x0 0x10000>;
+			status = "okay";
+
+			/*
+			 * Kept so the driver's log lines stay byte-identical to
+			 * the pre-devicetree code's, which the golden boot log
+			 * was captured from.
+			 */
+			label = "tx_adxcvr";
+
+			clocks = <&hmc7044 12>;
+
+			/*
+			 * QPLL0 + PROGDIV, and 10 Gbps lanes.
+			 *
+			 * This is no-OS's PLATFORM_ZYNQMP configuration
+			 * (app_jesd.c:105-117), not ADI's Linux overlay, which
+			 * has XCVR_QPLL + XCVR_REFCLK_DIV2 for a different
+			 * bitstream. PROGDIV is what this PL was synthesised
+			 * for: with REFCLK_DIV2 the GT output clock does not run
+			 * and RESET_DONE never asserts.
+			 */
+			adi,sys-clk-select = <XCVR_QPLL>;
+			adi,out-clk-select = <XCVR_PROGDIV_CLK>;
+			adi,lane-rate-khz = <10000000>;
+		};
+
+		rx_adxcvr: adxcvr@84a60000 {
+			compatible = "adi,axi-adxcvr-1.0";
+			reg = <0x0 0x84a60000 0x0 0x10000>;
+			status = "okay";
+			label = "rx_adxcvr";
+
+			clocks = <&hmc7044 12>;
+
+			/* CPLL on the receive side (no-OS app_jesd.c:121-129). */
+			adi,sys-clk-select = <XCVR_CPLL>;
+			adi,out-clk-select = <XCVR_PROGDIV_CLK>;
+			adi,lane-rate-khz = <10000000>;
+
+			/* LPM equalisation rather than DFE -- RX only. */
+			adi,use-lpm-enable;
+		};
+
+		/*
+		 * JESD204 link cores, one per direction: the framer's and the
+		 * deframer's link layer, between the GT transceivers and the
+		 * transport cores. Addresses from the on-board bitstream
+		 * (system.hwh); node names and compatibles match ADI's
+		 * devicetree for this board
+		 * (zynqmp-zcu102-rev10-ad9081-default.dtsi, axi_ad9081_rx_jesd
+		 * / axi_ad9081_tx_jesd).
+		 *
+		 * As with the adxcvr nodes, reg covers a full 64 KiB page
+		 * rather than ADI's 0x1000: the register block is smaller, but
+		 * this is what gets device_map()ed and MMU granularity here is
+		 * a page.
+		 *
+		 * The geometry below is one link described from both ends, so
+		 * every parameter both nodes carry has to agree -- there are
+		 * BUILD_ASSERTs in axi_jesd204.c for each, and
+		 * tools/check_profile.py checks them against the bitstream's
+		 * make parameters. M8 L4 F4 K32 N16 NP16 S1 CS0, subclass 1.
+		 *
+		 * Deliberately NOT here: adi,high-density. HD is 1 only when a
+		 * sample splits across lanes, which M/S/NP/L decide -- the
+		 * driver derives it (0 for this geometry) and asserts the
+		 * result. no-OS's profile says HD=1 for this same link, which
+		 * is wrong and harmless at F=4; a settable property is how that
+		 * would get copied back in.
+		 */
+		rx_jesd: axi-jesd204-rx@84a90000 {
+			compatible = "adi,axi-jesd204-rx-1.0";
+			reg = <0x0 0x84a90000 0x0 0x10000>;
+			status = "okay";
+
+			/*
+			 * Kept so the driver's log lines stay byte-identical to
+			 * the pre-devicetree code's, which the golden boot log
+			 * was captured from.
+			 */
+			label = "jesd204-rx";
+
+			adi,lanes-per-device = <4>;
+			adi,converters-per-device = <8>;
+			adi,octets-per-frame = <4>;
+			adi,frames-per-multiframe = <32>;
+			adi,bits-per-sample = <16>;
+			adi,subclass = <1>;
+			adi,lane-rate-khz = <10000000>;
+
+			/*
+			 * No adi,converter-resolution / -control-bits-per-sample
+			 * / -samples-per-converter-per-frame: the framer
+			 * receives the ILAS it is described in rather than
+			 * announcing one, so N, CS and S never reach a register
+			 * on this side. no-OS's RX core struct has no fields for
+			 * them either.
+			 */
+		};
+
+		tx_jesd: axi-jesd204-tx@84b90000 {
+			adi,jesd204-peer = <&rx_jesd>;
+			compatible = "adi,axi-jesd204-tx-1.0";
+			reg = <0x0 0x84b90000 0x0 0x10000>;
+			status = "okay";
+			label = "jesd204-tx";
+
+			adi,lanes-per-device = <4>;
+			adi,converters-per-device = <8>;
+			adi,octets-per-frame = <4>;
+			adi,frames-per-multiframe = <32>;
+			adi,bits-per-sample = <16>;
+			adi,subclass = <1>;
+			adi,lane-rate-khz = <10000000>;
+
+			/* ILAS-only, so the deframer carries these and the
+			 * framer does not.
+			 */
+			adi,converter-resolution = <16>;
+			adi,control-bits-per-sample = <0>;
+			adi,samples-per-converter-per-frame = <1>;
+		};
+
+		/*
+		 * JESD204 transport ("TPL") cores, one per direction. These sit
+		 * between the link cores and the DMA, mapping link octets to and
+		 * from converter samples. Addresses from the on-board bitstream
+		 * (system.hwh); node names and compatibles match ADI's Linux
+		 * overlay for this board
+		 * (zynqmp-zcu102-rev10-ad9081-m8-l4-overlay.dts, axi_ad9081_core_rx
+		 * / axi_ad9081_core_tx).
+		 *
+		 * As with the adxcvr nodes, reg covers a full 64 KiB page rather
+		 * than ADI's 0x8000/0x4000: the register block is smaller, but this
+		 * is what gets device_map()ed and MMU granularity here is a page.
+		 */
+		rx_tpl: axi-ad9081-rx@84a10000 {
+			compatible = "adi,axi-ad9081-rx-1.0";
+			reg = <0x0 0x84a10000 0x0 0x10000>;
+			status = "okay";
+
+			/*
+			 * Kept so the driver's log lines stay byte-identical to
+			 * the pre-devicetree code's, which the golden boot log
+			 * was captured from.
+			 */
+			label = "adc-tpl";
+
+			/* One channel per converter: M8. */
+			adi,num-channels = <8>;
+
+			/* no-OS axi_adc_init() requires PCORE major >= 9. */
+			adi,pcore-version-min-major = <9>;
+		};
+
+		tx_tpl: axi-ad9081-tx@84b10000 {
+			adi,jesd204-peer = <&rx_tpl>;
+			compatible = "adi,axi-ad9081-tx-1.0";
+			reg = <0x0 0x84b10000 0x0 0x10000>;
+			status = "okay";
+			label = "dac-tpl";
+
+			adi,num-channels = <8>;
+
+			/*
+			 * No adi,pcore-version-min-major: this core reports v9
+			 * and no-OS axi_dac_init() does not version-check the
+			 * DAC side at all, unlike the ADC side.
+			 */
+		};
+
+		psgpio: gpio@ff0a0000 {
+			compatible = "xlnx,ps-gpio";
+			status = "okay";
+			reg = <0x0 0xff0a0000 0x0 0x1000>;
+			interrupts = <GIC_SPI 16 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>;
+			interrupt-names = "irq_0";
+
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			/* MIO banks 0..2, EMIO banks 3..5 (see xlnx,ps-gpio). */
+			psgpio_bank0: psgpio_bank@0 {
+				compatible = "xlnx,ps-gpio-bank";
+				reg = <0x0>;
+				gpio-controller;
+				#gpio-cells = <2>;
+				ngpios = <26>;
+				status = "okay";
+			};
+
+			psgpio_bank1: psgpio_bank@1 {
+				compatible = "xlnx,ps-gpio-bank";
+				reg = <0x1>;
+				gpio-controller;
+				#gpio-cells = <2>;
+				ngpios = <26>;
+				status = "okay";
+			};
+
+			psgpio_bank2: psgpio_bank@2 {
+				compatible = "xlnx,ps-gpio-bank";
+				reg = <0x2>;
+				gpio-controller;
+				#gpio-cells = <2>;
+				ngpios = <26>;
+				status = "okay";
+			};
+
+			psgpio_bank3: psgpio_bank@3 {
+				compatible = "xlnx,ps-gpio-bank";
+				reg = <0x3>;
+				gpio-controller;
+				#gpio-cells = <2>;
+				ngpios = <32>;
+				status = "okay";
+			};
+
+			psgpio_bank4: psgpio_bank@4 {
+				compatible = "xlnx,ps-gpio-bank";
+				reg = <0x4>;
+				gpio-controller;
+				#gpio-cells = <2>;
+				ngpios = <32>;
+				status = "okay";
+			};
+
+			psgpio_bank5: psgpio_bank@5 {
+				compatible = "xlnx,ps-gpio-bank";
+				reg = <0x5>;
+				gpio-controller;
+				#gpio-cells = <2>;
+				ngpios = <32>;
+				status = "okay";
+			};
+		};
+	};
+
+};
+
+/*
+ * IIO views of the two datapath directions, for streaming to a libiio client
+ * over IIOD.
+ *
+ * At the root rather than inside the amba bus: these nodes own no registers, so
+ * they have no reg to place them on a bus whose children are all addressed.
+ *
+ * adi,converters-per-device repeats the transport cores' adi,num-channels here
+ * because an IIO device's channel count is its own property; the driver
+ * BUILD_ASSERTs the two against each other so they cannot drift.
+ */
+/ {
+	rx_iio: jesd-iio-rx {
+		compatible = "adi,axi-jesd-iio";
+
+		/* Name ADI's client tooling expects for an AD9081 HPC carrier. */
+		io-name = "axi-ad9081-rx-hpc";
+
+		adi,tpl = <&rx_tpl>;
+		dmas = <&rx_dmac 0>;
+		dma-names = "rx";
+		adi,converters-per-device = <8>;
+		status = "okay";
+	};
+
+	tx_iio: jesd-iio-tx {
+		compatible = "adi,axi-jesd-iio";
+		io-name = "axi-ad9081-tx-hpc";
+
+		adi,tpl = <&tx_tpl>;
+		dmas = <&tx_dmac 0>;
+		dma-names = "tx";
+		adi,converters-per-device = <8>;
+		status = "okay";
+	};
+};

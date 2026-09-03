@@ -1,0 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
+mainmenu "AD9081 JESD204B bring-up sample"
+
+source "Kconfig.zephyr"

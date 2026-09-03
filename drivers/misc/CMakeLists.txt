@@ -1,11 +1,13 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # zephyr-keep-sorted-start
+add_subdirectory_ifdef(CONFIG_AD9081 ad9081)
 add_subdirectory_ifdef(CONFIG_DEVMUX devmux)
 add_subdirectory_ifdef(CONFIG_ESP_HOSTED_MCU esp_hosted_mcu)
 add_subdirectory_ifdef(CONFIG_ETHOS_U ethos_u)
 add_subdirectory_ifdef(CONFIG_FT800 ft8xx)
 add_subdirectory_ifdef(CONFIG_GROVE_LCD_RGB grove_lcd_rgb)
+add_subdirectory_ifdef(CONFIG_JESD204_AXI jesd204)
 add_subdirectory_ifdef(CONFIG_MCUX_FLEXIO mcux_flexio)
 add_subdirectory_ifdef(CONFIG_MISC_MAX2221X max2221x)
 add_subdirectory_ifdef(CONFIG_NEOCHROM_GPU2D neochrom_gpu2d)

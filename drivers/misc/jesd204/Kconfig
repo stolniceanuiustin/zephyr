@@ -1,0 +1,138 @@
+# ADI JESD204 AXI IP cores for FPGA fabric
+#
+# These are the FPGA-side halves of a JESD204 link: the transceiver wrapper,
+# the link (framer/deframer) cores and the transport layer. They are ADI's
+# AXI IP, instantiated in the programmable logic, and are independent of
+# which converter sits on the other end of the link.
+#
+# SPDX-License-Identifier: Apache-2.0
+
+menuconfig JESD204_AXI
+	bool "ADI JESD204 AXI IP core drivers"
+	help
+	  Drivers for ADI's JESD204 AXI IP cores in FPGA fabric.
+
+	  These drivers configure the cores and expose enable/status calls.
+	  Sequencing the enables across every device on the link is the
+	  caller's job: a JESD204 link only comes up when the converter, the
+	  transceiver and the link cores pass through the same phases
+	  together. See samples/drivers/misc/ad9081 for a phase-ordered
+	  bring-up built on these drivers.
+
+if JESD204_AXI
+
+config JESD204_AXI_ADXCVR
+	bool "ADI AXI ADXCVR transceiver wrapper"
+	default y
+	depends on DT_HAS_ADI_AXI_ADXCVR_1_0_ENABLED
+	help
+	  ADI's axi_adxcvr wrapper around the FPGA serial transceivers,
+	  including the Xilinx GTH/GTY divider and DRP programming needed to
+	  hit a given lane rate from a given reference clock.
+
+config JESD204_AXI_ADXCVR_INIT_PRIORITY
+	int "AXI-ADXCVR (GT transceiver) init priority"
+	depends on JESD204_AXI_ADXCVR
+	default 65
+	help
+	  Initialisation priority of the AXI-ADXCVR driver, within POST_KERNEL.
+
+	  Must be above CONFIG_CLOCK_CONTROL_HMC7044_INIT_PRIORITY: the adxcvr
+	  nodes take `clocks = <&hmc7044 12>`, and Zephyr's init-priority
+	  validation rejects a device that initialises before a devicetree
+	  dependency. There is a BUILD_ASSERT in axi_adxcvr.c for it.
+
+config JESD204_AXI_LINK
+	bool "ADI AXI JESD204 link cores"
+	default y
+	depends on DT_HAS_ADI_AXI_JESD204_RX_1_0_ENABLED || \
+		   DT_HAS_ADI_AXI_JESD204_TX_1_0_ENABLED
+	help
+	  ADI's axi_jesd204_rx / axi_jesd204_tx link-layer cores: code group
+	  synchronisation, ILAS, lane alignment and link status.
+
+config JESD204_AXI_LINK_INIT_PRIORITY
+	int "AXI-JESD204 link-core init priority"
+	depends on JESD204_AXI_LINK
+	default 65
+	help
+	  Initialisation priority of the AXI-JESD204 RX/TX link-core driver,
+	  within POST_KERNEL.
+
+	  Unconstrained in practice, same as the transport cores: the nodes have
+	  no devicetree dependencies (this port does not model the PL lane and
+	  device clocks, so there is no clocks phandle), and init() only marks
+	  the devices ready. The register work is an explicit
+	  axi_jesd204_configure() call from the bring-up sequence.
+
+config JESD204_AXI_TPL
+	bool "ADI AXI JESD204 transport layer cores"
+	default y
+	depends on DT_HAS_ADI_AXI_AD9081_RX_1_0_ENABLED || \
+		   DT_HAS_ADI_AXI_AD9081_TX_1_0_ENABLED
+	help
+	  ADI's transport-layer cores, which map JESD204 octets onto
+	  converter samples. Downstream of the link: these are not JESD204
+	  bring-up participants.
+
+config JESD204_AXI_TPL_INIT_PRIORITY
+	int "AXI-AD9081 transport-core (TPL) init priority"
+	depends on JESD204_AXI_TPL
+	default 65
+	help
+	  Initialisation priority of the AXI-AD9081 RX/TX transport-core driver,
+	  within POST_KERNEL.
+
+	  Unconstrained in practice: the nodes have no devicetree dependencies
+	  (the transport cores run off the sample clock inside the PL, so there
+	  is no clocks phandle), and init() only marks the devices ready. The
+	  register work is an explicit axi_tpl_configure() call from the
+	  bring-up sequence.
+
+config JESD204_AXI_JESD_IIO
+	bool "Expose the JESD204 datapath as libiio devices"
+	default y
+	depends on DT_HAS_ADI_AXI_JESD_IIO_ENABLED
+	depends on LIBIIO && LIBIIO_IIO_DEVICE
+	depends on JESD204_AXI_TPL && DMA
+	help
+	  Presents one direction of the AD9081 JESD204 datapath as an IIO
+	  device, so an IIOD client can stream converter samples over the
+	  transport core and the AXI DMAC.
+
+	  Streaming only: the datapath's own bring-up stays with the JESD204
+	  sequence, and this driver adds no chip attributes.
+
+if JESD204_AXI_JESD_IIO
+
+config JESD204_AXI_JESD_IIO_BUF_SIZE
+	int "DMA staging buffer size per IIO device (bytes)"
+	default 32768
+	help
+	  Size of the cache-line-aligned DMA staging buffer allocated for each
+	  adi,axi-jesd-iio node. Client blocks are copied through it, because a
+	  block from the libiio core carries no alignment guarantee and a cyclic
+	  playback transfer outlives the writebuf() call that armed it.
+
+	  Capture blocks larger than this are transferred in chunks, losing the
+	  samples that arrive between chunks. Playback blocks larger than this
+	  are refused, since splitting a cyclic transfer would break the repeat.
+
+	  Must be a whole number of 64-byte cache lines; the driver asserts this
+	  at build time.
+
+config JESD204_AXI_JESD_IIO_INIT_PRIORITY
+	int "JESD204 IIO device init priority"
+	default 66
+	help
+	  Initialisation priority within POST_KERNEL. Must be after
+	  JESD204_AXI_TPL_INIT_PRIORITY and after the DMA driver, because init()
+	  requires both the transport core and the DMA engine to be ready.
+
+module = JESD204_AXI_JESD_IIO
+module-str = axi_jesd_iio
+source "subsys/logging/Kconfig.template.log_config"
+
+endif # JESD204_AXI_JESD_IIO
+
+endif # JESD204_AXI

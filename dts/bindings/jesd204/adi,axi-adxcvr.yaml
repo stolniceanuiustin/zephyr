@@ -1,0 +1,129 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# ADI AXI-ADXCVR -- the ADI wrapper around the Xilinx GTH/GTY high-speed
+# transceivers, one instance per JESD204 direction.
+#
+# Property names follow ADI's Linux binding for this IP (the driver is
+# drivers/iio/jesd204/axi_adxcvr.c; there is no YAML upstream, so the names
+# below are the ones adxcvr_parse_dt() reads, and the compatible string is its
+# of_match entry). A devicetree written for ADI Linux therefore transfers with
+# only syntax changes.
+#
+# NOT ported from the Linux binding, and why:
+#   clock-output-names / #clock-cells -- the Linux driver registers the GT lane
+#     clock and its /40 output as Common Clock Framework clocks so the link
+#     cores can consume them. This port has no clock provider for the PL; the
+#     link cores are enabled directly by the bring-up FSM in the same phase.
+#   adi,jesd204-fsm-delayed-start-ms -- the Linux FSM auto-starts from probe and
+#     that property delays it. Bring-up here is an explicit call from main().
+#
+# One property is NOT from ADI: adi,lane-rate-khz. See its description.
+
+description: |
+  ADI AXI-ADXCVR GT transceiver wrapper (one node per direction).
+
+  The GT's PLL/CDR/divider attributes are set over DRP at configure time from
+  the lane rate and the reference-clock rate, so both must be knowable: the
+  lane rate from adi,lane-rate-khz and the reference rate from the `clocks`
+  phandle. A wrong reference rate silently produces wrong dividers and a GT
+  that never reports ready.
+
+compatible: "adi,axi-adxcvr-1.0"
+
+include: base.yaml
+
+properties:
+  reg:
+    required: true
+
+  clocks:
+    required: true
+    description: |
+      The GT reference clock. Its rate is queried at configure time
+      (clock_control_get_rate) rather than hardcoded, so that reprogramming the
+      clock tree makes the GT divider math follow instead of silently going
+      wrong.
+
+  label:
+    description: |
+      Deliberately used here, despite the general deprecation. Every log line
+      this driver emits is prefixed with the device name, and the boot log is
+      diffed against a reference captured from hardware; "tx_adxcvr" keeps
+      those lines byte-identical to what the pre-devicetree code produced,
+      where the node name "adxcvr@84b60000" would not.
+
+  adi,sys-clk-select:
+    type: int
+    required: true
+    enum: [0, 2, 3]
+    description: |
+      Which PLL clocks the transceiver: XCVR_CPLL, XCVR_QPLL1 or XCVR_QPLL
+      (QPLL0) from <dt-bindings/jesd204/adxcvr.h>. Written to REG_CONTROL's
+      SYSCLK_SEL field, so the values are the IP's encoding and not free.
+
+      This selects between physically distinct PLLs in the GT; the bitstream
+      only drives some of them. On this board TX uses QPLL0 and RX uses CPLL.
+
+  adi,out-clk-select:
+    type: int
+    required: true
+    enum: [1, 2, 3, 4, 5]
+    description: |
+      Which GT output drives the fabric lane clock: XCVR_OUTCLK_PCS,
+      XCVR_OUTCLK_PMA, XCVR_REFCLK, XCVR_REFCLK_DIV2 or XCVR_PROGDIV_CLK from
+      <dt-bindings/jesd204/adxcvr.h>. REG_CONTROL's OUTCLK_SEL field.
+
+      XCVR_PROGDIV_CLK additionally makes the driver program the PROGDIV
+      divider over DRP, and exists only on GTHE3/GTHE4/GTYE4.
+
+  adi,use-lpm-enable:
+    type: boolean
+    description: |
+      Use LPM equalisation rather than DFE on the receiver. Drives REG_CONTROL
+      bit12 (LPM_DFE_N) and is also passed to the CDR configuration, which
+      differs between the two modes. Meaningful on an RX instance only.
+
+  adi,lane-rate-khz:
+    type: int
+    required: true
+    description: |
+      Serial lane rate in kHz. NOT an ADI Linux property: there, the lane rate
+      comes from the Common Clock Framework (clk_get_rate on the GT lane clock,
+      which the driver itself registers). This port has no clock provider for
+      the PL, so the rate the DRP divider solve targets has to be stated.
+
+      It is not free -- the bitstream was synthesised for a fixed rate
+      (RX_LANE_RATE/TX_LANE_RATE in the HDL make invocation, 10 Gbps here) and
+      the GT cannot run at another one. tools/check_profile.py cross-checks
+      this value against that make parameter.
+
+  adi,vco-min-khz:
+    type: int
+    description: |
+      Override the CPLL VCO lower limit, in kHz. Omit to use the limits the
+      driver derives from the FPGA's technology, family, speed grade, package
+      and core voltage (xilinx_xcvr_setup_cpll_vco_range). CPLL instances only
+      -- QPLL uses the vco0/vco1 pair below, because QPLL0 and QPLL1 have
+      separate ranges.
+
+  adi,vco-max-khz:
+    type: int
+    description: Override the CPLL VCO upper limit, in kHz. See adi,vco-min-khz.
+
+  adi,vco0-min-khz:
+    type: int
+    description: |
+      Override the QPLL0 VCO lower limit, in kHz. Omit to use the derived
+      limits. QPLL instances only.
+
+  adi,vco0-max-khz:
+    type: int
+    description: Override the QPLL0 VCO upper limit, in kHz.
+
+  adi,vco1-min-khz:
+    type: int
+    description: Override the QPLL1 VCO lower limit, in kHz.
+
+  adi,vco1-max-khz:
+    type: int
+    description: Override the QPLL1 VCO upper limit, in kHz.

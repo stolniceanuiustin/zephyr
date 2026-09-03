@@ -23,6 +23,8 @@ manifest:
       url-base: https://github.com/zephyrproject-rtos
     - name: babblesim
       url-base: https://github.com/BabbleSim
+    - name: fork
+      url-base: https://github.com/stolniceanuiustin
 
   group-filter: [-babblesim, -optional, -testing]
 
@@ -147,7 +149,9 @@ manifest:
       groups:
         - fs
     - name: hal_adi
-      revision: 1a5d9748b680adf0669739f37d05cb985f39b7b8
+      remote: fork
+      repo-path: hal_adi
+      revision: ad9081-upstream
       path: modules/hal/adi
       groups:
         - hal
@@ -295,7 +299,14 @@ manifest:
         - hal
     - name: hostap
       path: modules/lib/hostap
-      revision: d467a115b8fc20b8b7120937cb1d445dacebc6a1
+      revision: e97765d250aad14e0d2495a3fd5d4d9354a408df
+    - name: libiio
+      remote: fork
+      repo-path: libiio_arecibo
+      # Branch, not a SHA: the Zephyr buffer support this port needs lives here,
+      # so west update must not drag the tree back to a commit without it.
+      revision: zephyr-iio-buffer-support
+      path: modules/lib/libiio
     - name: liblc3
       revision: 48bbd3eacd36e99a57317a0a4867002e0b09e183
       path: modules/lib/liblc3

@@ -1,0 +1,56 @@
+/*
+ * ZCU102 (ZynqMP A53/APU) SD-card overlay for the fs_sample FAT demo.
+ *
+ * The A53 devicetree (dts/arm64/xilinx/zynqmp_a53.dtsi) only wires up the GIC,
+ * UARTs and TTC timers -- it has no SDHCI node. ZynqMP's SD/eMMC controller is
+ * the same Arasan SDHCI 8.9a IP as Versal's, so the in-tree "xlnx,versal-8.9a"
+ * driver (drivers/sdhc/xlnx_sdhc.c) can drive it directly. This overlay adds
+ * the controller instance to the A53 SoC bus rather than touching the upstream
+ * dtsi.
+ *
+ * IMPORTANT: the A53 soc uses 2-cell #address-cells/#size-cells, so every reg
+ * must be the 64-bit form <hi lo hi lo>, unlike the R5/Versal dtsi's 1-cell
+ * regs.
+ *
+ * ZCU102 board specifics:
+ *   - The user SD-card slot is on controller SD1 @ 0xff170000 (GIC SPI 49).
+ *     (SD0 @ 0xff160000 / SPI 48 is not routed to the card slot on ZCU102.)
+ *   - The Zephyr driver only reads the input clock rate via the clock_control
+ *     API, so a fixed-clock at the SDIO reference rate (200 MHz) is sufficient;
+ *     it does not touch the CRL_APB clock tree.
+ *   - broken-cd forces polled card presence for first bring-up (avoids relying
+ *     on the MIO card-detect line being wired the way the driver expects).
+ *
+ * Known limitation: this driver programs the on-die DLL/PHY only when the HW
+ * SDR400 capability bit is set (Versal); on ZynqMP that bit is clear, so the
+ * PHY/tap-delay path is skipped. That means default-speed / high-speed
+ * (<=50 MHz) is expected to work, but UHS modes (SDR50/SDR104) -- which need
+ * ITAP/OTAP tap-delay tuning in IOU_SLCR -- are likely unreliable until that
+ * tuning is added. Keep the card in high-speed for this test.
+ */
+
+/ {
+	sdhci1_ref_clk: sdhci1-ref-clk {
+		compatible = "fixed-clock";
+		#clock-cells = <0>;
+		clock-frequency = <200000000>;
+	};
+};
+
+&soc {
+	sdhci1: mmc@ff170000 {
+		compatible = "xlnx,versal-8.9a";
+		reg = <0x0 0xff170000 0x0 0x10000>;
+		interrupts = <GIC_SPI 49 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>;
+		clocks = <&sdhci1_ref_clk>;
+		broken-cd;
+		power-delay-ms = <10>;
+		status = "okay";
+
+		sdmmc {
+			compatible = "zephyr,sdmmc-disk";
+			disk-name = "SD";
+			status = "okay";
+		};
+	};
+};
