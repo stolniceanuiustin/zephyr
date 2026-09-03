@@ -1,0 +1,92 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# AD9680 -- 14-bit, dual-channel JESD204B ADC, SPI-programmed. On the DAQ2 FMC it
+# is the RX converter, clocked by the AD9523-1 (ADC_CLK).
+#
+# Property names follow ADI's Linux adi,ad9208/ad9680 binding so a devicetree
+# written for ADI Linux transfers with only syntax changes. This binding covers
+# the standalone SPI bring-up only -- the JESD204B link geometry below -- not the
+# AXI link cores, transceivers or the DDC/NCO datapath (those are a later block,
+# so the DDC child node is deliberately not modelled here).
+#
+# GEOMETRY IS DERIVED, NOT FREE. The JESD204B configuration bytes written to the
+# chip (quick-config, CSN, subclass, multiframe) and the serial lane rate are
+# computed from these properties at build time, and each computed byte is
+# BUILD_ASSERT-ed in ad9680.c against the value the no-OS reference writes for the
+# synthesised DAQ2 bitstream (M=2, L=4, S=1). A geometry that disagrees with the
+# bitstream fails the build. Some of these parameters are functions of the
+# others (F = M*N'*S/(8*L); CS = N'-N; lane rate = fs*M*N'*10/8/L) -- they are
+# listed separately to mirror the Linux node, and the cross-checks are the
+# BUILD_ASSERTs, so do not treat them as independently tunable.
+#
+# INIT LEVEL: SPI-attached, so POST_KERNEL after CONFIG_SPI_INIT_PRIORITY and
+# after the AD9523 clock generator (a BUILD_ASSERT and the Kconfig default
+# enforce the ordering).
+
+description: |
+  Analog Devices AD9680 14-bit dual JESD204B ADC (SPI bring-up).
+
+compatible: "adi,ad9680"
+
+include:
+  - name: spi-device.yaml
+
+properties:
+  clocks:
+    required: true
+    description: The ADC sample clock (ADC_CLK), e.g. an AD9523-1 output.
+
+  clock-names:
+    required: true
+    description: Must contain "adc_clk".
+
+  adi,sampling-frequency-khz:
+    type: int
+    required: true
+    description: |
+      ADC sample rate in kHz (carried in kHz to keep the lane-rate arithmetic
+      32-bit). DAQ2 = 1000000 (1 GHz). The serial lane rate is derived from this
+      and the geometry, not set directly.
+
+  adi,converters-per-device:
+    type: int
+    required: true
+    description: M -- number of converters per device. DAQ2 = 2.
+
+  adi,lanes-per-device:
+    type: int
+    required: true
+    description: L -- number of serial lanes per device. DAQ2 = 4.
+
+  adi,octets-per-frame:
+    type: int
+    required: true
+    description: |
+      F -- octets per frame per lane. Not free: F = M*N'*S/(8*L). DAQ2 = 1.
+
+  adi,frames-per-multiframe:
+    type: int
+    required: true
+    description: K -- frames per multiframe. DAQ2 = 32.
+
+  adi,converter-resolution:
+    type: int
+    required: true
+    description: N -- converter resolution in bits. DAQ2 = 14.
+
+  adi,bits-per-sample:
+    type: int
+    required: true
+    description: N' -- total bits per sample (N + control + tail). DAQ2 = 16.
+
+  adi,control-bits-per-sample:
+    type: int
+    required: true
+    description: |
+      CS -- control bits per sample. Not free: CS = N' - N when there are no
+      tail bits. DAQ2 = 2.
+
+  adi,subclass:
+    type: int
+    required: true
+    description: JESD204B device subclass. DAQ2 = 1.
