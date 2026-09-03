@@ -150,6 +150,38 @@
 					adi,divider-phase = <1>;
 				};
 			};
+
+			/*
+			 * AD9680 RX ADC, CS2 on the same SPI0 bus (ADI's Linux
+			 * fmcdaq2.dts puts the AD9680 at reg = <2>). Its sample
+			 * clock is the AD9523 ADC_CLK output (channel 13, 1.0 GHz).
+			 *
+			 * JESD204B geometry is the synthesised DAQ2 RX profile:
+			 *   M=2, L=4, S=1  ->  F = M*N'*S/(8*L) = 2*16/(8*4) = 1
+			 *   N=14, N'=16    ->  CS = N'-N = 2
+			 *   K=32, subclass 1
+			 *   lane rate = fs*M*N'*10/8/L = 1e9*2*16*1.25/4 = 10 Gbps
+			 * ad9680.c BUILD_ASSERTs every derived config byte against
+			 * the no-OS reference; a mismatch fails the build.
+			 */
+			ad9680: ad9680@2 {
+				compatible = "adi,ad9680";
+				reg = <2>;
+				spi-max-frequency = <10000000>;
+
+				clocks = <&ad9523 13>;
+				clock-names = "adc_clk";
+
+				adi,sampling-frequency-khz = <1000000>; /* 1 GHz */
+				adi,converters-per-device = <2>;   /* M */
+				adi,lanes-per-device = <4>;        /* L */
+				adi,octets-per-frame = <1>;        /* F */
+				adi,frames-per-multiframe = <32>;  /* K */
+				adi,converter-resolution = <14>;   /* N */
+				adi,bits-per-sample = <16>;        /* N' */
+				adi,control-bits-per-sample = <2>; /* CS */
+				adi,subclass = <1>;
+			};
 		};
 	};
 };
