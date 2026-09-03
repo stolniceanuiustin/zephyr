@@ -1,0 +1,155 @@
+/*
+ * Copyright (c) 2026 Analog Devices, Inc.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+#include <zephyr/dt-bindings/interrupt-controller/arm-gic.h>
+
+/*
+ * DAQ2 FMC (AD9680 ADC + AD9144 DAC) clock generator: an AD9523-1, reached over
+ * the PS Cadence SPI0 controller routed to the FMC over EMIO. SPI reference
+ * clock 100 MHz.
+ *
+ * SPI0 is the bus the DAQ2 bitstream wires to the FMC: ADI's Linux devicetree
+ * (zynqmp-zcu102-rev10-fmcdaq2.dts) does `#define fmc_spi spi0` and enables only
+ * &spi0. The AD9523 is CS0; the AD9144 (CS1) and AD9680 (CS2) share this bus but
+ * are not modelled by this sample yet.
+ *
+ * PLL2 dividers use the EXPLICIT path (adi,pll2-*), which is 1:1 with the no-OS
+ * reference math and the reviewable one, rather than the derived adi,pll2-m1-freq
+ * path. Geometry, verified against the DAQ2 Linux ad9523-1 node:
+ *
+ *   VCXO 125 MHz, doubler off, R2 = 1, NDIV = 4*B + A = 4*6 + 0 = 24
+ *     -> VCO   = 125 MHz * 24 = 3.0 GHz   (inside the -1 2.94-3.1 GHz band)
+ *   M1 = 3
+ *     -> VCO1 out = 3.0 GHz / 3 = 1.0 GHz (matches the Linux adi,pll2-m1-freq)
+ *
+ * Every output rate below is 1.0 GHz / adi,channel-divider and is queryable at
+ * runtime with clock_control_get_rate().
+ *
+ * The board is wired 3-wire (bidirectional SDIO); adi,spi-3wire-enable below
+ * keeps the chip from driving an unrouted SDO pin, which would make every
+ * readback return zero.
+ */
+/ {
+	soc {
+		spi0: spi@ff040000 {
+			compatible = "cdns,spi";
+			reg = <0x0 0xff040000 0x0 0x1000>;
+			status = "okay";
+			interrupts = <GIC_SPI 19 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+			fifo-width = <8>;
+			rx-fifo-depth = <128>;
+			tx-fifo-depth = <128>;
+			clock-frequency = <100000000>;
+
+			ad9523: ad9523-1@0 {
+				compatible = "adi,ad9523-1";
+				reg = <0>;
+				/* AD9523 SPI: mode 0, MSB first. 10 MHz is
+				 * safe for register access.
+				 */
+				spi-max-frequency = <10000000>;
+
+				#clock-cells = <1>;
+				#address-cells = <1>;
+				#size-cells = <0>;
+
+				adi,vcxo-freq = <125000000>;
+
+				/* Board is 3-wire (bidirectional SDIO). */
+				adi,spi-3wire-enable;
+
+				/* PLL1 bypassed: the 125 MHz VCXO drives PLL2
+				 * directly, OSCIN differential.
+				 */
+				adi,pll1-bypass-enable;
+				adi,osc-in-diff-enable;
+
+				/* PLL2, explicit divider path. */
+				adi,pll2-charge-pump-current-na = <413000>;
+				adi,pll2-r2-div = <1>;
+				adi,pll2-ndiv-a-cnt = <0>;
+				adi,pll2-ndiv-b-cnt = <6>;
+				adi,pll2-vco-div-m1 = <3>;
+
+				/* PLL2 loop filter (from the DAQ2 Linux node). */
+				adi,rpole2 = <0>;
+				adi,rzero = <7>;
+				adi,cpole1 = <2>;
+
+				/*
+				 * Outputs. Any output without a node here is
+				 * parked tristate + powered down by the driver.
+				 * driver-mode 3 matches the DAQ2 Linux node.
+				 */
+				ad9523_1: channel@1 {
+					reg = <1>;
+					adi,extended-name = "DAC_CLK";
+					adi,channel-divider = <1>;   /* 1.0 GHz */
+					adi,driver-mode = <3>;
+					adi,divider-phase = <1>;
+				};
+
+				ad9523_4: channel@4 {
+					reg = <4>;
+					adi,extended-name = "ADC_CLK_FMC";
+					adi,channel-divider = <2>;   /* 500 MHz */
+					adi,driver-mode = <3>;
+					adi,divider-phase = <1>;
+				};
+
+				ad9523_5: channel@5 {
+					reg = <5>;
+					adi,extended-name = "ADC_SYSREF";
+					adi,channel-divider = <128>; /* 7.8125 MHz */
+					adi,driver-mode = <3>;
+					adi,divider-phase = <1>;
+				};
+
+				ad9523_6: channel@6 {
+					reg = <6>;
+					adi,extended-name = "CLKD_ADC_SYSREF";
+					adi,channel-divider = <128>;
+					adi,driver-mode = <3>;
+					adi,divider-phase = <1>;
+				};
+
+				ad9523_7: channel@7 {
+					reg = <7>;
+					adi,extended-name = "CLKD_DAC_SYSREF";
+					adi,channel-divider = <128>;
+					adi,driver-mode = <3>;
+					adi,divider-phase = <1>;
+				};
+
+				ad9523_8: channel@8 {
+					reg = <8>;
+					adi,extended-name = "DAC_SYSREF";
+					adi,channel-divider = <128>;
+					adi,driver-mode = <3>;
+					adi,divider-phase = <1>;
+				};
+
+				ad9523_9: channel@9 {
+					reg = <9>;
+					adi,extended-name = "FMC_DAC_REF_CLK";
+					adi,channel-divider = <2>;   /* 500 MHz */
+					adi,driver-mode = <3>;
+					adi,divider-phase = <1>;
+				};
+
+				ad9523_13: channel@d {
+					reg = <13>;
+					adi,extended-name = "ADC_CLK";
+					adi,channel-divider = <1>;   /* 1.0 GHz */
+					adi,driver-mode = <3>;
+					adi,divider-phase = <1>;
+				};
+			};
+		};
+	};
+};

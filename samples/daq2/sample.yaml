@@ -1,0 +1,16 @@
+sample:
+  name: DAQ2 bring-up
+  description: >
+    Placeholder DAQ2 (AD9680 ADC + AD9144 DAC FMC) bring-up sample. Currently a
+    plain hello world; the JESD204/DMA datapath in the ZynqMP programmable logic
+    will be layered on later, mirroring samples/drivers/misc/ad9081. Boot with
+    scripts/flash.sh daq2, which loads the matching bitstreams/daq2 PL bitstream.
+tests:
+  sample.daq2:
+    platform_allow:
+      - zynqmp_apu
+    harness: console
+    harness_config:
+      type: one_line
+      regex:
+        - "DAQ2 hello world! (.*)"
