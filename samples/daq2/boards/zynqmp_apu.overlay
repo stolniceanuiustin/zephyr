@@ -182,6 +182,44 @@
 				adi,control-bits-per-sample = <2>; /* CS */
 				adi,subclass = <1>;
 			};
+
+			/*
+			 * AD9144 TX DAC, CS1 on the same SPI0 bus (ADI's Linux
+			 * fmcdaq2.dts puts the AD9144 at reg = <1>). Its sample
+			 * clock is the AD9523 DAC_CLK output (channel 1, 1.0 GHz).
+			 *
+			 * SPI is 1 MHz here (the DAQ2 Linux node's rate); mode 3
+			 * (CPOL+CPHA) is set by the driver's SPI operation flags,
+			 * not DT -- the AD9144 differs from the AD9680 (mode 0).
+			 *
+			 * JESD204B geometry is the synthesised DAQ2 TX profile:
+			 *   M=2, L=4, S=1  ->  F = M*N'*S/(8*L) = 2*16/(8*4) = 1
+			 *   N=16, N'=16    ->  CS = N'-N = 0 (16-bit DAC)
+			 *   HD = (F*8 < N') = (8 < 16) = 1 (derived in the driver)
+			 *   K=32, subclass 1, interpolation 1
+			 *   lane rate = fs*M*N'*10/(8*L*interp) = 10 Gbps
+			 * ad9144.c BUILD_ASSERTs every derived config byte against
+			 * the no-OS reference; a mismatch fails the build.
+			 */
+			ad9144: ad9144@1 {
+				compatible = "adi,ad9144";
+				reg = <1>;
+				spi-max-frequency = <1000000>; /* DAQ2 = 1 MHz */
+
+				clocks = <&ad9523 1>;
+				clock-names = "dac_clk";
+
+				adi,sampling-frequency-khz = <1000000>; /* 1 GHz */
+				adi,converters-per-device = <2>;   /* M */
+				adi,lanes-per-device = <4>;        /* L */
+				adi,octets-per-frame = <1>;        /* F */
+				adi,frames-per-multiframe = <32>;  /* K */
+				adi,converter-resolution = <16>;   /* N */
+				adi,bits-per-sample = <16>;        /* N' */
+				adi,control-bits-per-sample = <0>; /* CS = N'-N */
+				adi,subclass = <1>;
+				adi,interpolation = <1>;
+			};
 		};
 	};
 };
