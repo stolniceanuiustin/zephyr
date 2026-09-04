@@ -2,6 +2,7 @@
 
 # zephyr-keep-sorted-start
 add_subdirectory_ifdef(CONFIG_AD9081 ad9081)
+add_subdirectory_ifdef(CONFIG_AD9144 ad9144)
 add_subdirectory_ifdef(CONFIG_AD9680 ad9680)
 add_subdirectory_ifdef(CONFIG_DEVMUX devmux)
 add_subdirectory_ifdef(CONFIG_ESP_HOSTED_MCU esp_hosted_mcu)

@@ -1,0 +1,36 @@
+# Analog Devices AD9144 JESD204B DAC
+
+# SPDX-License-Identifier: Apache-2.0
+
+config AD9144
+	bool "ADI AD9144 JESD204B DAC (SPI bring-up)"
+	default y
+	depends on DT_HAS_ADI_AD9144_ENABLED
+	select SPI
+	help
+	  Enable the Analog Devices AD9144 driver: a 16-bit, quad-channel
+	  JESD204B DAC. On the DAQ2 FMC it is the TX converter, clocked by the
+	  AD9523-1 (DAC_CLK).
+
+	  This is the standalone SPI bring-up only: it proves the bus by reading
+	  the chip ID, soft-resets the chip, applies the ad9144_setup() register
+	  sequence and reports the SERDES PLL lock status. It does NOT wire the
+	  AXI JESD204 link cores, the transceivers, or the jesd204 FSM -- those
+	  are a separate later block, and until they land the lane sync / DAC
+	  output is unverified.
+
+if AD9144
+
+config AD9144_INIT_PRIORITY
+	int "AD9144 DAC init priority"
+	default 70
+	help
+	  Initialisation priority of the AD9144 driver, within POST_KERNEL.
+
+	  The chip is SPI-attached, so this must be strictly greater than
+	  CONFIG_SPI_INIT_PRIORITY (default 50) -- a BUILD_ASSERT in ad9144.c
+	  enforces it. It must also be greater than the AD9523 clock generator's
+	  init priority (default 60) so the DAC sample clock is running before the
+	  DAC is brought up.
+
+endif # AD9144
