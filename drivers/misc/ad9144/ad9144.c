@@ -430,7 +430,7 @@ static int ad9144_write_seq(const struct device *dev,
 /*
  * Block 1: soft-reset then prove the bus. Reset is done first (as no-OS does)
  * so the ID read happens from a known state. A wrong ID or scratchpad mismatch
- * is FATAL: it almost always means CS, SPI mode 3, 1 MHz or 3-/4-wire is wrong.
+ * is FATAL: it almost always means CS, SPI mode, 1 MHz or 3-/4-wire is wrong.
  */
 static int ad9144_reset_and_probe(const struct device *dev)
 {
@@ -470,7 +470,7 @@ static int ad9144_reset_and_probe(const struct device *dev)
 	    grade != AD9144_CHIP_GRADE) {
 		LOG_ERR("invalid ID 0x%02x%02x grade 0x%x (expected 0x9144 grade 0)",
 			idh, idl, grade);
-		LOG_ERR("check CS1 / SPI mode 3 / 1 MHz / 3-vs-4-wire");
+		LOG_ERR("check CS1 / SPI mode 0 / 1 MHz / 3-vs-4-wire");
 		return -ENODEV;
 	}
 
@@ -1078,8 +1078,7 @@ static int ad9144_init(const struct device *dev)
                                                                                            \
 	static const struct ad9144_config ad9144_config_##n = {                            \
 		.spi = SPI_DT_SPEC_INST_GET(n, SPI_WORD_SET(8) | SPI_TRANSFER_MSB |         \
-						   SPI_OP_MODE_MASTER | SPI_MODE_CPOL |    \
-						   SPI_MODE_CPHA),                         \
+						   SPI_OP_MODE_MASTER),                    \
 		.lane_rate_kbps = AD9144_LANE_RATE_KBPS(                                    \
 			DT_INST_PROP(n, adi_sampling_frequency_khz),                       \
 			DT_INST_PROP(n, adi_converters_per_device),                       \

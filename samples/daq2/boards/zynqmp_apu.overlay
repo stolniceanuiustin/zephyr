@@ -188,9 +188,9 @@
 			 * fmcdaq2.dts puts the AD9144 at reg = <1>). Its sample
 			 * clock is the AD9523 DAC_CLK output (channel 1, 1.0 GHz).
 			 *
-			 * SPI is 1 MHz here (the DAQ2 Linux node's rate); mode 3
-			 * (CPOL+CPHA) is set by the driver's SPI operation flags,
-			 * not DT -- the AD9144 differs from the AD9680 (mode 0).
+			 * SPI is 1 MHz here (the DAQ2 Linux node's rate); mode 0
+			 * (like the AD9523/AD9680 on this bus) is set by the
+			 * driver's SPI operation flags, not DT.
 			 *
 			 * JESD204B geometry is the synthesised DAQ2 TX profile:
 			 *   M=2, L=4, S=1  ->  F = M*N'*S/(8*L) = 2*16/(8*4) = 1
