@@ -5,6 +5,7 @@
  */
 
 #include <zephyr/dt-bindings/interrupt-controller/arm-gic.h>
+#include <zephyr/dt-bindings/gpio/gpio.h>
 
 /*
  * DAQ2 FMC (AD9680 ADC + AD9144 DAC) clock generator: an AD9523-1, reached over
@@ -190,7 +191,8 @@
 			 *
 			 * SPI is 1 MHz here (the DAQ2 Linux node's rate); mode 0
 			 * (like the AD9523/AD9680 on this bus) is set by the
-			 * driver's SPI operation flags, not DT.
+			 * driver's SPI operation flags, not DT. no-OS DAQ2 inits
+			 * all three devices NO_OS_SPI_MODE_0.
 			 *
 			 * JESD204B geometry is the synthesised DAQ2 TX profile:
 			 *   M=2, L=4, S=1  ->  F = M*N'*S/(8*L) = 2*16/(8*4) = 1
@@ -219,6 +221,42 @@
 				adi,control-bits-per-sample = <0>; /* CS = N'-N */
 				adi,subclass = <1>;
 				adi,interpolation = <1>;
+
+				/*
+				 * DAC RESETB, active-low. ZynqMP PS EMIO 118 =
+				 * bank4 pin 8 (EMIO base 78 + no-OS GPIO_OFFSET
+				 * 40). no-OS drives gpio_dac_reset LOW then HIGH;
+				 * the generic BOOT.BIN psu_init leaves it undriven,
+				 * so the driver must release it before SPI.
+				 */
+				reset-gpios = <&psgpio_bank4 8 GPIO_ACTIVE_LOW>;
+			};
+		};
+
+		/*
+		 * ZynqMP PS GPIO controller. The A53 dtsi (zynqmp_a53.dtsi) has
+		 * no GPIO node, so define it here. Only bank4 is needed: it
+		 * covers EMIO 110-141, which includes the DAC RESETB (EMIO 118 =
+		 * bank4 pin 8). Register offsets are derived from the bank reg
+		 * index by the xlnx,ps-gpio-bank driver, so a bank4-only node is
+		 * correct on its own.
+		 */
+		psgpio: gpio@ff0a0000 {
+			compatible = "xlnx,ps-gpio";
+			reg = <0x0 0xff0a0000 0x0 0x1000>;
+			status = "okay";
+			interrupts = <GIC_SPI 16 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>;
+			interrupt-names = "irq_0";
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			psgpio_bank4: psgpio_bank@4 {
+				compatible = "xlnx,ps-gpio-bank";
+				reg = <0x4>;
+				gpio-controller;
+				#gpio-cells = <2>;
+				ngpios = <32>;
+				status = "okay";
 			};
 		};
 	};
