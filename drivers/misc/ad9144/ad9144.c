@@ -45,6 +45,7 @@
 #include <zephyr/device.h>
 #include <zephyr/devicetree.h>
 #include <zephyr/drivers/spi.h>
+#include <zephyr/drivers/gpio.h>
 #include <zephyr/sys/util.h>
 
 #include <zephyr/logging/log.h>
@@ -232,6 +233,7 @@ static const uint8_t ad9144_xbar_identity[8] = { 0, 1, 2, 3, 4, 5, 6, 7 };
  */
 struct ad9144_config {
 	struct spi_dt_spec spi;
+	struct gpio_dt_spec reset;	/**< RESETB pin (active-low), optional. */
 
 	uint32_t lane_rate_kbps;	/**< Serial lane rate in kbps. */
 	uint8_t num_converters;		/**< M: converters per device. */
@@ -430,13 +432,39 @@ static int ad9144_write_seq(const struct device *dev,
 /*
  * Block 1: soft-reset then prove the bus. Reset is done first (as no-OS does)
  * so the ID read happens from a known state. A wrong ID or scratchpad mismatch
- * is FATAL: it almost always means CS, SPI mode, 1 MHz or 3-/4-wire is wrong.
+ * is FATAL: it almost always means CS, SPI mode 0, 1 MHz, 3-/4-wire or a stuck
+ * hardware reset is wrong.
  */
 static int ad9144_reset_and_probe(const struct device *dev)
 {
+	const struct ad9144_config *config = dev->config;
 	struct ad9144_data *data = dev->data;
 	uint8_t idl, idh, grade, scratch;
 	int ret;
+
+	/*
+	 * Release the AD9144 from hardware reset before any SPI access. no-OS
+	 * drives gpio_dac_reset LOW (assert) then HIGH (release); the generic
+	 * ZCU102 BOOT.BIN's psu_init never drives this EMIO pin, so without this
+	 * the chip stays in reset and every register reads back as bus float.
+	 * Optional: boards that strap RESETB high omit the DT property.
+	 */
+	if (config->reset.port != NULL) {
+		if (!gpio_is_ready_dt(&config->reset)) {
+			LOG_ERR("reset GPIO %s not ready", config->reset.port->name);
+			return -ENODEV;
+		}
+		ret = gpio_pin_configure_dt(&config->reset, GPIO_OUTPUT_ACTIVE);
+		if (ret < 0) {
+			return ret;
+		}
+		k_msleep(1);
+		ret = gpio_pin_set_dt(&config->reset, 0);	/* release RESETB */
+		if (ret < 0) {
+			return ret;
+		}
+		k_msleep(1);
+	}
 
 	k_msleep(5);
 	ret = ad9144_spi_write(dev, AD9144_REG_SPI_INTFCONFA,
@@ -1077,8 +1105,15 @@ static int ad9144_init(const struct device *dev)
 		     10000000U, "AD9144 lane rate != 10 Gbps (bitstream LANE_RATE=10)");   \
                                                                                            \
 	static const struct ad9144_config ad9144_config_##n = {                            \
+		/*                                                                         \
+		 * SPI mode 0 (CPOL=0, CPHA=0), like the AD9523 and AD9680 on this bus.     \
+		 * no-OS DAQ2 (fmcdaq2.c) inits all three devices NO_OS_SPI_MODE_0;          \
+		 * mode 3 here returned garbage IDs (0xff00) because the Cadence            \
+		 * controller sampled on the wrong clock edge.                              \
+		 */                                                                         \
 		.spi = SPI_DT_SPEC_INST_GET(n, SPI_WORD_SET(8) | SPI_TRANSFER_MSB |         \
 						   SPI_OP_MODE_MASTER),                    \
+		.reset = GPIO_DT_SPEC_INST_GET_OR(n, reset_gpios, {0}),                     \
 		.lane_rate_kbps = AD9144_LANE_RATE_KBPS(                                    \
 			DT_INST_PROP(n, adi_sampling_frequency_khz),                       \
 			DT_INST_PROP(n, adi_converters_per_device),                       \

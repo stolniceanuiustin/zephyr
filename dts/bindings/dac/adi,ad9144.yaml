@@ -21,9 +21,9 @@
 # the lane crossbar are NOT properties: HD is derived in the driver, and the
 # crossbar is the confirmed identity board wiring, tied down in the driver.
 #
-# SPI mode 0 is set in the driver's SPI operation flags -- the AD9144 node in
-# ADI's Linux DAQ2 devicetree has no spi-cpol/spi-cpha, i.e. mode 0, same as the
-# AD9523 and AD9680 on this bus.
+# SPI mode 0 is set in the driver's SPI operation flags, not here -- the AD9144,
+# AD9523 and AD9680 all use mode 0 on this board (no-OS DAQ2 inits all three
+# NO_OS_SPI_MODE_0).
 #
 # INIT LEVEL: SPI-attached, so POST_KERNEL after CONFIG_SPI_INIT_PRIORITY and
 # after the AD9523 clock generator (a BUILD_ASSERT and the Kconfig default
@@ -45,6 +45,14 @@ properties:
   clock-names:
     required: true
     description: Must contain "dac_clk".
+
+  reset-gpios:
+    type: phandle-array
+    description: |
+      RESETB pin (active-low). The driver asserts then releases it before the
+      SPI ID read. Optional -- omit on boards that strap RESETB high. On DAQ2
+      this is a ZynqMP PS EMIO pin the generic BOOT.BIN psu_init leaves
+      undriven, so it must be released in software.
 
   adi,sampling-frequency-khz:
     type: int
