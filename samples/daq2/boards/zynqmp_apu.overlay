@@ -6,6 +6,7 @@
 
 #include <zephyr/dt-bindings/interrupt-controller/arm-gic.h>
 #include <zephyr/dt-bindings/gpio/gpio.h>
+#include <zephyr/dt-bindings/jesd204/adxcvr.h>
 
 /*
  * DAQ2 FMC (AD9680 ADC + AD9144 DAC) clock generator: an AD9523-1, reached over
@@ -261,6 +262,131 @@
 				ngpios = <32>;
 				status = "okay";
 			};
+		};
+
+		/*
+		 * DAQ2 JESD204B datapath -- Phase 1: transceiver (adxcvr) and
+		 * link cores only, one per direction. No transport (TPL) or DMA
+		 * yet; those are later phases.
+		 *
+		 * Addresses are from the on-board bitstream
+		 * (bitstreams/daq2/system_top.xsa -> system.hwh MEMRANGE):
+		 * axi_ad9144_xcvr / axi_ad9680_xcvr and axi_ad9144_jesd_tx_axi /
+		 * axi_ad9680_jesd_rx_axi. Each reg maps a full 64 KiB page: the
+		 * register block is smaller, but that is what gets device_map()ed
+		 * and MMU granularity here is a page. virt == phys
+		 * (CONFIG_KERNEL_DIRECT_MAP).
+		 *
+		 * out-clk-select = PROGDIV, NOT ADI's Linux REFCLK_DIV2. Derived
+		 * from the AD9081 ZynqMP precedent on this exact SoC/GTH: with
+		 * REFCLK_DIV2 the GT output clock does not run and RESET_DONE
+		 * never asserts. PROGDIV is what this PL was synthesised for.
+		 * REFCLK_DIV2 is the first fallback if a GT fails to lock.
+		 *
+		 * PLL selection mirrors no-OS DAQ2 (fmcdaq2.c) and the synthesised
+		 * make param PLL_TYPE=QPLL0: TX on QPLL0, RX on CPLL. Both GT
+		 * references are 500 MHz AD9523 outputs -- TX from ch9
+		 * (FMC_DAC_REF_CLK), RX from ch4 (ADC_CLK_FMC).
+		 */
+		tx_adxcvr: adxcvr@84a60000 {
+			compatible = "adi,axi-adxcvr-1.0";
+			reg = <0x0 0x84a60000 0x0 0x10000>;
+			status = "okay";
+			label = "tx_adxcvr";
+
+			clocks = <&ad9523 9>;   /* FMC_DAC_REF_CLK, 500 MHz */
+
+			adi,sys-clk-select = <XCVR_QPLL>;   /* QPLL0 */
+			/*
+			 * REFCLK_DIV2, not PROGDIV: matches no-OS fmcdaq2.c
+			 * (ad9144_xcvr .out_clk_sel = ADXCVR_REFCLK_DIV2). The FPGA
+			 * link clock is the GT refclk /2 = 250 MHz, which the JESD
+			 * core already reports.
+			 */
+			adi,out-clk-select = <XCVR_REFCLK_DIV2>;
+			adi,lane-rate-khz = <10000000>;
+		};
+
+		rx_adxcvr: adxcvr@84a50000 {
+			compatible = "adi,axi-adxcvr-1.0";
+			reg = <0x0 0x84a50000 0x0 0x10000>;
+			status = "okay";
+			label = "rx_adxcvr";
+
+			clocks = <&ad9523 4>;   /* ADC_CLK_FMC, 500 MHz */
+
+			adi,sys-clk-select = <XCVR_CPLL>;
+			/* REFCLK_DIV2, not PROGDIV: matches no-OS fmcdaq2.c
+			 * (ad9680_xcvr .out_clk_sel = ADXCVR_REFCLK_DIV2).
+			 */
+			adi,out-clk-select = <XCVR_REFCLK_DIV2>;
+			adi,lane-rate-khz = <10000000>;
+
+			/* LPM equalisation rather than DFE -- RX only. */
+			adi,use-lpm-enable;
+		};
+
+		/*
+		 * JESD204 link cores. One link described from both ends: the
+		 * geometry both nodes carry must agree (BUILD_ASSERTs in
+		 * axi_jesd204.c). DAQ2 profile: M2 L4 F1 K32 NP16 S1, subclass 1,
+		 * 10 Gbps -- matches the synthesised RX_JESD_M=2 L=4 S=1 /
+		 * TX_JESD_M=2 L=4 S=1 and the ad9680/ad9144 chip DT nodes above.
+		 *
+		 * HD is derived in the driver (0 for this geometry), not a
+		 * property -- a settable HD is how no-OS's wrong HD=1 would get
+		 * copied back in.
+		 */
+		rx_jesd: axi-jesd204-rx@84aa0000 {
+			compatible = "adi,axi-jesd204-rx-1.0";
+			reg = <0x0 0x84aa0000 0x0 0x10000>;
+			status = "okay";
+			label = "jesd204-rx";
+
+			adi,lanes-per-device = <4>;
+			adi,converters-per-device = <2>;
+			adi,octets-per-frame = <1>;
+			adi,frames-per-multiframe = <32>;
+			adi,bits-per-sample = <16>;
+			adi,subclass = <1>;
+			adi,lane-rate-khz = <10000000>;
+
+			/*
+			 * No adi,converter-resolution / -control-bits-per-sample
+			 * / -samples-per-converter-per-frame: the framer receives
+			 * the ILAS it is described in rather than announcing one,
+			 * so N, CS and S never reach a register on this side.
+			 */
+		};
+
+		tx_jesd: axi-jesd204-tx@84a90000 {
+			/*
+			 * Geometry cross-check only. DAQ2's TX (AD9144) and RX
+			 * (AD9680) are separate converters, not one MxFE, so this
+			 * is not physical single-link peering -- but both links
+			 * share geometry exactly, so pointing the peer at rx_jesd
+			 * satisfies JESD204_ASSERT_LINK.
+			 */
+			adi,jesd204-peer = <&rx_jesd>;
+			compatible = "adi,axi-jesd204-tx-1.0";
+			reg = <0x0 0x84a90000 0x0 0x10000>;
+			status = "okay";
+			label = "jesd204-tx";
+
+			adi,lanes-per-device = <4>;
+			adi,converters-per-device = <2>;
+			adi,octets-per-frame = <1>;
+			adi,frames-per-multiframe = <32>;
+			adi,bits-per-sample = <16>;
+			adi,subclass = <1>;
+			adi,lane-rate-khz = <10000000>;
+
+			/* ILAS-only, so the deframer carries these and the framer
+			 * does not.
+			 */
+			adi,converter-resolution = <16>;
+			adi,control-bits-per-sample = <0>;
+			adi,samples-per-converter-per-frame = <1>;
 		};
 	};
 };
