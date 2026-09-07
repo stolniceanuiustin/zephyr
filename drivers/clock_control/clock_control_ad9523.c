@@ -36,6 +36,7 @@
 #include <zephyr/kernel.h>
 #include <zephyr/device.h>
 #include <zephyr/drivers/clock_control.h>
+#include <zephyr/drivers/gpio.h>
 #include <zephyr/drivers/spi.h>
 #include <zephyr/sys/util.h>
 
@@ -247,6 +248,9 @@ struct ad9523_chan_config {
 
 struct ad9523_config {
 	struct spi_dt_spec spi;
+
+	/** SYNC pin, optional; parked high at init to release the output dividers. */
+	struct gpio_dt_spec sync;
 
 	uint32_t vcxo_freq;
 
@@ -1270,6 +1274,19 @@ static int ad9523_init(const struct device *dev)
 		return -ENODEV;
 	}
 
+	/* SYNC held asserted freezes all output dividers; drive it high to release. */
+	if (config->sync.port != NULL) {
+		if (!gpio_is_ready_dt(&config->sync)) {
+			LOG_ERR("SYNC GPIO %s not ready", config->sync.port->name);
+			return -ENODEV;
+		}
+		ret = gpio_pin_configure_dt(&config->sync, GPIO_OUTPUT_HIGH);
+		if (ret < 0) {
+			return ret;
+		}
+		LOG_INF("AD9523 SYNC released (driven high)");
+	}
+
 	LOG_INF("AD9523 clock setup over %s", config->spi.bus->name);
 
 	ret = ad9523_setup(dev);
@@ -1345,6 +1362,7 @@ static int ad9523_init(const struct device *dev)
 	static const struct ad9523_config ad9523_config_##n = {                            \
 		.spi = SPI_DT_SPEC_INST_GET(n, SPI_WORD_SET(8) | SPI_TRANSFER_MSB |         \
 						   SPI_OP_MODE_MASTER),                     \
+		.sync = GPIO_DT_SPEC_INST_GET_OR(n, sync_gpios, {0}),                      \
 		.vcxo_freq = DT_INST_PROP(n, adi_vcxo_freq),                               \
 		.spi3wire = DT_INST_PROP(n, adi_spi_3wire_enable),                         \
 		.refa_r_div = DT_INST_PROP(n, adi_refa_r_divider),                         \

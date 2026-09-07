@@ -45,6 +45,12 @@ properties:
   "#clock-cells":
     const: 1
 
+  sync-gpios:
+    type: phandle-array
+    description: |
+      SYNC pin; held asserted it freezes all output dividers. Driver parks it
+      high at init. Optional. Matches ADI Linux clk0_ad9523 sync-gpios.
+
   adi,vcxo-freq:
     type: int
     required: true
