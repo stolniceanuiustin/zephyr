@@ -418,5 +418,28 @@
 			label = "dac-tpl";
 			status = "okay";
 		};
+
+		/*
+		 * DAQ2 datapath DMA engines (ADI AXI DMAC). Addresses from the
+		 * on-board bitstream (system.hwh MEMRANGE): axi_ad9680_dma is S2MM
+		 * (device -> memory, ADC capture), axi_ad9144_dma is MM2S (memory
+		 * -> device, DAC playback). Direction / data width / cyclic support
+		 * are auto-probed from the core, so only reg is needed. No interrupt
+		 * is wired to the PS GIC for these cores; the driver polls
+		 * (dma_get_status pumps the transfer).
+		 */
+		rx_dmac: dma@9c400000 {   /* axi_ad9680_dma, S2MM */
+			compatible = "adi,axi-dmac";
+			reg = <0x0 0x9c400000 0x0 0x10000>;
+			#dma-cells = <1>;
+			status = "okay";
+		};
+
+		tx_dmac: dma@9c420000 {   /* axi_ad9144_dma, MM2S */
+			compatible = "adi,axi-dmac";
+			reg = <0x0 0x9c420000 0x0 0x10000>;
+			#dma-cells = <1>;
+			status = "okay";
+		};
 	};
 };
