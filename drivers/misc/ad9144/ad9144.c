@@ -48,6 +48,8 @@
 #include <zephyr/drivers/gpio.h>
 #include <zephyr/sys/util.h>
 
+#include <zephyr/drivers/misc/ad9144.h>
+
 #include <zephyr/logging/log.h>
 LOG_MODULE_REGISTER(ad9144, LOG_LEVEL_INF);
 
@@ -902,6 +904,65 @@ static int ad9144_setup_serdes(const struct device *dev)
 		data->serdes_pll_locked ? "locked" : "NOT locked", pll_stat);
 
 	LOG_INF("SUCCESS: AD9144 SERDES configured");
+
+	return 0;
+}
+
+/* Public: re-read the SERDES PLL lock after the FPGA TX datapath is up. */
+int ad9144_serdes_pll_locked(const struct device *dev, bool *locked)
+{
+	uint8_t pll_stat;
+	int ret;
+
+	if (dev == NULL || locked == NULL) {
+		return -EINVAL;
+	}
+	if (!device_is_ready(dev)) {
+		return -ENODEV;
+	}
+
+	ret = ad9144_spi_read(dev, AD9144_REG_PLL_STATUS, &pll_stat);
+	if (ret < 0) {
+		return ret;
+	}
+
+	*locked = (pll_stat & AD9144_PLL_STATUS_LOCKED) != 0;
+	LOG_INF("AD9144 SERDES PLL: %s (0x%02x)",
+		*locked ? "locked" : "NOT locked", pll_stat);
+
+	return 0;
+}
+
+/*
+ * Public: re-run the SERDES PLL bring-up (CDR reset + PLL enable + settle) and
+ * report the lock. Unlike ad9144_serdes_pll_locked(), which only re-reads the
+ * status, this re-executes the enable sequence. It exists because the SERDES PLL
+ * only locks once the FPGA GT lane clock is present, which is NOT the case at
+ * chip init() (POST_KERNEL, before the transceiver is up) -- so the init-time
+ * enable reads 0x00 and never locks. no-OS runs the equivalent full setup from
+ * its LINK_SETUP FSM phase (no-OS ad9144.c:860), after the adxcvr CLOCKS_ENABLE
+ * phase releases the GT. The DAQ2 FSM calls this from the AD9144 CLOCKS_ENABLE
+ * callback, which is visited after the transceiver's, for the same reason.
+ */
+int ad9144_serdes_enable(const struct device *dev, bool *locked)
+{
+	const struct ad9144_data *data;
+	int ret;
+
+	if (dev == NULL || locked == NULL) {
+		return -EINVAL;
+	}
+	if (!device_is_ready(dev)) {
+		return -ENODEV;
+	}
+
+	ret = ad9144_setup_serdes(dev);
+	if (ret < 0) {
+		return ret;
+	}
+
+	data = dev->data;
+	*locked = data->serdes_pll_locked;
 
 	return 0;
 }
