@@ -388,5 +388,35 @@
 			adi,control-bits-per-sample = <0>;
 			adi,samples-per-converter-per-frame = <1>;
 		};
+
+		/*
+		 * JESD204 transport (TPL) cores -- ADC framer / DAC deframer
+		 * datapath. Same IP as the AD9081 sample (ad_ip_jesd204_tpl_core),
+		 * so the existing adi,axi-ad9081-{rx,tx}-1.0 compatibles bind; the
+		 * axi_tpl.c driver keys only on those. adi,num-channels = 2 (M=2,
+		 * not the AD9081 profile's 8).
+		 *
+		 * Addresses from the on-board bitstream (system.hwh MEMRANGE):
+		 * axi_ad9680_tpl/adc_tpl_core and axi_ad9144_tpl/dac_tpl_core. Each
+		 * reg maps a full 64 KiB page (device_map() granularity); virt ==
+		 * phys (CONFIG_KERNEL_DIRECT_MAP).
+		 */
+		rx_tpl: axi-ad9081-rx@84a10000 {   /* adc_tpl_core */
+			compatible = "adi,axi-ad9081-rx-1.0";
+			reg = <0x0 0x84a10000 0x0 0x10000>;
+			adi,num-channels = <2>;         /* M=2 */
+			adi,pcore-version-min-major = <9>;
+			label = "adc-tpl";
+			status = "okay";
+		};
+
+		tx_tpl: axi-ad9081-tx@84a04000 {   /* dac_tpl_core */
+			adi,jesd204-peer = <&rx_tpl>;
+			compatible = "adi,axi-ad9081-tx-1.0";
+			reg = <0x0 0x84a04000 0x0 0x10000>;
+			adi,num-channels = <2>;         /* M=2 */
+			label = "dac-tpl";
+			status = "okay";
+		};
 	};
 };
