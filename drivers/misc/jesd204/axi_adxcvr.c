@@ -621,23 +621,28 @@ static int adxcvr_reset(const struct device *dev)
 	} while (retry--);
 
 	/*
-	 * RESET_DONE never asserted. The raw STATUS word says why, so decode the
-	 * common cause rather than leaving the reader to look up the bit layout:
-	 * bit4 is ~pll_locked (axi_adxcvr_up.v:537), and a GT that cannot lock its
-	 * PLL almost always has a missing or wrong reference clock (QPLL0 for TX,
-	 * CPLL for RX) rather than a reset-pulse problem.
+	 * RESET_DONE (bit0) never asserted. no-OS's adxcvr_status_error treats
+	 * this as fatal only when the STATUS word is entirely zero (the core is
+	 * not responding at all); any non-zero status is accepted and bring-up
+	 * proceeds to the elastic-buffer reset below. This port follows the same
+	 * rule: on the DAQ2 bitstream bit0 does not assert within 2x100 ms even on
+	 * a healthy TX GT whose output clock is running and whose link reaches CGS,
+	 * so a non-zero status here is a warning, not a stop.
 	 *
-	 * Verified by fault injection: pointing the RX GT at an undriven QPLL1
-	 * produces exactly STATUS=0x10 here.
+	 * bit4 reads as ~pll_locked on the ad9081 bitstream (axi_adxcvr_up.v:537),
+	 * but NOT on this one -- a working DAQ2 TX GT shows STATUS=0x10 -- so it is
+	 * reported raw rather than asserted to mean "PLL unlocked".
 	 */
-	if (status & ADXCVR_PLL_NOT_LOCKED) {
-		LOG_ERR("%s: GT PLL not locked after 2x100ms (STATUS=0x%08x) -- "
-			"check the reference clock", dev->name, status);
-	} else {
-		LOG_ERR("%s: RESET_DONE not set after 2x100ms (raw STATUS=0x%08x)",
-			dev->name, status);
+	if (status == 0) {
+		LOG_ERR("%s: STATUS reads 0 after 2x100ms -- core not responding",
+			dev->name);
+		return -ETIMEDOUT;
 	}
-	return -ETIMEDOUT;
+
+	LOG_WRN("%s: RESET_DONE (bit0) not set after 2x100ms (raw STATUS=0x%08x) "
+		"-- proceeding, as no-OS does on non-zero status",
+		dev->name, status);
+	return 0;
 }
 
 /*
