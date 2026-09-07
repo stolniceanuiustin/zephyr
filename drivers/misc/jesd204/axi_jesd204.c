@@ -629,10 +629,12 @@ DT_FOREACH_STATUS_OKAY(adi_axi_jesd204_tx_1_0, JESD204_DEFINE_TX)
  * implies. A node stating something else would program CONF0 and ILAS word 1
  * with a frame length the converters do not produce.
  *
- * And HD must come out 0 for this profile. Asserted separately from the
- * derivation macro so a future geometry that genuinely needs HD=1 has to be
- * acknowledged here: the chip-side jesd_param structs in ad9081.c carry HD as a
- * literal and would otherwise silently disagree with what the core advertises.
+ * HD is never a property: both this core and the chip drivers derive it. This
+ * core uses JESD204_DERIVE_HD (from M/S/NP/L); ad9144.c derives the same bit
+ * from the geometry identity F*8 < NP. The two must agree, or the core would
+ * advertise an ILAS the chip does not produce. Asserting equality (rather than a
+ * hardcoded 0) checks that for every geometry: ad9081 F=4 -> HD=0, DAQ2 F=1 ->
+ * HD=1 (a 16-bit sample split across two lanes), both validated here.
  */
 #define JESD204_ASSERT_LINK(node)                                                                  \
 	JESD204_ASSERT_SAME(node, DT_PHANDLE(node, adi_jesd204_peer), adi_lanes_per_device)        \
@@ -650,9 +652,10 @@ DT_FOREACH_STATUS_OKAY(adi_axi_jesd204_tx_1_0, JESD204_DEFINE_TX)
 	BUILD_ASSERT(JESD204_DERIVE_HD(DT_PROP(node, adi_converters_per_device),                   \
 				       DT_PROP(node, adi_samples_per_converter_per_frame),         \
 				       DT_PROP(node, adi_bits_per_sample),                         \
-				       DT_PROP(node, adi_lanes_per_device)) == 0,                  \
-		     "HD derives to 1: both ends take it from JESD204_DERIVE_HD, so this "         \
-		     "assert and its two users have to be re-checked together");
+				       DT_PROP(node, adi_lanes_per_device)) ==                     \
+			     (DT_PROP(node, adi_octets_per_frame) * 8 <                            \
+			      DT_PROP(node, adi_bits_per_sample)),                                 \
+		     "HD: core derivation (M/S/NP/L) disagrees with the chip's F*8 < NP one");
 
 /* Deframer side only: it is the end that carries N, CS and S. */
 DT_FOREACH_STATUS_OKAY(adi_axi_jesd204_tx_1_0, JESD204_ASSERT_LINK)
