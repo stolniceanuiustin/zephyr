@@ -39,6 +39,8 @@
 #include <zephyr/drivers/spi.h>
 #include <zephyr/sys/util.h>
 
+#include <zephyr/drivers/misc/ad9680.h>
+
 #include <zephyr/logging/log.h>
 LOG_MODULE_REGISTER(ad9680, LOG_LEVEL_INF);
 
@@ -322,6 +324,31 @@ static int ad9680_setup(const struct device *dev)
 	data->pll_locked = (pll_stat & AD9680_PLL_LOCKED) == AD9680_PLL_LOCKED;
 	LOG_INF("AD9680 JESD PLL: %s (0x%02x)",
 		data->pll_locked ? "locked" : "NOT locked", pll_stat);
+
+	return 0;
+}
+
+/* Public: re-read the JESD204B PLL lock after the FPGA RX datapath is up. */
+int ad9680_jesd_pll_locked(const struct device *dev, bool *locked)
+{
+	uint8_t pll_stat;
+	int ret;
+
+	if (dev == NULL || locked == NULL) {
+		return -EINVAL;
+	}
+	if (!device_is_ready(dev)) {
+		return -ENODEV;
+	}
+
+	ret = ad9680_spi_read(dev, AD9680_REG_JESD204B_PLL_LOCK_STATUS, &pll_stat);
+	if (ret < 0) {
+		return ret;
+	}
+
+	*locked = (pll_stat & AD9680_PLL_LOCKED) == AD9680_PLL_LOCKED;
+	LOG_INF("AD9680 JESD PLL: %s (0x%02x)",
+		*locked ? "locked" : "NOT locked", pll_stat);
 
 	return 0;
 }
