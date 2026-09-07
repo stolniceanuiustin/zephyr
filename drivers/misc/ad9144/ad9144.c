@@ -64,6 +64,7 @@ LOG_MODULE_REGISTER(ad9144, LOG_LEVEL_INF);
 
 /* Power / clocks / sysref. */
 #define AD9144_REG_PWRCNTRL0		0x011
+#define AD9144_REG_PWRCNTRL3		0x013
 #define AD9144_REG_CLKCFG0		0x080
 #define AD9144_REG_SYSREF_ACTRL0	0x081
 
@@ -151,6 +152,19 @@ LOG_MODULE_REGISTER(ad9144, LOG_LEVEL_INF);
 #define AD9144_MOD_TYPE_NONE		(0x0 << 2)	/* NCO mixing off */
 #define AD9144_DATA_FORMAT_2S_COMP	0x00
 #define AD9144_INTERP_MODE_1X		0x00
+
+/*
+ * PWRCNTRL3 (0x013): TXEN source select. The blanking state machine mutes the
+ * DAC output (ramps digital gain to 0, flushes the datapath with zeroes) while
+ * TXEN is low. DAQ2 routes TXEN0/1 to EMIO GPIOs the generic BOOT.BIN leaves
+ * undriven, so the pins float low and the DAC stays blanked even with a synced
+ * DATA link. Override the pin: take TXEN from SPI (ENA_SPI_TXEN) and drive it
+ * high (SPI_TXEN). Bit names from the no-OS ad9144.h header (tier-3); the OCR'd
+ * datasheet marks bits [1:0] reserved, but no-OS is authoritative for register
+ * semantics here.
+ */
+#define AD9144_ENA_SPI_TXEN		BIT(1)
+#define AD9144_SPI_TXEN			BIT(0)
 
 /* SYSREF_ACTRL0: BIT4 set when NOT subclass-1; BIT2 set for rising-edge capture. */
 #define AD9144_SYSREF_ACTRL0_NO_SUBCLASS	BIT(4)
@@ -625,6 +639,14 @@ static int ad9144_setup_datapath(const struct device *dev)
 	}
 	ret = ad9144_spi_update(dev, AD9144_REG_DATAPATH_CTRL,
 				AD9144_MOD_TYPE_MASK, AD9144_MOD_TYPE_NONE);
+	if (ret < 0) {
+		return ret;
+	}
+
+	/* Un-blank the DAC: force TXEN high over SPI (see AD9144_ENA_SPI_TXEN). */
+	ret = ad9144_spi_update(dev, AD9144_REG_PWRCNTRL3,
+				AD9144_ENA_SPI_TXEN | AD9144_SPI_TXEN,
+				AD9144_ENA_SPI_TXEN | AD9144_SPI_TXEN);
 	if (ret < 0) {
 		return ret;
 	}
