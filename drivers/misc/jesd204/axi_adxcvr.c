@@ -759,10 +759,20 @@ static int adxcvr_init(const struct device *dev)
 DT_INST_FOREACH_STATUS_OKAY(ADXCVR_DEFINE)
 
 /*
- * Not a preference: the nodes declare `clocks = <&hmc7044 N>`, so Zephyr's
+ * Not a preference: the nodes declare `clocks = <&provider N>`, so Zephyr's
  * scripts/build/check_init_priorities.py fails the build if this driver runs
- * before the clock provider. The HMC7044 in turn asserts it is above
+ * before the clock provider. The provider in turn asserts it is above
  * CONFIG_SPI_INIT_PRIORITY.
+ *
+ * Which provider depends on the board: ad9081 boards clock the GT from an
+ * HMC7044, DAQ2 from an AD9523. Assert against whichever is in the build so the
+ * guard holds for both without referencing a symbol the other build lacks.
  */
+#if IS_ENABLED(CONFIG_CLOCK_CONTROL_HMC7044)
 BUILD_ASSERT(CONFIG_JESD204_AXI_ADXCVR_INIT_PRIORITY > CONFIG_CLOCK_CONTROL_HMC7044_INIT_PRIORITY,
 	     "adxcvr must initialise after its GT reference clock provider");
+#endif
+#if IS_ENABLED(CONFIG_CLOCK_CONTROL_AD9523)
+BUILD_ASSERT(CONFIG_JESD204_AXI_ADXCVR_INIT_PRIORITY > CONFIG_CLOCK_CONTROL_AD9523_INIT_PRIORITY,
+	     "adxcvr must initialise after its GT reference clock provider");
+#endif
