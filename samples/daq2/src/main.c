@@ -40,6 +40,14 @@ LOG_MODULE_REGISTER(daq2, LOG_LEVEL_INF);
 #define TX_TPL    DEVICE_DT_GET(DT_NODELABEL(tx_tpl))
 #define RX_TPL    DEVICE_DT_GET(DT_NODELABEL(rx_tpl))
 
+/**
+ * @brief Max JESD204 bring-up attempts before giving up (best-effort).
+ *
+ * The old DAQ2 FMC's TX link is marginal and reaches DATA only on some boots;
+ * each attempt re-configures the link cores to force a fresh CGS/ILAS train.
+ */
+#define JESD_BRINGUP_MAX_ATTEMPTS 8
+
 /*
  * RX capture window: M=2 converters, 16-bit signed each, a power-of-two number
  * of samples so the window holds a whole number of DAC-tone cycles (the loopback
@@ -434,28 +442,12 @@ int main(void)
 	LOG_INF("SUCCESS: GT transceivers configured (TX QPLL0 / RX CPLL)");
 
 	/*
-	 * Step 2: JESD204 link cores. Programs link geometry + ILAS, held
-	 * disabled. TX before RX, as in the AD9081 sample.
-	 */
-	ret = axi_jesd204_configure(TX_JESD);
-	if (ret == 0) {
-		ret = axi_jesd204_configure(RX_JESD);
-	}
-	if (ret) {
-		LOG_ERR("AXI jesd204 link config failed (%d)", ret);
-		return ret;
-	}
-	LOG_INF("SUCCESS: JESD204 link cores configured (M%d/L%d/F%d/K%d)",
-		DT_PROP(DT_NODELABEL(tx_jesd), adi_converters_per_device),
-		DT_PROP(DT_NODELABEL(tx_jesd), adi_lanes_per_device),
-		DT_PROP(DT_NODELABEL(tx_jesd), adi_octets_per_frame),
-		DT_PROP(DT_NODELABEL(tx_jesd), adi_frames_per_multiframe));
-
-	/*
 	 * Step 2b: TPL transport cores -- RX sample format/enable, TX data-source
 	 * select. Configured before bring-up; verified (axi_tpl_enable) after DATA,
 	 * because the DAC SYNC and STATUS/clock readback are only meaningful against
 	 * a running sample clock. Best-effort: the link is the deliverable here.
+	 * Config-only and independent of the link cores, so done once, ahead of the
+	 * bring-up retry loop below.
 	 */
 	if (axi_tpl_configure(RX_TPL) || axi_tpl_configure(TX_TPL)) {
 		LOG_WRN("TPL transport config failed (continuing, link is unaffected)");
@@ -465,17 +457,52 @@ int main(void)
 	}
 
 	/*
-	 * Step 3: enable the link via the generic FSM. This releases the GT
-	 * reset, enables the FPGA lane clocks, re-reads each chip PLL (now that
-	 * the datapath is armed), and polls each link core for DATA -- in the
-	 * phase order the Phase 1 linear sequence got wrong. Non-fatal:
-	 * daq2_jesd204_bringup() logs how far each link advanced regardless.
+	 * Steps 2+3, retried: the TX link (FPGA framer -> AD9144 deframer) on this
+	 * hot, old DAQ2 FMC is marginal -- it reaches DATA on some boots and stalls
+	 * at CGS/ILAS on others (verified 2026-09-07, same binary, boot-to-boot).
+	 * Re-training a stalled link needs a LINK_DISABLE 1->0 edge:
+	 * axi_jesd204_configure() re-asserts disable (=1), the FSM's lane-clock
+	 * enable clears it (=0), so each pass restarts CGS. Re-running bring-up
+	 * alone would re-write 0 to an already-enabled link -- no edge, no retrain.
+	 * Both links are re-configured/re-trained each pass; RX comes up reliably
+	 * and re-training it is harmless. Best-effort is preserved:
+	 * daq2_jesd204_bringup() still logs how far each link advanced every pass,
+	 * and a run that never reaches DATA warns rather than aborts.
 	 */
-	ret = daq2_jesd204_bringup();
+	for (int attempt = 1; attempt <= JESD_BRINGUP_MAX_ATTEMPTS; attempt++) {
+		/* Step 2: JESD204 link cores -- program geometry + ILAS, held
+		 * disabled. TX before RX, as in the AD9081 sample. */
+		ret = axi_jesd204_configure(TX_JESD);
+		if (ret == 0) {
+			ret = axi_jesd204_configure(RX_JESD);
+		}
+		if (ret) {
+			LOG_ERR("AXI jesd204 link config failed (%d)", ret);
+			return ret;
+		}
+		if (attempt == 1) {
+			LOG_INF("SUCCESS: JESD204 link cores configured (M%d/L%d/F%d/K%d)",
+				DT_PROP(DT_NODELABEL(tx_jesd), adi_converters_per_device),
+				DT_PROP(DT_NODELABEL(tx_jesd), adi_lanes_per_device),
+				DT_PROP(DT_NODELABEL(tx_jesd), adi_octets_per_frame),
+				DT_PROP(DT_NODELABEL(tx_jesd), adi_frames_per_multiframe));
+		}
+
+		/* Step 3: enable the link via the generic FSM -- releases the GT
+		 * reset, enables the FPGA lane clocks, re-reads each chip PLL, and
+		 * polls each link core for DATA. */
+		ret = daq2_jesd204_bringup();
+		if (ret == 0) {
+			LOG_INF("SUCCESS: DAQ2 JESD204 links up (both ends carrying DATA)"
+				" on attempt %d", attempt);
+			break;
+		}
+		LOG_WRN("DAQ2 JESD204 link bring-up incomplete (%d), attempt %d/%d",
+			ret, attempt, JESD_BRINGUP_MAX_ATTEMPTS);
+	}
 	if (ret) {
-		LOG_WRN("DAQ2 JESD204 link bring-up incomplete (%d)", ret);
-	} else {
-		LOG_INF("SUCCESS: DAQ2 JESD204 links up (both ends carrying DATA)");
+		LOG_WRN("DAQ2 JESD204 link did not reach DATA after %d attempts",
+			JESD_BRINGUP_MAX_ATTEMPTS);
 	}
 
 	/*
