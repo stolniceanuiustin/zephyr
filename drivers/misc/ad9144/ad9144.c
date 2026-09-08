@@ -96,6 +96,7 @@ LOG_MODULE_REGISTER(ad9144, LOG_LEVEL_INF);
 
 /* Link / transport / sync. */
 #define AD9144_REG_SYNC_CTRL		0x03A
+#define AD9144_REG_SYNC_STATUS		0x03B
 #define AD9144_REG_MASTER_PD		0x200
 #define AD9144_REG_PHY_PD		0x201
 #define AD9144_REG_EQ_BIAS		0x268
@@ -176,6 +177,11 @@ LOG_MODULE_REGISTER(ad9144, LOG_LEVEL_INF);
 #define AD9144_SYNC_MODE_CONTINUOUS	0x02
 #define AD9144_SYNCENABLE		BIT(7)
 #define AD9144_SYNCARM			BIT(6)
+
+/* SYNC_STATUS (0x03B) LMFC sync-machine flags; datasheet Rev. B "Syncing LMFC". */
+#define AD9144_SYNC_BUSY		BIT(7)	/* 1 = sync logic still working */
+#define AD9144_SYNC_LOCK		BIT(3)	/* 1 = LMFC signals aligned */
+#define AD9144_SYNC_WLIM		BIT(1)	/* 1 = phase error outside window */
 
 /* DAC calibration (table 86). */
 #define AD9144_CAL_FIN			BIT(7)	/* calibration finished */
@@ -956,6 +962,28 @@ int ad9144_serdes_pll_locked(const struct device *dev, bool *locked)
 }
 
 /*
+ * Diagnostic: read the LMFC sync-machine status (0x03B) and log lock/window/busy.
+ * SYNC_LOCK must be 1 and SYNC_WLIM 0 for deterministic LMFC alignment; a 0/1 here
+ * on a stuck link points the finger at SYSREF/LMFC phase rather than the SERDES.
+ */
+static void ad9144_log_lmfc_sync(const struct device *dev)
+{
+	uint8_t sync_stat;
+	int ret;
+
+	ret = ad9144_spi_read(dev, AD9144_REG_SYNC_STATUS, &sync_stat);
+	if (ret < 0) {
+		LOG_WRN("AD9144 LMFC sync: read failed (%d)", ret);
+		return;
+	}
+
+	LOG_INF("AD9144 LMFC sync: lock=%d wlim=%d busy=%d (0x%02x)",
+		(sync_stat & AD9144_SYNC_LOCK) ? 1 : 0,
+		(sync_stat & AD9144_SYNC_WLIM) ? 1 : 0,
+		(sync_stat & AD9144_SYNC_BUSY) ? 1 : 0, sync_stat);
+}
+
+/*
  * Public: re-run the SERDES PLL bring-up (CDR reset + PLL enable + settle) and
  * report the lock. Unlike ad9144_serdes_pll_locked(), which only re-reads the
  * status, this re-executes the enable sequence. It exists because the SERDES PLL
@@ -982,6 +1010,8 @@ int ad9144_serdes_enable(const struct device *dev, bool *locked)
 	if (ret < 0) {
 		return ret;
 	}
+
+	ad9144_log_lmfc_sync(dev);
 
 	data = dev->data;
 	*locked = data->serdes_pll_locked;
