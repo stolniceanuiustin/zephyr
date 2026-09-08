@@ -73,6 +73,10 @@ BUILD_ASSERT(IS_ENABLED(CONFIG_KERNEL_DIRECT_MAP),
 /* LINK_STATUS value meaning "carrying data". */
 #define JESD204_LINK_STATUS_DATA 3
 
+/* CGS->ILAS->DATA settling: poll STEP_MS up to TIMEOUT_MS before declaring not-DATA. */
+#define JESD204_LINK_SETTLE_TIMEOUT_MS 20
+#define JESD204_LINK_SETTLE_STEP_MS    5
+
 /* Field bits. */
 #define JESD204_SYSREF_CONF_SYSREF_DISABLE   BIT(0)
 
@@ -539,16 +543,53 @@ int axi_jesd204_status_read(const struct device *dev)
 		return -ENODEV;
 	}
 
+	/*
+	 * The link needs time to walk CGS->ILAS->DATA after the lane clock comes
+	 * up. Sampling once races that transition; poll until DATA or timeout.
+	 */
+	int32_t waited_ms = 0;
+
 	state = jesd_read(dev, JESD204_RG_LINK_STATE) & 0x3;
 	status = jesd_read(dev, JESD204_REG_LINK_STATUS);
+	while ((status & 0x3) != JESD204_LINK_STATUS_DATA &&
+	       waited_ms < JESD204_LINK_SETTLE_TIMEOUT_MS) {
+		k_msleep(JESD204_LINK_SETTLE_STEP_MS);
+		waited_ms += JESD204_LINK_SETTLE_STEP_MS;
+		state = jesd_read(dev, JESD204_RG_LINK_STATE) & 0x3;
+		status = jesd_read(dev, JESD204_REG_LINK_STATUS);
+	}
 
-	jesd_status_table(dev, state, status);
+	const struct axi_jesd204_config *cfg = dev->config;
+	const char *link_state = cfg->tx ? tx_status_label[status & 0x3]
+					 : rx_status_label[status & 0x3];
 
 	/* Carrying DATA (0x3) is the healthy end state. */
 	if ((status & 0x3) == JESD204_LINK_STATUS_DATA) {
+		LOG_INF("%s: DATA (settled in %d ms)", dev->name, waited_ms);
 		return 0;
 	}
+
+	/* One compact WRN naming the stall point; call status_print for the table. */
+	if (cfg->tx) {
+		LOG_WRN("%s: not DATA (state=%s, SYNC~ %s)", dev->name,
+			link_state, (status & 0x10) ? "deasserted" : "asserted");
+	} else {
+		LOG_WRN("%s: not DATA (state=%s)", dev->name, link_state);
+	}
 	return -EIO;
+}
+
+void axi_jesd204_status_print(const struct device *dev)
+{
+	uint32_t state, status;
+
+	if (!device_is_ready(dev)) {
+		return;
+	}
+
+	state = jesd_read(dev, JESD204_RG_LINK_STATE) & 0x3;
+	status = jesd_read(dev, JESD204_REG_LINK_STATUS);
+	jesd_status_table(dev, state, status);
 }
 
 /*

@@ -91,18 +91,13 @@ int axi_jesd204_lane_clk_enable(const struct device *dev);
 int axi_jesd204_rx_watchdog(const struct device *dev);
 
 /**
- * @brief Read and log one core's full link status table.
+ * @brief Poll for DATA and log one compact status line for this core.
  *
- * Logs the same multi-line table as no-OS's axi_jesd204_{rx,tx}_status_read():
- * link enabled/disabled, measured and reported link clock, lane rate, lane
- * rate/40, LMFC (or SYNC~ state on TX) rate, link phase (CGS / ILAS / DATA),
- * and SYSREF captured / alignment-error. Reported/lane rate and the LMFC
- * derivation come from the node's adi,lane-rate-khz property. Meaningful only
- * at the end of the bring-up sequence.
- *
- * Per core rather than both at once: the state labels differ by direction (the
- * deframer's 0x2 is ILAS, the framer's is CGS), so a shared reader would have to
- * take both devices to pick the right table anyway.
+ * Polls the link state until it reports DATA or a short settle timeout expires,
+ * then emits a single line: "DATA (settled in N ms)" on success, or a WRN naming
+ * the stall state (CGS / ILAS, plus SYNC~ on TX) on failure. Kept to one line so
+ * that a retry loop calling it per attempt stays readable; use
+ * axi_jesd204_status_print() for the full multi-line table.
  *
  * @param dev Link-core device.
  * @retval 0 when it reports DATA.
@@ -110,6 +105,25 @@ int axi_jesd204_rx_watchdog(const struct device *dev);
  * @retval -ENODEV if @p dev is not ready.
  */
 int axi_jesd204_status_read(const struct device *dev);
+
+/**
+ * @brief Log one core's full link status table.
+ *
+ * Logs the same multi-line table as no-OS's axi_jesd204_{rx,tx}_status_read():
+ * link enabled/disabled, measured and reported link clock, lane rate, lane
+ * rate/40, LMFC (or SYNC~ state on TX) rate, link phase (CGS / ILAS / DATA),
+ * and SYSREF captured / alignment-error. Reported/lane rate and the LMFC
+ * derivation come from the node's adi,lane-rate-khz property. Meaningful only
+ * at the end of the bring-up sequence; unlike axi_jesd204_status_read() it does
+ * not poll and does not return a verdict -- it just prints what is there now.
+ *
+ * Per core rather than both at once: the state labels differ by direction (the
+ * deframer's 0x2 is ILAS, the framer's is CGS), so a shared reader would have to
+ * take both devices to pick the right table anyway.
+ *
+ * @param dev Link-core device. No-op if not ready.
+ */
+void axi_jesd204_status_print(const struct device *dev);
 
 /**
  * @brief Test whether this core reports DATA, without logging.
