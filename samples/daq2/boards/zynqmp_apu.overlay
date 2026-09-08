@@ -7,6 +7,7 @@
 #include <zephyr/dt-bindings/interrupt-controller/arm-gic.h>
 #include <zephyr/dt-bindings/gpio/gpio.h>
 #include <zephyr/dt-bindings/jesd204/adxcvr.h>
+#include <zephyr/dt-bindings/ethernet/xlnx_gem.h>
 
 /*
  * DAQ2 FMC (AD9680 ADC + AD9144 DAC) clock generator: an AD9523-1, reached over
@@ -441,5 +442,82 @@
 			#dma-cells = <1>;
 			status = "okay";
 		};
+	};
+};
+
+/* ZCU102 ethernet for IIOD over TCP. Proven values from samples/net/zperf. */
+/ {
+	chosen {
+		zephyr,ethernet = &gem3;
+	};
+};
+
+&soc {
+	gem3: ethernet@ff0e0000 {
+		compatible = "xlnx,gem";
+		reg = <0x0 0xff0e0000 0x0 0x1000>,	/* mac */
+		      <0x0 0xff5e005c 0x0 0x4>;		/* CRL_APB GEM3_CLK_CTRL */
+		reg-names = "mac", "clkc";
+		status = "okay";
+
+		interrupts = <GIC_SPI 63 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>,
+			     <GIC_SPI 64 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>;
+		interrupt-names = "irq_0", "irq_1";
+
+		clock-frequency = <1500000000>;
+		phy-handle = <&gem3_phy>;
+
+		amba-ahb-burst-length = <XLNX_GEM_AMBA_AHB_BURST_INCR16>;
+		hw-rx-buffer-size = <XLNX_GEM_HW_RX_BUFFER_SIZE_8KB>;
+		hw-rx-buffer-offset = <0>;
+		hw-tx-buffer-size-full;
+		rx-buffer-descriptors = <32>;
+		tx-buffer-descriptors = <32>;
+		rx-buffer-size = <1536>;
+		tx-buffer-size = <1536>;
+		discard-rx-fcs;
+		unicast-hash;
+
+		local-mac-address = [ 00 0a 35 01 67 01 ];
+
+		gem3_mdio: mdio {
+			compatible = "xlnx,gem-mdio";
+			status = "okay";
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			gem3_phy: phy@c {
+				compatible = "ti,dp83867";
+				reg = <12>;
+				status = "okay";
+				ti,interface-type = "rgmii-id";
+				ti,rx-internal-delay = <0x8>;
+				ti,tx-internal-delay = <0xa>;
+				ti,dp83867-rxctrl-strap-quirk;
+			};
+		};
+	};
+};
+
+/* IIOD-exposed capture/playback datapaths (io-name = Linux DAQ2 convention). */
+/ {
+	rx_iio: jesd-iio-rx {
+		compatible = "adi,axi-jesd-iio";
+		io-name = "axi-ad9680-hpc";
+		adi,tpl = <&rx_tpl>;
+		dmas = <&rx_dmac 0>;
+		dma-names = "rx";
+		adi,converters-per-device = <2>;	/* M */
+		status = "okay";
+	};
+
+	tx_iio: jesd-iio-tx {
+		compatible = "adi,axi-jesd-iio";
+		io-name = "axi-ad9144-hpc";
+		adi,tpl = <&tx_tpl>;
+		dmas = <&tx_dmac 0>;
+		dma-names = "tx";
+		adi,converters-per-device = <2>;	/* M */
+		status = "okay";
 	};
 };
