@@ -43,10 +43,13 @@ LOG_MODULE_REGISTER(daq2, LOG_LEVEL_INF);
 /**
  * @brief Max JESD204 bring-up attempts before giving up (best-effort).
  *
- * The old DAQ2 FMC's TX link is marginal and reaches DATA only on some boots;
- * each attempt re-configures the link cores to force a fresh CGS/ILAS train.
+ * The old DAQ2 FMC's TX link is physical-layer marginal: every software-visible
+ * status (GT PLL/reset, DAC SERDES PLL, DAC LMFC sync) reads healthy on failed
+ * attempts, yet the deframer intermittently misses CGS comma detection. Each
+ * attempt fully resets the GT, so attempts are independent rolls; convergence is
+ * probabilistic, hence a generous budget rather than the old 8.
  */
-#define JESD_BRINGUP_MAX_ATTEMPTS 8
+#define JESD_BRINGUP_MAX_ATTEMPTS 40
 
 /*
  * RX capture window: M=2 converters, 16-bit signed each, a power-of-two number
@@ -366,6 +369,9 @@ int main(void)
 		if (ret == 0) {
 			LOG_INF("SUCCESS: DAQ2 JESD204 links up (both ends carrying DATA)"
 				" on attempt %d", attempt);
+			/* Both links up: dump each core's full status table once. */
+			axi_jesd204_status_print(TX_JESD);
+			axi_jesd204_status_print(RX_JESD);
 			break;
 		}
 		LOG_WRN("DAQ2 JESD204 link bring-up incomplete (%d), attempt %d/%d",
