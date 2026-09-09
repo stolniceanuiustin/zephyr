@@ -8,7 +8,7 @@
  * JESD204 bring-up: it writes configuration registers only. The link is held
  * disabled here; the actual lane-clock enable + SYSREF + status check happen
  * later, driven by the bring-up sequence, since a JESD204 link only comes alive
- * when the transceiver, link cores, SYSREF and the AD9082 are activated
+ * when the transceiver, link cores, SYSREF and the converter are activated
  * together.
  *
  * Two compatibles rather than one node type with a direction flag, following
@@ -74,8 +74,8 @@ BUILD_ASSERT(IS_ENABLED(CONFIG_KERNEL_DIRECT_MAP),
 #define JESD204_LINK_STATUS_DATA 3
 
 /* CGS->ILAS->DATA settling: poll STEP_MS up to TIMEOUT_MS before declaring not-DATA. */
-#define JESD204_LINK_SETTLE_TIMEOUT_MS 20
-#define JESD204_LINK_SETTLE_STEP_MS    5
+#define JESD204_LINK_SETTLE_TIMEOUT_MS 80
+#define JESD204_LINK_SETTLE_STEP_MS    4
 
 /* Field bits. */
 #define JESD204_SYSREF_CONF_SYSREF_DISABLE   BIT(0)
@@ -331,22 +331,16 @@ int axi_jesd204_configure(const struct device *dev)
 
 int axi_jesd204_lane_clk_enable(const struct device *dev)
 {
-	const struct axi_jesd204_config *cfg;
-
 	if (!device_is_ready(dev)) {
 		return -ENODEV;
 	}
-	cfg = dev->config;
 
 	/*
-	 * TX additionally clears the SYSREF status (write 0x3 to the sticky
-	 * captured/alignment-error bits) so the first SYSREF after the link is
-	 * enabled is what the status reports. Deframer only -- the framer's
-	 * equivalent bits are not consulted anywhere in this driver.
+	 * Clear the sticky SYSREF status (captured/alignment-error bits) before
+	 * enabling, so the first SYSREF after the link comes up is what the status
+	 * reports rather than a stale capture from a previous attempt.
 	 */
-	if (cfg->tx) {
-		jesd_write(dev, JESD204_REG_SYSREF_STATUS, 0x3);
-	}
+	jesd_write(dev, JESD204_REG_SYSREF_STATUS, 0x3);
 
 	jesd_write(dev, JESD204_REG_LINK_DISABLE, 0x0);
 	return 0;
