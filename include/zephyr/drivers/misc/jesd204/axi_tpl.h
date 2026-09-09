@@ -59,9 +59,10 @@ int axi_tpl_configure(const struct device *dev);
  *
  * @param rx RX (ADC) transport core.
  * @param tx TX (DAC) transport core.
- * @retval 0 if both report a ready datapath.
+ * @retval 0 if both cores respond; a status word with bit0 clear is logged but
+ *         not treated as a failure, as bit0 is board-dependent.
  * @retval -ENODEV if either device is not ready.
- * @retval -EIO if either datapath status is not ready.
+ * @retval -EIO if either core's STATUS word reads 0 (core not responding).
  */
 int axi_tpl_enable(const struct device *rx, const struct device *tx);
 

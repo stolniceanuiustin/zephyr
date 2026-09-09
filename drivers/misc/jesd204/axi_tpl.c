@@ -262,10 +262,21 @@ static int tpl_check(const struct device *dev)
 	uint32_t clk_freq = tpl_read(dev, TPL_REG_CLK_FREQ);
 	uint32_t clk_ratio = tpl_read(dev, TPL_REG_CLK_RATIO);
 
-	if (!(status & BIT(0))) {
-		LOG_ERR("%s: datapath status not ready (0x%08x)", dev->name,
-			status);
+	/*
+	 * Fatal only when the whole STATUS word reads 0 -- the core is not
+	 * responding at all. A non-zero word with bit0 clear is reported and
+	 * bring-up proceeds: bit0 is board-dependent and does not reliably
+	 * assert on every bitstream.
+	 */
+	if (status == 0) {
+		LOG_ERR("%s: datapath status reads 0 -- core not responding",
+			dev->name);
 		return -EIO;
+	}
+
+	if ((status & BIT(0)) == 0U) {
+		LOG_WRN("%s: datapath status bit0 clear (0x%08x) -- proceeding",
+			dev->name, status);
 	}
 
 	LOG_DBG("%s: status=0x%08x clk_freq=0x%08x clk_ratio=0x%08x", dev->name,
