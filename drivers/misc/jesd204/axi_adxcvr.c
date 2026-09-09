@@ -42,7 +42,12 @@ LOG_MODULE_REGISTER(axi_adxcvr, LOG_LEVEL_INF);
 
 #include <zephyr/drivers/misc/jesd204/axi_adxcvr.h>
 #include <zephyr/dt-bindings/jesd204/adxcvr.h>
+#if IS_ENABLED(CONFIG_CLOCK_CONTROL_HMC7044)
 #include <zephyr/drivers/clock_control/hmc7044.h>
+#endif
+#if IS_ENABLED(CONFIG_CLOCK_CONTROL_AD9523)
+#include <zephyr/drivers/clock_control/ad9523.h>
+#endif
 #include "xilinx_transceiver.h"
 
 /*
@@ -129,9 +134,6 @@ BUILD_ASSERT(IS_ENABLED(CONFIG_KERNEL_DIRECT_MAP),
 #define PCORE_VER_MAJOR(x) (((x) >> 16) & 0xff)
 #define PCORE_VER_MINOR(x) (((x) >> 8) & 0xff)
 #define PCORE_VER_PATCH(x) ((x) & 0xff)
-
-/* Expected GT refclk, kept only to sanity-check what the clock tree reports. */
-#define ADXCVR_REF_CLK_KHZ_EXPECTED 500000
 
 /* Devicetree configuration -- ROM, one per node. */
 struct adxcvr_config {
@@ -481,18 +483,11 @@ static int adxcvr_query_ref_rate(const struct device *dev)
 		return -EINVAL;
 	}
 
-	if (rate_khz != ADXCVR_REF_CLK_KHZ_EXPECTED) {
-		/*
-		 * Not an error: the queried rate is the authoritative one and is
-		 * what gets used. But this bitstream's GT attributes were
-		 * synthesised for 500 MHz, so a different tree is worth saying
-		 * out loud rather than discovering as a GT that will not lock.
-		 */
-		LOG_WRN("GT refclk is %u kHz, but this bitstream was synthesised "
-			"for %u kHz -- using the queried rate",
-			rate_khz, ADXCVR_REF_CLK_KHZ_EXPECTED);
-	}
-
+	/*
+	 * The queried rate is authoritative and is what the divider solve uses;
+	 * it may differ from the rate the bitstream's GT attributes were
+	 * synthesised for -- Linux's driver notes the same and just reconfigures.
+	 */
 	x->ref_rate_khz = rate_khz;
 
 	LOG_DBG("%s: GT refclk from %s out%u: %u kHz", dev->name,
@@ -694,13 +689,16 @@ int axi_adxcvr_enable(const struct device *dev)
 		}
 	} while (retry--);
 
+	/* Non-fatal, matching no-OS and Linux: they log the buffer error and
+	 * proceed, treating only a fully-zero STATUS (in adxcvr_reset) as fatal.
+	 */
 	if (status & ADXCVR_BUFSTATUS_UNDERFLOW) {
-		LOG_ERR("%s: buffer underflow, status=0x%x", dev->name, status);
-		return -EIO;
+		LOG_WRN("%s: buffer underflow, status=0x%x -- proceeding",
+			dev->name, status);
 	}
 	if (status & ADXCVR_BUFSTATUS_OVERFLOW) {
-		LOG_ERR("%s: buffer overflow, status=0x%x", dev->name, status);
-		return -EIO;
+		LOG_WRN("%s: buffer overflow, status=0x%x -- proceeding",
+			dev->name, status);
 	}
 
 	LOG_INF("%s: lane clock up (status=0x%x)", dev->name, status);
@@ -724,11 +722,23 @@ static int adxcvr_init(const struct device *dev)
 }
 
 /*
+ * GT refclk subsystem token: the clock provider's own CLK_OUT() encoding of the
+ * devicetree clock-output index. ad9081 boards clock the GT from an HMC7044,
+ * DAQ2 from an AD9523 -- use whichever provider is in the build rather than
+ * assuming one chip's macro.
+ */
+#if IS_ENABLED(CONFIG_CLOCK_CONTROL_HMC7044)
+#define ADXCVR_REFCLK_SUBSYS(n) HMC7044_CLK_OUT(n)
+#elif IS_ENABLED(CONFIG_CLOCK_CONTROL_AD9523)
+#define ADXCVR_REFCLK_SUBSYS(n) AD9523_CLK_OUT(n)
+#endif
+
+/*
  * CPLL has one VCO and takes adi,vco-{min,max}-khz; QPLL has two and takes the
  * vco0/vco1 pairs. Both fold into one field pair below, as the vendor struct
  * has, so the CPLL/QPLL choice stays in adi,sys-clk-select alone.
  */
-#define ADXCVR_DEFINE(inst)                                                                        \
+#define ADXCVR_DEFINE(inst)                                                                      \
 	BUILD_ASSERT(DT_INST_PROP(inst, adi_out_clk_select) != XCVR_OUTCLK_PCS &&                  \
 			     DT_INST_PROP(inst, adi_out_clk_select) != XCVR_OUTCLK_PMA,            \
 		     "PCS/PMA out-clk-select is not ported: the vendor DRP "                       \
@@ -740,7 +750,7 @@ static int adxcvr_init(const struct device *dev)
 		.base = DT_INST_REG_ADDR(inst),                                                    \
 		.refclk_dev = DEVICE_DT_GET(DT_INST_CLOCKS_CTLR(inst)),                            \
 		.refclk_out = DT_INST_CLOCKS_CELL(inst, output),                                   \
-		.refclk_subsys = HMC7044_CLK_OUT(DT_INST_CLOCKS_CELL(inst, output)),               \
+		.refclk_subsys = ADXCVR_REFCLK_SUBSYS(DT_INST_CLOCKS_CELL(inst, output)),               \
 		.lane_rate_khz = DT_INST_PROP(inst, adi_lane_rate_khz),                            \
 		.sys_clk_sel = DT_INST_PROP(inst, adi_sys_clk_select),                             \
 		.out_clk_sel = DT_INST_PROP(inst, adi_out_clk_select),                             \

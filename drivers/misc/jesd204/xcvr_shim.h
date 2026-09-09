@@ -30,13 +30,6 @@
 #define NO_OS_DIV_ROUND_CLOSEST(x, y)    (((x) + (y) / 2) / (y))
 #define NO_OS_DIV_ROUND_CLOSEST_ULL(x, y) NO_OS_DIV_ROUND_CLOSEST(x, y)
 
-/*
- * no_os_print_log.h subset. The verbatim file uses pr_err/pr_debug with
- * printf-style args. Route them through printk so the file needs no per-TU
- * LOG_MODULE registration (keeping it byte-identical to vendor source).
- * pr_debug is a no-op -- the divider math is chatty and only useful when
- * actively debugging DRP writes.
- */
 #define pr_err(fmt, ...)   printk("xcvr: " fmt, ##__VA_ARGS__)
 #define pr_debug(fmt, ...) ((void)0)
 #define pr_info(fmt, ...)  printk("xcvr: " fmt, ##__VA_ARGS__)

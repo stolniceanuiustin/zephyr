@@ -194,7 +194,7 @@ static int dmac_service(const struct device *dev, struct axi_dmac_data *data)
 	return event;
 }
 
-static void axi_dmac_isr(const struct device *dev)
+static __maybe_unused void axi_dmac_isr(const struct device *dev)
 {
 	struct axi_dmac_data *data = dev->data;
 	int event = dmac_service(dev, data);
