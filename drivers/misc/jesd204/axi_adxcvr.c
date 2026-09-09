@@ -3,10 +3,10 @@
  *
  * AXI ADXCVR -- GT transceiver (PHY) bring-up.
  *
- * Drives the ADI AXI-ADXCVR wrapper around the Xilinx GTH4 transceivers on
- * ZynqMP for the AD9081 JESD204B link (TX -> QPLL0, RX -> CPLL, out clock via
- * PROGDIV, 10 Gbps lanes off a 500 MHz refclk). One devicetree node per
- * direction.
+ * Drives the ADI AXI-ADXCVR wrapper around the Xilinx UltraScale+ transceivers
+ * on ZynqMP for a JESD204 link. The PLL source (CPLL/QPLL), output-clock mux,
+ * lane rate and reference clock all come from devicetree, so one binding covers
+ * any ADI AXI JESD eval design. One devicetree node per direction.
  *
  * axi_adxcvr_configure() does, in order:
  *   1. query the GT reference rate from the clock provider,
@@ -18,9 +18,9 @@
  *
  * The DRP pass in step 3 is not redundant with the Transceiver Wizard's
  * synthesised attributes: the divider solve reads the queried reference rate,
- * so a clock tree that differs from the synthesised 500 MHz still produces
- * correct dividers. CDR and LPM/DFE re-programming are the parts the Wizard
- * owns; the vendor divider math leaves them alone on UltraScale.
+ * so a clock tree that differs from the rate the design was synthesised for
+ * still produces correct dividers. CDR and LPM/DFE re-programming are the parts
+ * the Wizard owns; the vendor divider math leaves them alone on UltraScale.
  *
  * SPDX-License-Identifier: Apache-2.0
  */
@@ -103,7 +103,6 @@ BUILD_ASSERT(IS_ENABLED(CONFIG_KERNEL_DIRECT_MAP),
  * so bit4 is active-high "PLL *not* locked" -- the inverse sense of the others.
  */
 #define ADXCVR_STATUS              BIT(0)
-#define ADXCVR_PLL_NOT_LOCKED      BIT(4)
 #define ADXCVR_BUFSTATUS_UNDERFLOW BIT(5)
 #define ADXCVR_BUFSTATUS_OVERFLOW  BIT(6)
 
@@ -153,11 +152,10 @@ struct adxcvr_config {
 };
 
 /*
- * Per-instance state -- RAM. Named `struct adxcvr` because that is the name the
- * verbatim xilinx_transceiver.c holds a pointer to (forward-declared via
- * xcvr_shim.h); it only ever passes it back to adxcvr_drp_read/write below, so
- * the definition living here is fine and both vendor files stay byte-identical
- * to no-OS.
+ * Per-instance state -- RAM. Named `struct adxcvr` because that is the name
+ * xilinx_transceiver.c forward-declares (via xcvr_shim.h) and holds a pointer
+ * to; it only ever passes that pointer back to adxcvr_drp_read/write below, so
+ * the full definition living here is enough.
  */
 struct adxcvr {
 	/* Back-pointer, so the DRP accessors can reach config and the name. */
@@ -616,11 +614,10 @@ static int adxcvr_reset(const struct device *dev)
 	} while (retry--);
 
 	/*
-	 * RESET_DONE (bit0) never asserted. no-OS's adxcvr_status_error treats
-	 * this as fatal only when the STATUS word is entirely zero (the core is
-	 * not responding at all); any non-zero status is accepted and bring-up
-	 * proceeds to the elastic-buffer reset below. This port follows the same
-	 * rule: on the DAQ2 bitstream bit0 does not assert within 2x100 ms even on
+	 * RESET_DONE (bit0) never asserted. This is fatal only when the STATUS
+	 * word is entirely zero (the core is not responding at all); any non-zero
+	 * status is accepted and bring-up proceeds to the elastic-buffer reset
+	 * below. On the DAQ2 bitstream bit0 does not assert within 2x100 ms even on
 	 * a healthy TX GT whose output clock is running and whose link reaches CGS,
 	 * so a non-zero status here is a warning, not a stop.
 	 *
@@ -635,7 +632,7 @@ static int adxcvr_reset(const struct device *dev)
 	}
 
 	LOG_WRN("%s: RESET_DONE (bit0) not set after 2x100ms (raw STATUS=0x%08x) "
-		"-- proceeding, as no-OS does on non-zero status",
+		"-- proceeding on non-zero status",
 		dev->name, status);
 	return 0;
 }
@@ -689,8 +686,8 @@ int axi_adxcvr_enable(const struct device *dev)
 		}
 	} while (retry--);
 
-	/* Non-fatal, matching no-OS and Linux: they log the buffer error and
-	 * proceed, treating only a fully-zero STATUS (in adxcvr_reset) as fatal.
+	/* Non-fatal: log the buffer error and proceed. Only a fully-zero STATUS
+	 * (handled in adxcvr_reset) is treated as fatal.
 	 */
 	if (status & ADXCVR_BUFSTATUS_UNDERFLOW) {
 		LOG_WRN("%s: buffer underflow, status=0x%x -- proceeding",
@@ -750,7 +747,8 @@ static int adxcvr_init(const struct device *dev)
 		.base = DT_INST_REG_ADDR(inst),                                                    \
 		.refclk_dev = DEVICE_DT_GET(DT_INST_CLOCKS_CTLR(inst)),                            \
 		.refclk_out = DT_INST_CLOCKS_CELL(inst, output),                                   \
-		.refclk_subsys = ADXCVR_REFCLK_SUBSYS(DT_INST_CLOCKS_CELL(inst, output)),               \
+		.refclk_subsys =                                                                   \
+			ADXCVR_REFCLK_SUBSYS(DT_INST_CLOCKS_CELL(inst, output)),                   \
 		.lane_rate_khz = DT_INST_PROP(inst, adi_lane_rate_khz),                            \
 		.sys_clk_sel = DT_INST_PROP(inst, adi_sys_clk_select),                             \
 		.out_clk_sel = DT_INST_PROP(inst, adi_out_clk_select),                             \
