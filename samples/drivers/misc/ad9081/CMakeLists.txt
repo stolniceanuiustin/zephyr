@@ -7,7 +7,6 @@ project(ad9081_chipid)
 target_sources(app PRIVATE
   src/main.c
   src/ad9081_bringup.c
-  src/jesd204_fsm.c
 )
 
 target_include_directories(app PRIVATE src)

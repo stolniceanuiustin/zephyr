@@ -54,7 +54,7 @@ LOG_MODULE_REGISTER(daq2_fsm, LOG_LEVEL_INF);
 #include <zephyr/drivers/misc/jesd204/axi_jesd204.h>
 #include <zephyr/drivers/misc/ad9144.h>
 #include <zephyr/drivers/misc/ad9680.h>
-#include "jesd204_fsm.h"
+#include <zephyr/jesd204/jesd204_fsm.h>
 #include "daq2_bringup.h"
 
 /*

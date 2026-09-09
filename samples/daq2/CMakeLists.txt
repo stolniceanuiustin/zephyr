@@ -8,6 +8,5 @@ project(daq2)
 target_sources(app PRIVATE
 	src/main.c
 	src/daq2_bringup.c
-	src/jesd204_fsm.c
 )
 target_include_directories(app PRIVATE src)

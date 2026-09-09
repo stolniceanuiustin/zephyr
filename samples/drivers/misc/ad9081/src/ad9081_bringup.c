@@ -70,7 +70,7 @@ LOG_MODULE_REGISTER(jesd_fsm, LOG_LEVEL_INF);
 #include <zephyr/drivers/misc/ad9081/ad9081.h>
 #include <zephyr/drivers/misc/jesd204/axi_adxcvr.h>
 #include <zephyr/drivers/misc/jesd204/axi_jesd204.h>
-#include "jesd204_fsm.h"
+#include <zephyr/jesd204/jesd204_fsm.h>
 
 /*
  * Link IDs. The values matter only in that the two links differ; these are the
