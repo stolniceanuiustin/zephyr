@@ -1,0 +1,36 @@
+# Analog Devices AD9680 JESD204B ADC
+
+# SPDX-License-Identifier: Apache-2.0
+
+config AD9680
+	bool "ADI AD9680 JESD204B ADC (SPI bring-up)"
+	default y
+	depends on DT_HAS_ADI_AD9680_ENABLED
+	select SPI
+	help
+	  Enable the Analog Devices AD9680 driver: a 14-bit, dual-channel
+	  JESD204B ADC. On the DAQ2 FMC it is the RX converter, clocked by the
+	  AD9523-1.
+
+	  This is the standalone SPI bring-up only: it proves the bus by reading
+	  the chip ID, soft-resets the chip, applies the JESD204B register
+	  configuration and reports the JESD PLL lock status. It does NOT wire the
+	  AXI JESD204 link cores, the transceivers, or the jesd204 FSM -- those
+	  are a separate later block, and until they land the lane sync / data
+	  capture is unverified.
+
+if AD9680
+
+config AD9680_INIT_PRIORITY
+	int "AD9680 ADC init priority"
+	default 70
+	help
+	  Initialisation priority of the AD9680 driver, within POST_KERNEL.
+
+	  The chip is SPI-attached, so this must be strictly greater than
+	  CONFIG_SPI_INIT_PRIORITY (default 50) -- a BUILD_ASSERT in ad9680.c
+	  enforces it. It must also be greater than the AD9523 clock generator's
+	  init priority (default 60) so the ADC sample clock is running before the
+	  ADC is brought up.
+
+endif # AD9680
