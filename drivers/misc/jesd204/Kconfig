@@ -15,3 +15,50 @@ module-str = JESD204
 source "subsys/logging/Kconfig.template.log_config"
 
 endif # JESD204
+
+# ADI JESD204 AXI IP cores for FPGA fabric
+#
+# These are the FPGA-side halves of a JESD204 link: the transceiver wrapper,
+# the link (framer/deframer) cores and the transport layer. They are ADI's
+# AXI IP, instantiated in the programmable logic, and are independent of
+# which converter sits on the other end of the link.
+#
+# SPDX-License-Identifier: Apache-2.0
+
+menuconfig JESD204_AXI
+	bool "ADI JESD204 AXI IP core drivers"
+	select JESD204
+	help
+	  Drivers for ADI's JESD204 AXI IP cores in FPGA fabric.
+
+	  These drivers configure the cores and expose enable/status calls.
+	  Sequencing the enables across every device on the link is the
+	  caller's job: a JESD204 link only comes up when the converter, the
+	  transceiver and the link cores pass through the same phases
+	  together. See samples/drivers/misc/ad9081 for a phase-ordered
+	  bring-up built on these drivers.
+
+if JESD204_AXI
+
+config JESD204_AXI_ADXCVR
+	bool "ADI AXI ADXCVR transceiver wrapper"
+	default y
+	depends on DT_HAS_ADI_AXI_ADXCVR_1_0_ENABLED
+	help
+	  ADI's axi_adxcvr wrapper around the FPGA serial transceivers,
+	  including the Xilinx GTH/GTY divider and DRP programming needed to
+	  hit a given lane rate from a given reference clock.
+
+config JESD204_AXI_ADXCVR_INIT_PRIORITY
+	int "AXI-ADXCVR (GT transceiver) init priority"
+	depends on JESD204_AXI_ADXCVR
+	default 65
+	help
+	  Initialisation priority of the AXI-ADXCVR driver, within POST_KERNEL.
+
+	  Must be above CONFIG_CLOCK_CONTROL_HMC7044_INIT_PRIORITY: the adxcvr
+	  nodes take `clocks = <&hmc7044 12>`, and Zephyr's init-priority
+	  validation rejects a device that initialises before a devicetree
+	  dependency. There is a BUILD_ASSERT in axi_adxcvr.c for it.
+
+endif # JESD204_AXI

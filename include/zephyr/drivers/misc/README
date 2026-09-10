@@ -19,3 +19,13 @@ This directory contains header files of the Miscellaneous Drivers.
 * STM32 Wake-up Pins
   STM32 wake-up pins are part of the Power Control (PWR) peripheral.
   They can be used to wake-up the system from Poweroff through GPIO pins.
+
+* JESD204 AXI IP cores
+
+  ADI's JESD204 AXI IP cores in FPGA fabric: the transceiver wrapper, the
+  link-layer framer/deframer cores, and the transport layer that maps JESD204
+  octets onto converter samples. A JESD204 link is negotiated between several
+  devices at once and carries streamed converter data, so neither the adc nor
+  the dac API describes it -- those model samples the CPU reads. These drivers
+  configure the cores and expose enable and status calls; ordering the enables
+  across every device on the link is the caller's job.
