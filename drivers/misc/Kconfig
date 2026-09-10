@@ -6,6 +6,7 @@
 menu "Miscellaneous drivers"
 
 # zephyr-keep-sorted-start
+source "drivers/misc/ad9144/Kconfig"
 source "drivers/misc/devmux/Kconfig"
 source "drivers/misc/esp_hosted_mcu/Kconfig"
 source "drivers/misc/ethos_u/Kconfig"
