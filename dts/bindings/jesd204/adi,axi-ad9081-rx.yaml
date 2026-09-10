@@ -1,0 +1,69 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# ADI AXI-AD9081 RX transport core (the JESD204 "TPL", framer side).
+#
+# Property names follow ADI's Linux binding for this IP. There is no YAML
+# upstream; the compatible string is the of_match entry in
+# drivers/iio/adc/cf_axi_adc_core.c:941 and the node in ADI's overlay for this
+# board is zynqmp-zcu102-rev10-ad9081-m8-l4-overlay.dts (axi_ad9081_core_rx).
+#
+# NOT ported from the Linux node, and why:
+#   dmas / dma-names -- the DMA engines are bound but never driven here, exactly
+#     as in no-OS: its app.c calls axi_dmac_init() on both cores and starts no
+#     transfer. The DAC is fed from the transport core's DDS instead, so neither
+#     engine is in the datapath. The rx_dmac/tx_dmac nodes exist separately.
+#   spibus-connected -- Linux uses the phandle to reach the converter's
+#     sample-rate and channel description through the SPI driver. This port
+#     configures the chip directly through the vendor API, so the transport core
+#     needs nothing from it.
+#   jesd204-device / #jesd204-cells / jesd204-inputs -- the FSM topology is
+#     still expressed in C (jesd_fsm.c). Moving it to devicetree is PLAN step 7,
+#     and these are the properties it will use.
+
+description: |
+  ADI AXI-AD9081 RX transport core: maps JESD204 link octets to converter
+  samples and owns the per-converter receive datapath (sample format,
+  sign extension, channel enable).
+
+  Configure-only at boot -- the core's STATUS/CLK_FREQ registers only read
+  valid once the link and sample clocks are running, so that check is deferred
+  to the bring-up sequence.
+
+compatible: "adi,axi-ad9081-rx-1.0"
+
+include: base.yaml
+
+properties:
+  reg:
+    required: true
+    description: |
+      A full 64 KiB page, not ADI's 0x8000. The register block is smaller, but
+      this is what gets device_map()ed and the MMU granularity here is a page.
+
+  label:
+    description: |
+      Deliberately used here, despite the general deprecation. Every log line
+      this driver emits is prefixed with the device name and the boot log is
+      diffed against a reference captured from hardware; "adc-tpl" keeps those
+      lines byte-identical to what the pre-devicetree code produced, where the
+      node name "axi-ad9081-rx@84a10000" would not.
+
+  adi,num-channels:
+    type: int
+    required: true
+    description: |
+      Number of converter datapath channels in the core.
+
+      NOT an ADI Linux property: there the channel count comes from the
+      converter description the spibus-connected phandle reaches. It is not
+      free -- it must equal the link's M, because the transport core has one
+      channel per converter. tools/check_profile.py cross-checks it against M,
+      and there is a BUILD_ASSERT in the driver.
+
+  adi,pcore-version-min-major:
+    type: int
+    description: |
+      Reject the core if its PCORE major version is below this. Omit to accept
+      any version. no-OS axi_adc_init() requires >= 9 on the ADC core; the DAC
+      core is not version-checked there, which is why this is per-node rather
+      than a driver constant.

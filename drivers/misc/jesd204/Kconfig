@@ -84,4 +84,28 @@ config JESD204_AXI_LINK_INIT_PRIORITY
 	  the devices ready. The register work is an explicit
 	  axi_jesd204_configure() call from the bring-up sequence.
 
+config JESD204_AXI_TPL
+	bool "ADI AXI JESD204 transport layer cores"
+	default y
+	depends on DT_HAS_ADI_AXI_AD9081_RX_1_0_ENABLED || \
+		   DT_HAS_ADI_AXI_AD9081_TX_1_0_ENABLED
+	help
+	  ADI's transport-layer cores, which map JESD204 octets onto
+	  converter samples. Downstream of the link: these are not JESD204
+	  bring-up participants.
+
+config JESD204_AXI_TPL_INIT_PRIORITY
+	int "AXI-AD9081 transport-core (TPL) init priority"
+	depends on JESD204_AXI_TPL
+	default 65
+	help
+	  Initialisation priority of the AXI-AD9081 RX/TX transport-core driver,
+	  within POST_KERNEL.
+
+	  Unconstrained in practice: the nodes have no devicetree dependencies
+	  (the transport cores run off the sample clock inside the PL, so there
+	  is no clocks phandle), and init() only marks the devices ready. The
+	  register work is an explicit axi_tpl_configure() call from the
+	  bring-up sequence.
+
 endif # JESD204_AXI
