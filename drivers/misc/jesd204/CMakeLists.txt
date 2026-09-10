@@ -6,6 +6,7 @@ zephyr_library_sources_ifdef(CONFIG_JESD204_AXI_ADXCVR
   axi_adxcvr.c
   xilinx_transceiver.c
 )
+zephyr_library_sources_ifdef(CONFIG_JESD204_AXI_LINK axi_jesd204.c)
 
 zephyr_library_sources_ifdef(CONFIG_JESD204 jesd204_fsm.c)
 

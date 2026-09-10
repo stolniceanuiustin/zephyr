@@ -61,4 +61,27 @@ config JESD204_AXI_ADXCVR_INIT_PRIORITY
 	  validation rejects a device that initialises before a devicetree
 	  dependency. There is a BUILD_ASSERT in axi_adxcvr.c for it.
 
+config JESD204_AXI_LINK
+	bool "ADI AXI JESD204 link cores"
+	default y
+	depends on DT_HAS_ADI_AXI_JESD204_RX_1_0_ENABLED || \
+		   DT_HAS_ADI_AXI_JESD204_TX_1_0_ENABLED
+	help
+	  ADI's axi_jesd204_rx / axi_jesd204_tx link-layer cores: code group
+	  synchronisation, ILAS, lane alignment and link status.
+
+config JESD204_AXI_LINK_INIT_PRIORITY
+	int "AXI-JESD204 link-core init priority"
+	depends on JESD204_AXI_LINK
+	default 65
+	help
+	  Initialisation priority of the AXI-JESD204 RX/TX link-core driver,
+	  within POST_KERNEL.
+
+	  Unconstrained in practice, same as the transport cores: the nodes have
+	  no devicetree dependencies (this port does not model the PL lane and
+	  device clocks, so there is no clocks phandle), and init() only marks
+	  the devices ready. The register work is an explicit
+	  axi_jesd204_configure() call from the bring-up sequence.
+
 endif # JESD204_AXI
