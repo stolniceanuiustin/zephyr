@@ -1,0 +1,523 @@
+/*
+ * Copyright (c) 2026 Analog Devices, Inc.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+#include <zephyr/dt-bindings/interrupt-controller/arm-gic.h>
+#include <zephyr/dt-bindings/gpio/gpio.h>
+#include <zephyr/dt-bindings/jesd204/adxcvr.h>
+#include <zephyr/dt-bindings/ethernet/xlnx_gem.h>
+
+/*
+ * DAQ2 FMC (AD9680 ADC + AD9144 DAC) clock generator: an AD9523-1, reached over
+ * the PS Cadence SPI0 controller routed to the FMC over EMIO. SPI reference
+ * clock 100 MHz.
+ *
+ * SPI0 is the bus the DAQ2 bitstream wires to the FMC: ADI's Linux devicetree
+ * (zynqmp-zcu102-rev10-fmcdaq2.dts) does `#define fmc_spi spi0` and enables only
+ * &spi0. The AD9523 is CS0; the AD9144 (CS1) and AD9680 (CS2) share this bus but
+ * are not modelled by this sample yet.
+ *
+ * PLL2 dividers use the EXPLICIT path (adi,pll2-*), which is 1:1 with the no-OS
+ * reference math and the reviewable one, rather than the derived adi,pll2-m1-freq
+ * path. Geometry, verified against the DAQ2 Linux ad9523-1 node:
+ *
+ *   VCXO 125 MHz, doubler off, R2 = 1, NDIV = 4*B + A = 4*6 + 0 = 24
+ *     -> VCO   = 125 MHz * 24 = 3.0 GHz   (inside the -1 2.94-3.1 GHz band)
+ *   M1 = 3
+ *     -> VCO1 out = 3.0 GHz / 3 = 1.0 GHz (matches the Linux adi,pll2-m1-freq)
+ *
+ * Every output rate below is 1.0 GHz / adi,channel-divider and is queryable at
+ * runtime with clock_control_get_rate().
+ *
+ * The board is wired 3-wire (bidirectional SDIO); adi,spi-3wire-enable below
+ * keeps the chip from driving an unrouted SDO pin, which would make every
+ * readback return zero.
+ */
+/ {
+	soc {
+		spi0: spi@ff040000 {
+			compatible = "cdns,spi";
+			reg = <0x0 0xff040000 0x0 0x1000>;
+			status = "okay";
+			interrupts = <GIC_SPI 19 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+			fifo-width = <8>;
+			rx-fifo-depth = <128>;
+			tx-fifo-depth = <128>;
+			clock-frequency = <100000000>;
+
+			ad9523: ad9523-1@0 {
+				compatible = "adi,ad9523-1";
+				reg = <0>;
+				/* AD9523 SPI: mode 0, MSB first. 10 MHz is
+				 * safe for register access.
+				 */
+				spi-max-frequency = <10000000>;
+
+				#clock-cells = <1>;
+				#address-cells = <1>;
+				#size-cells = <0>;
+
+				adi,vcxo-freq = <125000000>;
+
+				/* SYNC = EMIO116 = bank4 pin6; undriven by BOOT.BIN, freezes outputs. */
+				sync-gpios = <&psgpio_bank4 6 GPIO_ACTIVE_HIGH>;
+
+				/* Board is 3-wire (bidirectional SDIO). */
+				adi,spi-3wire-enable;
+
+				/* PLL1 bypassed: the 125 MHz VCXO drives PLL2
+				 * directly, OSCIN differential.
+				 */
+				adi,pll1-bypass-enable;
+				adi,osc-in-diff-enable;
+
+				/* PLL2, explicit divider path. */
+				adi,pll2-charge-pump-current-na = <413000>;
+				adi,pll2-r2-div = <1>;
+				adi,pll2-ndiv-a-cnt = <0>;
+				adi,pll2-ndiv-b-cnt = <6>;
+				adi,pll2-vco-div-m1 = <3>;
+
+				/* PLL2 loop filter (from the DAQ2 Linux node). */
+				adi,rpole2 = <0>;
+				adi,rzero = <7>;
+				adi,cpole1 = <2>;
+
+				/*
+				 * Outputs. Any output without a node here is
+				 * parked tristate + powered down by the driver.
+				 * driver-mode 3 matches the DAQ2 Linux node.
+				 */
+				ad9523_1: channel@1 {
+					reg = <1>;
+					adi,extended-name = "DAC_CLK";
+					adi,channel-divider = <1>;   /* 1.0 GHz */
+					adi,driver-mode = <3>;
+					adi,divider-phase = <1>;
+				};
+
+				ad9523_4: channel@4 {
+					reg = <4>;
+					adi,extended-name = "ADC_CLK_FMC";
+					adi,channel-divider = <2>;   /* 500 MHz */
+					adi,driver-mode = <3>;
+					adi,divider-phase = <1>;
+				};
+
+				ad9523_5: channel@5 {
+					reg = <5>;
+					adi,extended-name = "ADC_SYSREF";
+					adi,channel-divider = <128>; /* 7.8125 MHz */
+					adi,driver-mode = <3>;
+					adi,divider-phase = <1>;
+				};
+
+				ad9523_6: channel@6 {
+					reg = <6>;
+					adi,extended-name = "CLKD_ADC_SYSREF";
+					adi,channel-divider = <128>;
+					adi,driver-mode = <3>;
+					adi,divider-phase = <1>;
+				};
+
+				ad9523_7: channel@7 {
+					reg = <7>;
+					adi,extended-name = "CLKD_DAC_SYSREF";
+					adi,channel-divider = <128>;
+					adi,driver-mode = <3>;
+					adi,divider-phase = <1>;
+				};
+
+				ad9523_8: channel@8 {
+					reg = <8>;
+					adi,extended-name = "DAC_SYSREF";
+					adi,channel-divider = <128>;
+					adi,driver-mode = <3>;
+					adi,divider-phase = <1>;
+				};
+
+				ad9523_9: channel@9 {
+					reg = <9>;
+					adi,extended-name = "FMC_DAC_REF_CLK";
+					adi,channel-divider = <2>;   /* 500 MHz */
+					adi,driver-mode = <3>;
+					adi,divider-phase = <1>;
+				};
+
+				ad9523_13: channel@d {
+					reg = <13>;
+					adi,extended-name = "ADC_CLK";
+					adi,channel-divider = <1>;   /* 1.0 GHz */
+					adi,driver-mode = <3>;
+					adi,divider-phase = <1>;
+				};
+			};
+
+			/*
+			 * AD9680 RX ADC, CS2 on the same SPI0 bus (ADI's Linux
+			 * fmcdaq2.dts puts the AD9680 at reg = <2>). Its sample
+			 * clock is the AD9523 ADC_CLK output (channel 13, 1.0 GHz).
+			 *
+			 * JESD204B geometry is the synthesised DAQ2 RX profile:
+			 *   M=2, L=4, S=1  ->  F = M*N'*S/(8*L) = 2*16/(8*4) = 1
+			 *   N=14, N'=16    ->  CS = N'-N = 2
+			 *   K=32, subclass 1
+			 *   lane rate = fs*M*N'*10/8/L = 1e9*2*16*1.25/4 = 10 Gbps
+			 * ad9680.c BUILD_ASSERTs every derived config byte against
+			 * the no-OS reference; a mismatch fails the build.
+			 */
+			ad9680: ad9680@2 {
+				compatible = "adi,ad9680";
+				reg = <2>;
+				spi-max-frequency = <10000000>;
+
+				clocks = <&ad9523 13>;
+				clock-names = "adc_clk";
+
+				adi,sampling-frequency-khz = <1000000>; /* 1 GHz */
+				adi,converters-per-device = <2>;   /* M */
+				adi,lanes-per-device = <4>;        /* L */
+				adi,octets-per-frame = <1>;        /* F */
+				adi,frames-per-multiframe = <32>;  /* K */
+				adi,converter-resolution = <14>;   /* N */
+				adi,bits-per-sample = <16>;        /* N' */
+				adi,control-bits-per-sample = <2>; /* CS */
+				adi,subclass = <1>;
+			};
+
+			/*
+			 * AD9144 TX DAC, CS1 on the same SPI0 bus (ADI's Linux
+			 * fmcdaq2.dts puts the AD9144 at reg = <1>). Its sample
+			 * clock is the AD9523 DAC_CLK output (channel 1, 1.0 GHz).
+			 *
+			 * SPI is 1 MHz here (the DAQ2 Linux node's rate); mode 0
+			 * (like the AD9523/AD9680 on this bus) is set by the
+			 * driver's SPI operation flags, not DT. no-OS DAQ2 inits
+			 * all three devices NO_OS_SPI_MODE_0.
+			 *
+			 * JESD204B geometry is the synthesised DAQ2 TX profile:
+			 *   M=2, L=4, S=1  ->  F = M*N'*S/(8*L) = 2*16/(8*4) = 1
+			 *   N=16, N'=16    ->  CS = N'-N = 0 (16-bit DAC)
+			 *   HD = (F*8 < N') = (8 < 16) = 1 (derived in the driver)
+			 *   K=32, subclass 1, interpolation 1
+			 *   lane rate = fs*M*N'*10/(8*L*interp) = 10 Gbps
+			 * ad9144.c BUILD_ASSERTs every derived config byte against
+			 * the no-OS reference; a mismatch fails the build.
+			 */
+			ad9144: ad9144@1 {
+				compatible = "adi,ad9144";
+				reg = <1>;
+				spi-max-frequency = <1000000>; /* DAQ2 = 1 MHz */
+
+				clocks = <&ad9523 1>;
+				clock-names = "dac_clk";
+
+				adi,sampling-frequency-khz = <1000000>; /* 1 GHz */
+				adi,converters-per-device = <2>;   /* M */
+				adi,lanes-per-device = <4>;        /* L */
+				adi,octets-per-frame = <1>;        /* F */
+				adi,frames-per-multiframe = <32>;  /* K */
+				adi,converter-resolution = <16>;   /* N */
+				adi,bits-per-sample = <16>;        /* N' */
+				adi,control-bits-per-sample = <0>; /* CS = N'-N */
+				adi,subclass = <1>;
+				adi,interpolation = <1>;
+
+				/*
+				 * DAC RESETB, active-low. ZynqMP PS EMIO 118 =
+				 * bank4 pin 8 (EMIO base 78 + no-OS GPIO_OFFSET
+				 * 40). no-OS drives gpio_dac_reset LOW then HIGH;
+				 * the generic BOOT.BIN psu_init leaves it undriven,
+				 * so the driver must release it before SPI.
+				 */
+				reset-gpios = <&psgpio_bank4 8 GPIO_ACTIVE_LOW>;
+			};
+		};
+
+		/*
+		 * ZynqMP PS GPIO controller. The A53 dtsi (zynqmp_a53.dtsi) has
+		 * no GPIO node, so define it here. Only bank4 is needed: it
+		 * covers EMIO 110-141, which includes the DAC RESETB (EMIO 118 =
+		 * bank4 pin 8). Register offsets are derived from the bank reg
+		 * index by the xlnx,ps-gpio-bank driver, so a bank4-only node is
+		 * correct on its own.
+		 */
+		psgpio: gpio@ff0a0000 {
+			compatible = "xlnx,ps-gpio";
+			reg = <0x0 0xff0a0000 0x0 0x1000>;
+			status = "okay";
+			interrupts = <GIC_SPI 16 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>;
+			interrupt-names = "irq_0";
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			psgpio_bank4: psgpio_bank@4 {
+				compatible = "xlnx,ps-gpio-bank";
+				reg = <0x4>;
+				gpio-controller;
+				#gpio-cells = <2>;
+				ngpios = <32>;
+				status = "okay";
+			};
+		};
+
+		/*
+		 * DAQ2 JESD204B datapath -- Phase 1: transceiver (adxcvr) and
+		 * link cores only, one per direction. No transport (TPL) or DMA
+		 * yet; those are later phases.
+		 *
+		 * Addresses are from the on-board bitstream
+		 * (bitstreams/daq2/system_top.xsa -> system.hwh MEMRANGE):
+		 * axi_ad9144_xcvr / axi_ad9680_xcvr and axi_ad9144_jesd_tx_axi /
+		 * axi_ad9680_jesd_rx_axi. Each reg maps a full 64 KiB page: the
+		 * register block is smaller, but that is what gets device_map()ed
+		 * and MMU granularity here is a page. virt == phys
+		 * (CONFIG_KERNEL_DIRECT_MAP).
+		 *
+		 * out-clk-select = PROGDIV, NOT ADI's Linux REFCLK_DIV2. Derived
+		 * from the AD9081 ZynqMP precedent on this exact SoC/GTH: with
+		 * REFCLK_DIV2 the GT output clock does not run and RESET_DONE
+		 * never asserts. PROGDIV is what this PL was synthesised for.
+		 * REFCLK_DIV2 is the first fallback if a GT fails to lock.
+		 *
+		 * PLL selection mirrors no-OS DAQ2 (fmcdaq2.c) and the synthesised
+		 * make param PLL_TYPE=QPLL0: TX on QPLL0, RX on CPLL. Both GT
+		 * references are 500 MHz AD9523 outputs -- TX from ch9
+		 * (FMC_DAC_REF_CLK), RX from ch4 (ADC_CLK_FMC).
+		 */
+		tx_adxcvr: adxcvr@84a60000 {
+			compatible = "adi,axi-adxcvr-1.0";
+			reg = <0x0 0x84a60000 0x0 0x10000>;
+			status = "okay";
+			label = "tx_adxcvr";
+
+			clocks = <&ad9523 9>;   /* FMC_DAC_REF_CLK, 500 MHz */
+
+			adi,sys-clk-select = <XCVR_QPLL>;   /* QPLL0 */
+			/*
+			 * REFCLK_DIV2, not PROGDIV: matches no-OS fmcdaq2.c
+			 * (ad9144_xcvr .out_clk_sel = ADXCVR_REFCLK_DIV2). The FPGA
+			 * link clock is the GT refclk /2 = 250 MHz, which the JESD
+			 * core already reports.
+			 */
+			adi,out-clk-select = <XCVR_REFCLK_DIV2>;
+			adi,lane-rate-khz = <10000000>;
+		};
+
+		rx_adxcvr: adxcvr@84a50000 {
+			compatible = "adi,axi-adxcvr-1.0";
+			reg = <0x0 0x84a50000 0x0 0x10000>;
+			status = "okay";
+			label = "rx_adxcvr";
+
+			clocks = <&ad9523 4>;   /* ADC_CLK_FMC, 500 MHz */
+
+			adi,sys-clk-select = <XCVR_CPLL>;
+			/* REFCLK_DIV2, not PROGDIV: matches no-OS fmcdaq2.c
+			 * (ad9680_xcvr .out_clk_sel = ADXCVR_REFCLK_DIV2).
+			 */
+			adi,out-clk-select = <XCVR_REFCLK_DIV2>;
+			adi,lane-rate-khz = <10000000>;
+
+			/* LPM equalisation rather than DFE -- RX only. */
+			adi,use-lpm-enable;
+		};
+
+		/*
+		 * JESD204 link cores. One link described from both ends: the
+		 * geometry both nodes carry must agree (BUILD_ASSERTs in
+		 * axi_jesd204.c). DAQ2 profile: M2 L4 F1 K32 NP16 S1, subclass 1,
+		 * 10 Gbps -- matches the synthesised RX_JESD_M=2 L=4 S=1 /
+		 * TX_JESD_M=2 L=4 S=1 and the ad9680/ad9144 chip DT nodes above.
+		 *
+		 * HD is derived in the driver (0 for this geometry), not a
+		 * property -- a settable HD is how no-OS's wrong HD=1 would get
+		 * copied back in.
+		 */
+		rx_jesd: axi-jesd204-rx@84aa0000 {
+			compatible = "adi,axi-jesd204-rx-1.0";
+			reg = <0x0 0x84aa0000 0x0 0x10000>;
+			status = "okay";
+			label = "jesd204-rx";
+
+			adi,lanes-per-device = <4>;
+			adi,converters-per-device = <2>;
+			adi,octets-per-frame = <1>;
+			adi,frames-per-multiframe = <32>;
+			adi,bits-per-sample = <16>;
+			adi,subclass = <1>;
+			adi,lane-rate-khz = <10000000>;
+
+			/*
+			 * No adi,converter-resolution / -control-bits-per-sample
+			 * / -samples-per-converter-per-frame: the framer receives
+			 * the ILAS it is described in rather than announcing one,
+			 * so N, CS and S never reach a register on this side.
+			 */
+		};
+
+		tx_jesd: axi-jesd204-tx@84a90000 {
+			/*
+			 * Geometry cross-check only. DAQ2's TX (AD9144) and RX
+			 * (AD9680) are separate converters, not one MxFE, so this
+			 * is not physical single-link peering -- but both links
+			 * share geometry exactly, so pointing the peer at rx_jesd
+			 * satisfies JESD204_ASSERT_LINK.
+			 */
+			adi,jesd204-peer = <&rx_jesd>;
+			compatible = "adi,axi-jesd204-tx-1.0";
+			reg = <0x0 0x84a90000 0x0 0x10000>;
+			status = "okay";
+			label = "jesd204-tx";
+
+			adi,lanes-per-device = <4>;
+			adi,converters-per-device = <2>;
+			adi,octets-per-frame = <1>;
+			adi,frames-per-multiframe = <32>;
+			adi,bits-per-sample = <16>;
+			adi,subclass = <1>;
+			adi,lane-rate-khz = <10000000>;
+
+			/* ILAS-only, so the deframer carries these and the framer
+			 * does not.
+			 */
+			adi,converter-resolution = <16>;
+			adi,control-bits-per-sample = <0>;
+			adi,samples-per-converter-per-frame = <1>;
+		};
+
+		/*
+		 * JESD204 transport (TPL) cores -- ADC framer / DAC deframer
+		 * datapath. Same IP as the AD9081 sample (ad_ip_jesd204_tpl_core),
+		 * so the existing adi,axi-ad9081-{rx,tx}-1.0 compatibles bind; the
+		 * axi_tpl.c driver keys only on those. adi,num-channels = 2 (M=2,
+		 * not the AD9081 profile's 8).
+		 *
+		 * Addresses from the on-board bitstream (system.hwh MEMRANGE):
+		 * axi_ad9680_tpl/adc_tpl_core and axi_ad9144_tpl/dac_tpl_core. Each
+		 * reg maps a full 64 KiB page (device_map() granularity); virt ==
+		 * phys (CONFIG_KERNEL_DIRECT_MAP).
+		 */
+		rx_tpl: axi-ad9081-rx@84a10000 {   /* adc_tpl_core */
+			compatible = "adi,axi-ad9081-rx-1.0";
+			reg = <0x0 0x84a10000 0x0 0x10000>;
+			adi,num-channels = <2>;         /* M=2 */
+			adi,pcore-version-min-major = <9>;
+			label = "adc-tpl";
+			status = "okay";
+		};
+
+		tx_tpl: axi-ad9081-tx@84a04000 {   /* dac_tpl_core */
+			adi,jesd204-peer = <&rx_tpl>;
+			compatible = "adi,axi-ad9081-tx-1.0";
+			reg = <0x0 0x84a04000 0x0 0x10000>;
+			adi,num-channels = <2>;         /* M=2 */
+			label = "dac-tpl";
+			status = "okay";
+		};
+
+		/*
+		 * DAQ2 datapath DMA engines (ADI AXI DMAC). Addresses from the
+		 * on-board bitstream (system.hwh MEMRANGE): axi_ad9680_dma is S2MM
+		 * (device -> memory, ADC capture), axi_ad9144_dma is MM2S (memory
+		 * -> device, DAC playback). Direction / data width / cyclic support
+		 * are auto-probed from the core, so only reg is needed. No interrupt
+		 * is wired to the PS GIC for these cores; the driver polls
+		 * (dma_get_status pumps the transfer).
+		 */
+		rx_dmac: dma@9c400000 {   /* axi_ad9680_dma, S2MM */
+			compatible = "adi,axi-dmac";
+			reg = <0x0 0x9c400000 0x0 0x10000>;
+			#dma-cells = <1>;
+			status = "okay";
+		};
+
+		tx_dmac: dma@9c420000 {   /* axi_ad9144_dma, MM2S */
+			compatible = "adi,axi-dmac";
+			reg = <0x0 0x9c420000 0x0 0x10000>;
+			#dma-cells = <1>;
+			status = "okay";
+		};
+	};
+};
+
+/* ZCU102 ethernet for IIOD over TCP. Proven values from samples/net/zperf. */
+/ {
+	chosen {
+		zephyr,ethernet = &gem3;
+	};
+};
+
+&soc {
+	gem3: ethernet@ff0e0000 {
+		compatible = "xlnx,gem";
+		reg = <0x0 0xff0e0000 0x0 0x1000>,	/* mac */
+		      <0x0 0xff5e005c 0x0 0x4>;		/* CRL_APB GEM3_CLK_CTRL */
+		reg-names = "mac", "clkc";
+		status = "okay";
+
+		interrupts = <GIC_SPI 63 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>,
+			     <GIC_SPI 64 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>;
+		interrupt-names = "irq_0", "irq_1";
+
+		clock-frequency = <1500000000>;
+		phy-handle = <&gem3_phy>;
+
+		amba-ahb-burst-length = <XLNX_GEM_AMBA_AHB_BURST_INCR16>;
+		hw-rx-buffer-size = <XLNX_GEM_HW_RX_BUFFER_SIZE_8KB>;
+		hw-rx-buffer-offset = <0>;
+		hw-tx-buffer-size-full;
+		rx-buffer-descriptors = <32>;
+		tx-buffer-descriptors = <32>;
+		rx-buffer-size = <1536>;
+		tx-buffer-size = <1536>;
+		discard-rx-fcs;
+		unicast-hash;
+
+		local-mac-address = [ 00 0a 35 01 67 01 ];
+
+		gem3_mdio: mdio {
+			compatible = "xlnx,gem-mdio";
+			status = "okay";
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			gem3_phy: phy@c {
+				compatible = "ti,dp83867";
+				reg = <12>;
+				status = "okay";
+				ti,interface-type = "rgmii-id";
+				ti,rx-internal-delay = <0x8>;
+				ti,tx-internal-delay = <0xa>;
+				ti,dp83867-rxctrl-strap-quirk;
+			};
+		};
+	};
+};
+
+/* IIOD-exposed capture/playback datapaths (io-name = Linux DAQ2 convention). */
+/ {
+	rx_iio: jesd-iio-rx {
+		compatible = "adi,axi-jesd-iio";
+		io-name = "axi-ad9680-hpc";
+		adi,tpl = <&rx_tpl>;
+		dmas = <&rx_dmac 0>;
+		dma-names = "rx";
+		adi,converters-per-device = <2>;	/* M */
+		status = "okay";
+	};
+
+	tx_iio: jesd-iio-tx {
+		compatible = "adi,axi-jesd-iio";
+		io-name = "axi-ad9144-hpc";
+		adi,tpl = <&tx_tpl>;
+		dmas = <&tx_dmac 0>;
+		dma-names = "tx";
+		adi,converters-per-device = <2>;	/* M */
+		status = "okay";
+	};
+};
