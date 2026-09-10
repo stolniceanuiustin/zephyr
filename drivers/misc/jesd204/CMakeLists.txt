@@ -10,4 +10,6 @@ zephyr_library_sources_ifdef(CONFIG_JESD204_AXI_LINK axi_jesd204.c)
 zephyr_library_sources_ifdef(CONFIG_JESD204_AXI_TPL axi_tpl.c)
 zephyr_library_sources_ifdef(CONFIG_JESD204_AXI_JESD_IIO axi_jesd_iio.c)
 
+zephyr_library_sources_ifdef(CONFIG_JESD204 jesd204_fsm.c)
+
 zephyr_library_include_directories(.)

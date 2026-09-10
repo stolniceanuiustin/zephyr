@@ -1,3 +1,21 @@
+# Copyright (c) 2026 Analog Devices, Inc.
+# SPDX-License-Identifier: Apache-2.0
+
+menuconfig JESD204
+	bool "JESD204 bring-up framework"
+	help
+	  Enable the generic, board-agnostic JESD204 bring-up state machine
+	  that walks every device on a link through the phases DEVICE_INIT
+	  to LINK_RUNNING.
+
+if JESD204
+
+module = JESD204
+module-str = JESD204
+source "subsys/logging/Kconfig.template.log_config"
+
+endif # JESD204
+
 # ADI JESD204 AXI IP cores for FPGA fabric
 #
 # These are the FPGA-side halves of a JESD204 link: the transceiver wrapper,
@@ -9,6 +27,7 @@
 
 menuconfig JESD204_AXI
 	bool "ADI JESD204 AXI IP core drivers"
+	select JESD204
 	help
 	  Drivers for ADI's JESD204 AXI IP cores in FPGA fabric.
 
