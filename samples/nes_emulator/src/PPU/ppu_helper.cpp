@@ -5,10 +5,12 @@
 // Normally, for CHRram, we should update this, but since we focus on MAPPER0 for now we don't do that
 // Mapper0 doesn't have CHRram
 // We call this once per scnaline
-void build_tile_cache()
+// Decode a contiguous run of CHR tiles into tile_pixels. Mappers that swap CHR
+// banks at runtime (MMC3) call this for just the changed tiles instead of
+// rebuilding all 512, which would otherwise thrash every scanline.
+void build_tile_cache_range(int first_tile, int tile_count)
 {
-    //there are 512 tiles kept in memory
-    for(int i=0; i<512; i++)
+    for (int i = first_tile; i < first_tile + tile_count; i++)
     {
         uint16_t base = i * 16;
         for(int row = 0; row < 8; row++)
@@ -22,6 +24,12 @@ void build_tile_cache()
             }
         }
     }
+}
+
+void build_tile_cache()
+{
+    //there are 512 tiles kept in memory
+    build_tile_cache_range(0, 512);
     tile_cache_initialized = true;
 }
 

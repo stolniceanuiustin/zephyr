@@ -181,6 +181,7 @@ void ppu_set_mirroring(int mode);
 extern byte flip_byte[256];
 void generate_flip_byte_lt();
 void build_tile_cache();
+void build_tile_cache_range(int first_tile, int tile_count);
 
 
 void clock_shifters();

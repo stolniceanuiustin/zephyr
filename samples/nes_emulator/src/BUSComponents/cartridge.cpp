@@ -167,6 +167,8 @@ void mmc1_write(uint16_t addr, byte data)
 #define MMC3_PRG_BANK_MASK     0x3F /* 6-bit 8 KB bank select */
 #define MMC3_CHR_2K_MASK       0xFE /* 2 KB banks ignore the low 1 KB bit */
 #define MMC3_CHR_INVERT_SLOTS  4    /* XOR on the 1 KB slot index flips regions */
+#define MMC3_CHR_FIRST_1K_REG  2    /* R2 is the first 1 KB register */
+#define CHR_TILES_PER_1K       64   /* 1024 bytes / 16 bytes per tile */
 
 static const uint8_t *mmc3_prg_base; /* -> PRG image in rom_buf */
 static const uint8_t *mmc3_chr_base; /* -> CHR image in rom_buf */
@@ -194,12 +196,22 @@ static void mmc3_copy_chr(uint16_t bank1k, uint8_t slot)
     memcpy(CHRrom + slot * CHR_SLOT_1K, src, CHR_SLOT_1K);
 }
 
-static void mmc3_apply_banks(void)
+/* Re-decode the 64 tiles a 1 KB CHR slot maps to. Skipped while the cache is
+ * uninitialised — the pending full rebuild at the next render covers it. */
+static void mmc3_chr_decode_slot(uint8_t slot)
+{
+    if (tile_cache_initialized) {
+        build_tile_cache_range(slot * CHR_TILES_PER_1K, CHR_TILES_PER_1K);
+    }
+}
+
+/* Lay down all four PRG slots. $A000 (R7) and $E000 (last bank) are fixed;
+ * $8000 and $C000 swap with the PRG mode bit. Just memcpy, no tile decode. */
+static void mmc3_apply_prg(void)
 {
     uint8_t last = mmc3_prg_banks_8k - 1;
     uint8_t penult = mmc3_prg_banks_8k - 2;
 
-    /* $A000 (R7) and $E000 (last bank) are fixed; $8000 and $C000 swap. */
     if (mmc3_bank_select & MMC3_SEL_PRG_MODE) {
         mmc3_copy_prg(penult, 0);
         mmc3_copy_prg(mmc3_regs[7] & MMC3_PRG_BANK_MASK, 1);
@@ -211,21 +223,57 @@ static void mmc3_apply_banks(void)
         mmc3_copy_prg(penult, 2);
         mmc3_copy_prg(last, 3);
     }
+}
 
-    if (!chr_is_ram) {
-        /* CHR mode bit swaps which half holds the two 2 KB banks (R0/R1) and
-         * which holds the four 1 KB banks (R2..R5); XOR flips the slot region. */
-        uint8_t inv = (mmc3_bank_select & MMC3_SEL_CHR_MODE) ? MMC3_CHR_INVERT_SLOTS : 0;
+/* CHR mode bit swaps which half holds the two 2 KB banks (R0/R1) and which
+ * holds the four 1 KB banks (R2..R5); XOR flips the 1 KB slot region. */
+static uint8_t mmc3_chr_invert(void)
+{
+    return (mmc3_bank_select & MMC3_SEL_CHR_MODE) ? MMC3_CHR_INVERT_SLOTS : 0;
+}
 
-        mmc3_copy_chr(mmc3_regs[0] & MMC3_CHR_2K_MASK, 0 ^ inv);
-        mmc3_copy_chr((mmc3_regs[0] & MMC3_CHR_2K_MASK) + 1, 1 ^ inv);
-        mmc3_copy_chr(mmc3_regs[1] & MMC3_CHR_2K_MASK, 2 ^ inv);
-        mmc3_copy_chr((mmc3_regs[1] & MMC3_CHR_2K_MASK) + 1, 3 ^ inv);
-        mmc3_copy_chr(mmc3_regs[2], 4 ^ inv);
-        mmc3_copy_chr(mmc3_regs[3], 5 ^ inv);
-        mmc3_copy_chr(mmc3_regs[4], 6 ^ inv);
-        mmc3_copy_chr(mmc3_regs[5], 7 ^ inv);
-        tile_cache_initialized = false;
+/* Full CHR re-lay: only needed on a mode-bit flip and at load. Defers the tile
+ * decode to one rebuild at the next render. */
+static void mmc3_apply_chr(void)
+{
+    if (chr_is_ram) {
+        return;
+    }
+
+    uint8_t inv = mmc3_chr_invert();
+
+    mmc3_copy_chr(mmc3_regs[0] & MMC3_CHR_2K_MASK, 0 ^ inv);
+    mmc3_copy_chr((mmc3_regs[0] & MMC3_CHR_2K_MASK) + 1, 1 ^ inv);
+    mmc3_copy_chr(mmc3_regs[1] & MMC3_CHR_2K_MASK, 2 ^ inv);
+    mmc3_copy_chr((mmc3_regs[1] & MMC3_CHR_2K_MASK) + 1, 3 ^ inv);
+    mmc3_copy_chr(mmc3_regs[2], 4 ^ inv);
+    mmc3_copy_chr(mmc3_regs[3], 5 ^ inv);
+    mmc3_copy_chr(mmc3_regs[4], 6 ^ inv);
+    mmc3_copy_chr(mmc3_regs[5], 7 ^ inv);
+    tile_cache_initialized = false;
+}
+
+/* Hot path: a single CHR register changed — copy and re-decode only its
+ * slot(s), leaving the rest of the tile cache intact. */
+static void mmc3_apply_chr_reg(uint8_t r)
+{
+    if (chr_is_ram) {
+        return;
+    }
+
+    uint8_t inv = mmc3_chr_invert();
+
+    if (r == 0 || r == 1) {
+        uint8_t base_slot = (r == 0) ? 0 : 2;
+        uint8_t bank = mmc3_regs[r] & MMC3_CHR_2K_MASK;
+        mmc3_copy_chr(bank, base_slot ^ inv);
+        mmc3_copy_chr(bank + 1, (base_slot + 1) ^ inv);
+        mmc3_chr_decode_slot(base_slot ^ inv);
+        mmc3_chr_decode_slot((base_slot + 1) ^ inv);
+    } else {
+        uint8_t slot = (r - MMC3_CHR_FIRST_1K_REG + 4) ^ inv;
+        mmc3_copy_chr(mmc3_regs[r], slot);
+        mmc3_chr_decode_slot(slot);
     }
 }
 
@@ -235,11 +283,25 @@ void mmc3_write(uint16_t addr, byte data)
 
     if (addr <= 0x9FFF) { /* bank select / bank data */
         if (!odd) {
+            /* Bank select changes only which register the next data write hits;
+             * re-lay a bank space only if its mode bit actually flipped. */
+            uint8_t changed = mmc3_bank_select ^ data;
             mmc3_bank_select = data;
+            if (changed & MMC3_SEL_PRG_MODE) {
+                mmc3_apply_prg();
+            }
+            if (changed & MMC3_SEL_CHR_MODE) {
+                mmc3_apply_chr();
+            }
         } else {
-            mmc3_regs[mmc3_bank_select & MMC3_SEL_REG_MASK] = data;
+            uint8_t r = mmc3_bank_select & MMC3_SEL_REG_MASK;
+            mmc3_regs[r] = data;
+            if (r >= 6) {
+                mmc3_apply_prg(); /* R6/R7 select PRG banks */
+            } else {
+                mmc3_apply_chr_reg(r); /* R0..R5 select CHR banks */
+            }
         }
-        mmc3_apply_banks();
     } else if (addr <= 0xBFFF) { /* mirroring / PRG-RAM protect */
         if (!odd) {
             ppu_set_mirroring((data & MMC3_MIRROR_HORIZONTAL) ? NT_MIRROR_HORIZONTAL
@@ -399,7 +461,8 @@ bool cartridge_read_file(const char *rom_name)
         mmc3_irq_counter = 0;
         mmc3_irq_reload = false;
         mmc3_irq_enabled = false;
-        mmc3_apply_banks();
+        mmc3_apply_prg();
+        mmc3_apply_chr();
     } else {
         LOG_ERR("Unsupported mapper: %d", mapper_type);
         return false;
