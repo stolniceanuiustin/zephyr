@@ -163,11 +163,17 @@ void ppu_write_from_cpu(byte addr, byte data);
 byte ppu_read(uint16_t addr);
 void ppu_write(uint16_t addr, byte data);
 
+/* Nametable mirroring modes for ppu_set_mirroring() (match MMC1 control bits). */
+#define NT_MIRROR_ONE_LOWER  0
+#define NT_MIRROR_ONE_UPPER  1
+#define NT_MIRROR_VERTICAL   2
+#define NT_MIRROR_HORIZONTAL 3
+
 /**
- * @brief Set nametable mirroring at runtime (used by MMC1).
+ * @brief Set nametable mirroring at runtime (used by MMC1/MMC3).
  *
- * @param mode MMC1 control bits 1-0: 0 one-screen lower, 1 one-screen upper,
- *             2 vertical, 3 horizontal.
+ * @param mode One of NT_MIRROR_ONE_LOWER, NT_MIRROR_ONE_UPPER,
+ *             NT_MIRROR_VERTICAL, NT_MIRROR_HORIZONTAL.
  */
 void ppu_set_mirroring(int mode);
 

@@ -57,6 +57,10 @@ void cpu_write(uint16_t addr, byte data)
         {
             mmc1_write(addr, data);
         }
+        else if (cart_mapper == MAPPER_MMC3)
+        {
+            mmc3_write(addr, data);
+        }
         // Mapper 0: $8000+ is ROM, writes are ignored.
     }
     else if (addr >= 0x6000 && addr <= 0x7FFF)

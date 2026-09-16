@@ -462,23 +462,29 @@ void cpu_clock()
     else
     {
         debug_count++;
-        if (!pending_nmi)
-        {
-            opcode = read_pc();
-            // Thankfully the CPU was thouroughly tested on x86 so we don't need this
-            // if (cpu_debug_print)
-            // {
-            //    Serial.printf("Opcode: %02X, PC: %04X | A:%02X X:%02X Y:%02X\n", opcode, PC, A, X, Y);
-            //}
-            remaining_cycles += OPCODE_duration[opcode];
-            opcode_table[opcode]();
-        }
-        else
+        if (pending_nmi)
         {
             trigger_nmi();
             remaining_cycles += 7;
             return;
         }
-        return; // if it gets here it means it failed
+        // Maskable IRQ (e.g. MMC3 scanline counter). Level-triggered: it stays
+        // pending until the mapper acknowledges it; the I flag gates delivery.
+        if (pending_irq && I == 0)
+        {
+            trigger_irq();
+            pending_irq = false;
+            remaining_cycles += 7;
+            return;
+        }
+        opcode = read_pc();
+        // Thankfully the CPU was thouroughly tested on x86 so we don't need this
+        // if (cpu_debug_print)
+        // {
+        //    Serial.printf("Opcode: %02X, PC: %04X | A:%02X X:%02X Y:%02X\n", opcode, PC, A, X, Y);
+        //}
+        remaining_cycles += OPCODE_duration[opcode];
+        opcode_table[opcode]();
+        return;
     }
 }

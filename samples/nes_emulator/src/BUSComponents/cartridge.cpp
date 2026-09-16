@@ -3,6 +3,7 @@
 #include <string.h>
 #include "memory.h"
 #include "cartridge.h"
+#include "cpu.h"
 
 /* The NES ROM is embedded directly in the firmware image (rodata) by CMake
  * via generate_inc_file_for_target() — see CMakeLists.txt. No SD load, no
@@ -147,6 +148,138 @@ void mmc1_write(uint16_t addr, byte data)
     mmc1_apply_banks();
 }
 
+/* ================= MMC3 (mapper 4) ==================================
+ *
+ * Same copy-into-window strategy as MMC1, but finer granularity (8 KB PRG
+ * slots, 1 KB CHR slots) and a scanline IRQ counter. The counter is clocked
+ * once per visible scanline from the PPU (mapper_scanline()) rather than from
+ * PPU A12 edges; that is accurate enough for the raster splits games use. */
+
+#define PRG_SLOT_8K (8 * 1024)
+#define CHR_SLOT_1K (1 * 1024)
+
+/* Bank select register ($8000, even address). */
+#define MMC3_SEL_REG_MASK 0x07 /* which of R0..R7 the next data write targets */
+#define MMC3_SEL_PRG_MODE 0x40 /* bit 6: PRG bank layout */
+#define MMC3_SEL_CHR_MODE 0x80 /* bit 7: CHR A12 inversion (swap 2K/1K halves) */
+
+#define MMC3_MIRROR_HORIZONTAL 0x01 /* $A000 bit 0 */
+#define MMC3_PRG_BANK_MASK     0x3F /* 6-bit 8 KB bank select */
+#define MMC3_CHR_2K_MASK       0xFE /* 2 KB banks ignore the low 1 KB bit */
+#define MMC3_CHR_INVERT_SLOTS  4    /* XOR on the 1 KB slot index flips regions */
+
+static const uint8_t *mmc3_prg_base; /* -> PRG image in rom_buf */
+static const uint8_t *mmc3_chr_base; /* -> CHR image in rom_buf */
+static uint16_t mmc3_prg_banks_8k;
+static uint16_t mmc3_chr_banks_1k;
+
+static uint8_t mmc3_regs[8];    /* R0..R7 bank registers */
+static uint8_t mmc3_bank_select; /* last $8000 (even) write */
+static uint8_t mmc3_irq_latch;   /* counter reload value */
+static uint8_t mmc3_irq_counter;
+static bool mmc3_irq_reload;
+static bool mmc3_irq_enabled;
+
+/* slot 0..3 -> $8000/$A000/$C000/$E000. */
+static void mmc3_copy_prg(uint8_t bank8k, uint8_t slot)
+{
+    const uint8_t *src = mmc3_prg_base + (bank8k % mmc3_prg_banks_8k) * PRG_SLOT_8K;
+    memcpy(PRGrom + slot * PRG_SLOT_8K, src, PRG_SLOT_8K);
+}
+
+/* slot 0..7 -> 1 KB windows across $0000-$1FFF. */
+static void mmc3_copy_chr(uint16_t bank1k, uint8_t slot)
+{
+    const uint8_t *src = mmc3_chr_base + (bank1k % mmc3_chr_banks_1k) * CHR_SLOT_1K;
+    memcpy(CHRrom + slot * CHR_SLOT_1K, src, CHR_SLOT_1K);
+}
+
+static void mmc3_apply_banks(void)
+{
+    uint8_t last = mmc3_prg_banks_8k - 1;
+    uint8_t penult = mmc3_prg_banks_8k - 2;
+
+    /* $A000 (R7) and $E000 (last bank) are fixed; $8000 and $C000 swap. */
+    if (mmc3_bank_select & MMC3_SEL_PRG_MODE) {
+        mmc3_copy_prg(penult, 0);
+        mmc3_copy_prg(mmc3_regs[7] & MMC3_PRG_BANK_MASK, 1);
+        mmc3_copy_prg(mmc3_regs[6] & MMC3_PRG_BANK_MASK, 2);
+        mmc3_copy_prg(last, 3);
+    } else {
+        mmc3_copy_prg(mmc3_regs[6] & MMC3_PRG_BANK_MASK, 0);
+        mmc3_copy_prg(mmc3_regs[7] & MMC3_PRG_BANK_MASK, 1);
+        mmc3_copy_prg(penult, 2);
+        mmc3_copy_prg(last, 3);
+    }
+
+    if (!chr_is_ram) {
+        /* CHR mode bit swaps which half holds the two 2 KB banks (R0/R1) and
+         * which holds the four 1 KB banks (R2..R5); XOR flips the slot region. */
+        uint8_t inv = (mmc3_bank_select & MMC3_SEL_CHR_MODE) ? MMC3_CHR_INVERT_SLOTS : 0;
+
+        mmc3_copy_chr(mmc3_regs[0] & MMC3_CHR_2K_MASK, 0 ^ inv);
+        mmc3_copy_chr((mmc3_regs[0] & MMC3_CHR_2K_MASK) + 1, 1 ^ inv);
+        mmc3_copy_chr(mmc3_regs[1] & MMC3_CHR_2K_MASK, 2 ^ inv);
+        mmc3_copy_chr((mmc3_regs[1] & MMC3_CHR_2K_MASK) + 1, 3 ^ inv);
+        mmc3_copy_chr(mmc3_regs[2], 4 ^ inv);
+        mmc3_copy_chr(mmc3_regs[3], 5 ^ inv);
+        mmc3_copy_chr(mmc3_regs[4], 6 ^ inv);
+        mmc3_copy_chr(mmc3_regs[5], 7 ^ inv);
+        tile_cache_initialized = false;
+    }
+}
+
+void mmc3_write(uint16_t addr, byte data)
+{
+    bool odd = (addr & 1) != 0;
+
+    if (addr <= 0x9FFF) { /* bank select / bank data */
+        if (!odd) {
+            mmc3_bank_select = data;
+        } else {
+            mmc3_regs[mmc3_bank_select & MMC3_SEL_REG_MASK] = data;
+        }
+        mmc3_apply_banks();
+    } else if (addr <= 0xBFFF) { /* mirroring / PRG-RAM protect */
+        if (!odd) {
+            ppu_set_mirroring((data & MMC3_MIRROR_HORIZONTAL) ? NT_MIRROR_HORIZONTAL
+                                                             : NT_MIRROR_VERTICAL);
+        }
+        /* odd: PRG-RAM protect bits — not emulated. */
+    } else if (addr <= 0xDFFF) { /* IRQ latch / reload */
+        if (!odd) {
+            mmc3_irq_latch = data;
+        } else {
+            mmc3_irq_reload = true;
+        }
+    } else { /* $E000-$FFFF: IRQ disable+ack / enable */
+        if (!odd) {
+            mmc3_irq_enabled = false;
+            pending_irq = false; /* acknowledge a pending line */
+        } else {
+            mmc3_irq_enabled = true;
+        }
+    }
+}
+
+void mapper_scanline(void)
+{
+    if (cart_mapper != MAPPER_MMC3) {
+        return;
+    }
+
+    if (mmc3_irq_counter == 0 || mmc3_irq_reload) {
+        mmc3_irq_counter = mmc3_irq_latch;
+        mmc3_irq_reload = false;
+    } else {
+        mmc3_irq_counter--;
+    }
+
+    if (mmc3_irq_counter == 0 && mmc3_irq_enabled) {
+        pending_irq = true;
+    }
+}
+
 static void set_mapping(uint16_t top_left, uint16_t top_right, uint16_t bottom_left, uint16_t bottom_right)
 {
     nametablee.map[0] = top_left;
@@ -238,6 +371,35 @@ bool cartridge_read_file(const char *rom_name)
         mmc1_control = MMC1_CTRL_RESET_STATE;
         mmc1_chr0 = mmc1_chr1 = mmc1_prg = 0;
         mmc1_apply_banks();
+    } else if (mapper_type == MAPPER_MMC3) {
+        LOG_INF("Mapper 4 (MMC3)");
+
+        mmc3_prg_base = data;
+        mmc3_prg_banks_8k = header->prg_size * (PRG_BANK_SIZE / PRG_SLOT_8K);
+        data += header->prg_size * PRG_BANK_SIZE;
+
+        if (header->chr_size > 0) {
+            mmc3_chr_base = data;
+            mmc3_chr_banks_1k = header->chr_size * (CHR_BANK_SIZE / CHR_SLOT_1K);
+            chr_is_ram = false;
+        } else {
+            chr_is_ram = true; /* 8 KB writable CHR window, no banking */
+            LOG_INF("MMC3 CHR-RAM game");
+        }
+
+        LOG_INF("MMC3: %u PRG banks (8K), %u CHR banks (1K), chr_ram=%d",
+                mmc3_prg_banks_8k, mmc3_chr_banks_1k, (int)chr_is_ram);
+
+        /* Power-on: registers zero, PRG mode 0. The fixed second-to-last/last
+         * banks are placed at $C000/$E000 here so the reset vector is valid
+         * before cpu_reset(). IRQ starts disabled. */
+        memset(mmc3_regs, 0, sizeof(mmc3_regs));
+        mmc3_bank_select = 0;
+        mmc3_irq_latch = 0;
+        mmc3_irq_counter = 0;
+        mmc3_irq_reload = false;
+        mmc3_irq_enabled = false;
+        mmc3_apply_banks();
     } else {
         LOG_ERR("Unsupported mapper: %d", mapper_type);
         return false;

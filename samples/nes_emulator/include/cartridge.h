@@ -27,6 +27,7 @@ const int CHR_BANK_SIZE = 8 * 1024;
 /* iNES mapper numbers this emulator understands. */
 #define MAPPER_NROM 0
 #define MAPPER_MMC1 1
+#define MAPPER_MMC3 4
 
 /* Set by cartridge_read_file() so the bus (memory.cpp) can route CPU writes
  * to $8000-$FFFF into the active mapper instead of treating them as ROM. */
@@ -48,6 +49,25 @@ extern bool chr_is_ram;
  * @param data Byte written; bit 7 resets the shift register, bit 0 is data.
  */
 void mmc1_write(uint16_t addr, byte data);
+
+/**
+ * @brief Feed one CPU write to the MMC3 (mapper 4) registers.
+ *
+ * Bank/mirroring/IRQ registers are selected by the address range and its low
+ * bit (even/odd). Only call for cart_mapper == MAPPER_MMC3.
+ *
+ * @param addr CPU address of the write ($8000-$FFFF).
+ * @param data Byte written.
+ */
+void mmc3_write(uint16_t addr, byte data);
+
+/**
+ * @brief Clock the mapper's scanline IRQ counter (MMC3).
+ *
+ * Call once per visible scanline while rendering is enabled. No-op for mappers
+ * without a scanline counter. May set the CPU IRQ line pending.
+ */
+void mapper_scanline(void);
 
 
 

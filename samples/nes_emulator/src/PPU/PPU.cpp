@@ -6,12 +6,6 @@
 
 static byte *nametable_ptrs[4];
 
-/* MMC1 mirroring modes (control register bits 1-0). */
-#define NT_MIRROR_ONE_LOWER  0
-#define NT_MIRROR_ONE_UPPER  1
-#define NT_MIRROR_VERTICAL   2
-#define NT_MIRROR_HORIZONTAL 3
-
 void ppu_set_mirroring(int mode)
 {
     switch (mode) {
@@ -355,6 +349,13 @@ void ppu_render_scanline()
     }
     else if (scanline >= 0 && scanline < 240)
     {
+        /* Clock the mapper scanline IRQ counter (MMC3) once per visible line
+         * while rendering is on — this is what raster-split effects rely on. */
+        if (mask.render_background || mask.render_sprites)
+        {
+            mapper_scanline();
+        }
+
         memset(sprite_pixel, 0, 256);
         memset(sprite_palette, 0, 256);
         memset(sprite_priority, 0, 256);
