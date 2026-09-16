@@ -163,6 +163,14 @@ void ppu_write_from_cpu(byte addr, byte data);
 byte ppu_read(uint16_t addr);
 void ppu_write(uint16_t addr, byte data);
 
+/**
+ * @brief Set nametable mirroring at runtime (used by MMC1).
+ *
+ * @param mode MMC1 control bits 1-0: 0 one-screen lower, 1 one-screen upper,
+ *             2 vertical, 3 horizontal.
+ */
+void ppu_set_mirroring(int mode);
+
 // PPU Helper functions and variables
 extern byte flip_byte[256];
 void generate_flip_byte_lt();

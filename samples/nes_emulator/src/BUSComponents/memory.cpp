@@ -1,4 +1,5 @@
 #include "memory.h"
+#include "cartridge.h"
 
 // From my understanding, there macros should help the branch predictor.
 // But from my profiling it doesn't seem to be make any difference. From what i read this is dependant on the platform you run the code on.
@@ -18,6 +19,11 @@ byte cpu_read(uint16_t addr)
     else if (LIKELY(addr <= 0x1FFF))
     {
         return CPUram[addr & 0x07FF];
+    }
+    else if (UNLIKELY(addr >= 0x6000 && addr <= 0x7FFF))
+    {
+        // Cartridge PRG-RAM (battery-backed on some MMC1 boards).
+        return PRGram[addr & 0x1FFF];
     }
     else if (UNLIKELY(addr >= 0x2000 && addr <= 0x3FFF))
     {
@@ -47,7 +53,15 @@ void cpu_write(uint16_t addr, byte data)
 {
     if (addr >= 0x8000 && addr <= 0xFFFF)
     {
-        PRGrom[addr & (0x7FFF)] = data;
+        if (cart_mapper == MAPPER_MMC1)
+        {
+            mmc1_write(addr, data);
+        }
+        // Mapper 0: $8000+ is ROM, writes are ignored.
+    }
+    else if (addr >= 0x6000 && addr <= 0x7FFF)
+    {
+        PRGram[addr & 0x1FFF] = data;
     }
     else if (addr >= 0x0000 && addr <= 0x1FFF)
     {
@@ -95,5 +109,6 @@ void memory_init()
     memset(CHRrom, 0, 0x4000);
     memset(CPUram, 0, 0x0800);
     memset(PPUram, 0, 0x3FFF);
+    memset(PRGram, 0, 0x2000);
     
 }

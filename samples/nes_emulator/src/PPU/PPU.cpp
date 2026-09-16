@@ -6,6 +6,38 @@
 
 static byte *nametable_ptrs[4];
 
+/* MMC1 mirroring modes (control register bits 1-0). */
+#define NT_MIRROR_ONE_LOWER  0
+#define NT_MIRROR_ONE_UPPER  1
+#define NT_MIRROR_VERTICAL   2
+#define NT_MIRROR_HORIZONTAL 3
+
+void ppu_set_mirroring(int mode)
+{
+    switch (mode) {
+    case NT_MIRROR_ONE_LOWER:
+        nametable_ptrs[0] = nametable_ptrs[1] = nametable[0];
+        nametable_ptrs[2] = nametable_ptrs[3] = nametable[0];
+        break;
+    case NT_MIRROR_ONE_UPPER:
+        nametable_ptrs[0] = nametable_ptrs[1] = nametable[1];
+        nametable_ptrs[2] = nametable_ptrs[3] = nametable[1];
+        break;
+    case NT_MIRROR_VERTICAL:
+        nametable_ptrs[0] = nametable[0];
+        nametable_ptrs[1] = nametable[1];
+        nametable_ptrs[2] = nametable[0];
+        nametable_ptrs[3] = nametable[1];
+        break;
+    case NT_MIRROR_HORIZONTAL:
+        nametable_ptrs[0] = nametable[0];
+        nametable_ptrs[1] = nametable[0];
+        nametable_ptrs[2] = nametable[1];
+        nametable_ptrs[3] = nametable[1];
+        break;
+    }
+}
+
 void ppu_init()
 {
     current_frame = 0;
@@ -129,10 +161,14 @@ void ppu_write(uint16_t addr, uint8_t data)
     }
     else if (addr >= 0x0000 && addr <= 0x1FFF)
     {
-        // This should just get ignored, as some games attempt to write here for some reason.
-        // Mapper0 games dont write to this zone
-        // For other mappers, the following should happen:
-        // ppu_write(addr, data);
+        // CHR-RAM games (e.g. many MMC1 titles) render tiles they write here at
+        // runtime; invalidate the decoded-tile cache so it rebuilds. CHR-ROM
+        // carts leave chr_is_ram false and ignore the write.
+        if (chr_is_ram)
+        {
+            CHRrom[addr] = data;
+            tile_cache_initialized = false;
+        }
         return;
     }
 }
