@@ -60,8 +60,8 @@ enum ad463x_id {
  * both channels interleaved: [CH0 uint32][CH1 uint32]. The HDL left-aligns
  * the real bits in each uint32; sign-extend with (int32_t)word >> (32 - real_bits).
  *
- * Cannot be called while the Zephyr ADC API shim has armed the cyclic ring
- * (i.e. after the first adc_read() call). The two paths are mutually exclusive.
+ * Stops the cyclic ring armed by the Zephyr ADC API shim, if running; the next
+ * adc_read() re-arms it.
  *
  * @param dev  AD463x device.
  * @param buf  Destination buffer. Must be 32-byte aligned and __nocache if
@@ -71,6 +71,26 @@ enum ad463x_id {
  * @return Number of bytes written on success, or a negative errno.
  */
 ssize_t ad463x_read_buffer(const struct device *dev, void *buf, size_t len);
+
+/**
+ * Same as ad463x_read_buffer(), but skips the pre-DMA flush of all but the
+ * edge cache lines. Only valid if the CPU has not written @p buf since it was
+ * last flushed or captured into.
+ */
+ssize_t ad463x_read_buffer_clean(const struct device *dev, void *buf, size_t len);
+
+/**
+ * Gapless capture: starts a cyclic DMA ring on first call and keeps it running
+ * across calls, so consecutive reads are sample-contiguous. Blocks until @p len
+ * bytes (rounded down to whole samples) are copied. If the reader falls a full
+ * ring behind, the stream restarts and samples are dropped.
+ *
+ * @return Number of bytes written on success, or a negative errno.
+ */
+ssize_t ad463x_stream_read(const struct device *dev, void *buf, size_t len);
+
+/** Stop the stream started by ad463x_stream_read(). */
+void ad463x_stream_stop(const struct device *dev);
 
 /**
  * Returns the raw bytes the HDL produces per CNV pulse (both channels combined).

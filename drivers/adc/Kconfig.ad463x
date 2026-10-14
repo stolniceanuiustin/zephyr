@@ -16,6 +16,20 @@ config ADC_AD463X
 
 if ADC_AD463X
 
+config ADC_AD463X_STREAM_RING_SIZE
+	int "Gapless stream ring size in bytes"
+	default 524288
+	help
+	  Cyclic DMA ring behind ad463x_stream_read(). A larger ring tolerates
+	  longer reader stalls before samples are dropped.
+
+config ADC_AD463X_STREAM_SLOT_SIZE
+	int "Gapless stream slot size in bytes"
+	default 32768
+	help
+	  Granularity at which ad463x_stream_read() picks data up from the
+	  ring. Must divide the ring size and be a multiple of 32.
+
 module = ADC_AD463X
 module-str = adc_ad463x
 source "subsys/logging/Kconfig.template.log_config"

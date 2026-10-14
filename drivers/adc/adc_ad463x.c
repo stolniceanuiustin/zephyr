@@ -156,6 +156,7 @@ struct ad463x_config {
 	const char *part;
 	struct gpio_dt_spec reset_gpio;
 	struct gpio_dt_spec cnv_gpio;
+	uint8_t *stream_ring;
 };
 
 /*
@@ -175,6 +176,10 @@ struct ad463x_data {
 	uint8_t real_bits_precision;
 	bool chip_initialized;
 	bool continuous_running;
+	bool stream_running;
+	bool stream_ready;
+	uint32_t stream_slot;
+	size_t stream_off;
 	struct k_mutex lock;
 	struct k_sem dma_done; /* signalled from the DMA completion callback */
 	uint32_t cont_commands[8];
@@ -547,7 +552,8 @@ static int ad463x_ensure_chip_ready(const struct device *dev)
  *   6. SHARED_TWO_CH post-process: the HDL emits big-endian words on a
  *      single lane; convert in place.
  */
-static int ad463x_read_data(const struct device *dev, uint32_t *buf, uint16_t samples)
+static int ad463x_read_data(const struct device *dev, uint32_t *buf, uint32_t samples,
+			    bool buf_clean)
 {
 	const struct ad463x_config *cfg = dev->config;
 	struct ad463x_data *data = dev->data;
@@ -583,7 +589,12 @@ static int ad463x_read_data(const struct device *dev, uint32_t *buf, uint16_t sa
 	msg.num_commands = cmd_idx;
 
 	/* Flush before DMA to avoid stale dirty cache lines racing the write. */
-	sys_cache_data_flush_range(buf, total_bytes);
+	if (buf_clean) {
+		sys_cache_data_flush_range(buf, 1);
+		sys_cache_data_flush_range((uint8_t *)buf + total_bytes - 1, 1);
+	} else {
+		sys_cache_data_flush_range(buf, total_bytes);
+	}
 
 	ret = spi_engine_offload_load(cfg->bus.bus, &msg);
 	if (ret) {
@@ -645,7 +656,7 @@ static int ad463x_read_data(const struct device *dev, uint32_t *buf, uint16_t sa
 		goto out_offload;
 	}
 
-	timeout_ms = DIV_ROUND_UP((uint32_t)samples * 1000U, cfg->sample_rate_hz);
+	timeout_ms = DIV_ROUND_UP((uint64_t)samples * 1000U, cfg->sample_rate_hz);
 	timeout_ms = timeout_ms * 4 + 5;
 
 	if (k_sem_take(&data->dma_done, K_MSEC(timeout_ms)) != 0) {
@@ -698,11 +709,26 @@ out_dmac:
  *
  * @return Number of bytes written on success, or a negative errno.
  */
-ssize_t ad463x_read_buffer(const struct device *dev, void *buf, size_t len)
+/* Tear down the shim ring or the stream. Caller holds data->lock. */
+static void ad463x_cyclic_stop_locked(const struct device *dev)
+{
+	const struct ad463x_config *cfg = dev->config;
+	struct ad463x_data *data = dev->data;
+
+	(void)pwm_set(cfg->pwmgen, cfg->pwmgen_channel, 0, 0, PWM_POLARITY_NORMAL);
+	(void)pwm_set(cfg->pwmgen, cfg->pwmgen_channel + 1, 0, 0, PWM_POLARITY_NORMAL);
+	spi_engine_offload_enable(cfg->bus.bus, false);
+	dma_stop(cfg->dmac, cfg->dma_channel);
+	data->continuous_running = false;
+	data->stream_running = false;
+}
+
+static ssize_t ad463x_read_buffer_impl(const struct device *dev, void *buf, size_t len,
+				       bool buf_clean)
 {
 	struct ad463x_data *data = dev->data;
 	size_t max_samples;
-	uint16_t samples;
+	uint32_t samples;
 	int ret;
 
 	if (buf == NULL) {
@@ -714,10 +740,8 @@ ssize_t ad463x_read_buffer(const struct device *dev, void *buf, size_t len)
 
 	k_mutex_lock(&data->lock, K_FOREVER);
 
-	if (data->continuous_running) {
-		LOG_ERR("buffer capture rejected: cyclic ring is active");
-		k_mutex_unlock(&data->lock);
-		return -EBUSY;
+	if (data->continuous_running || data->stream_running) {
+		ad463x_cyclic_stop_locked(dev);
 	}
 
 	max_samples = len / data->bytes_per_sample;
@@ -727,14 +751,14 @@ ssize_t ad463x_read_buffer(const struct device *dev, void *buf, size_t len)
 		return -ENOMEM;
 	}
 
-	if (max_samples > UINT16_MAX) {
-		max_samples = UINT16_MAX;
+	if (max_samples > UINT32_MAX / data->bytes_per_sample) {
+		max_samples = UINT32_MAX / data->bytes_per_sample;
 	}
-	samples = (uint16_t)max_samples;
+	samples = (uint32_t)max_samples;
 
 	ret = ad463x_ensure_chip_ready(dev);
 	if (ret == 0) {
-		ret = ad463x_read_data(dev, (uint32_t *)buf, samples);
+		ret = ad463x_read_data(dev, (uint32_t *)buf, samples, buf_clean);
 	}
 
 	k_mutex_unlock(&data->lock);
@@ -743,6 +767,16 @@ ssize_t ad463x_read_buffer(const struct device *dev, void *buf, size_t len)
 		return ret;
 	}
 	return (ssize_t)samples * data->bytes_per_sample;
+}
+
+ssize_t ad463x_read_buffer(const struct device *dev, void *buf, size_t len)
+{
+	return ad463x_read_buffer_impl(dev, buf, len, false);
+}
+
+ssize_t ad463x_read_buffer_clean(const struct device *dev, void *buf, size_t len)
+{
+	return ad463x_read_buffer_impl(dev, buf, len, true);
 }
 
 size_t ad463x_get_frame_size(const struct device *dev)
@@ -786,9 +820,10 @@ uint8_t ad463x_get_real_bits(const struct device *dev)
  */
 
 /*
- * Arm the cyclic capture. Idempotent — second call is a no-op.
+ * Arm offload, cyclic DMA into buf and the CNV train. Caller holds data->lock
+ * and has brought the chip up.
  */
-static int ad463x_continuous_start(const struct device *dev)
+static int ad463x_cyclic_start_locked(const struct device *dev, void *buf, uint32_t bytes)
 {
 	const struct ad463x_config *cfg = dev->config;
 	struct ad463x_data *data = dev->data;
@@ -797,23 +832,9 @@ static int ad463x_continuous_start(const struct device *dev)
 	uint32_t period_ns;
 	int ret;
 
-	k_mutex_lock(&data->lock, K_FOREVER);
-
-	if (data->continuous_running) {
-		k_mutex_unlock(&data->lock);
-		return 0;
-	}
-
 	if (cfg->sample_rate_hz == 0) {
 		LOG_ERR("adi,sample-rate-hz must be > 0");
-		k_mutex_unlock(&data->lock);
 		return -EINVAL;
-	}
-
-	ret = ad463x_ensure_chip_ready(dev);
-	if (ret) {
-		k_mutex_unlock(&data->lock);
-		return ret;
 	}
 
 	data->cont_commands[cmd_idx++] = SPI_ENGINE_CMD_BUILD_CONFIG_CLK_DIV(0);
@@ -826,19 +847,17 @@ static int ad463x_continuous_start(const struct device *dev)
 	msg.commands = data->cont_commands;
 	msg.num_commands = cmd_idx;
 
-	sys_cache_data_flush_range(data->ring, AD463X_CONT_RING_BYTES);
+	sys_cache_data_flush_range(buf, bytes);
 
 	ret = spi_engine_offload_load(cfg->bus.bus, &msg);
 	if (ret) {
 		LOG_ERR("offload_load failed (%d)", ret);
-		k_mutex_unlock(&data->lock);
 		return ret;
 	}
 
-	ret = ad463x_dma_arm(dev, data->ring, AD463X_CONT_RING_BYTES, true);
+	ret = ad463x_dma_arm(dev, buf, bytes, true);
 	if (ret) {
 		LOG_ERR("dma arm (cyclic) failed (%d)", ret);
-		k_mutex_unlock(&data->lock);
 		return ret;
 	}
 
@@ -854,7 +873,6 @@ static int ad463x_continuous_start(const struct device *dev)
 	if (ret) {
 		LOG_ERR("offload_enable failed (%d)", ret);
 		dma_stop(cfg->dmac, cfg->dma_channel);
-		k_mutex_unlock(&data->lock);
 		return ret;
 	}
 
@@ -879,14 +897,201 @@ static int ad463x_continuous_start(const struct device *dev)
 		LOG_ERR("pwm_set failed (%d)", ret);
 		spi_engine_offload_enable(cfg->bus.bus, false);
 		dma_stop(cfg->dmac, cfg->dma_channel);
-		k_mutex_unlock(&data->lock);
 		return ret;
 	}
 
-	data->continuous_running = true;
-	k_mutex_unlock(&data->lock);
-	LOG_INF("AD463x continuous capture armed at %u Hz", cfg->sample_rate_hz);
 	return 0;
+}
+
+/* Arm the cyclic capture for the ADC API shim. Idempotent. */
+static int ad463x_continuous_start(const struct device *dev)
+{
+	const struct ad463x_config *cfg = dev->config;
+	struct ad463x_data *data = dev->data;
+	int ret = 0;
+
+	k_mutex_lock(&data->lock, K_FOREVER);
+
+	if (data->continuous_running) {
+		goto out;
+	}
+	if (data->stream_running) {
+		ret = -EBUSY;
+		goto out;
+	}
+
+	ret = ad463x_ensure_chip_ready(dev);
+	if (ret == 0) {
+		ret = ad463x_cyclic_start_locked(dev, data->ring, AD463X_CONT_RING_BYTES);
+	}
+	if (ret == 0) {
+		data->continuous_running = true;
+		LOG_INF("AD463x continuous capture armed at %u Hz", cfg->sample_rate_hz);
+	}
+out:
+	k_mutex_unlock(&data->lock);
+	return ret;
+}
+
+/*
+ * Gapless stream: one cyclic DMA over a ring of slots that is never stopped
+ * between reads. The last 8 bytes of each slot hold a marker the DMA
+ * overwrites when it finishes that slot, so a slot is ready once its marker is
+ * gone. The previous slot's marker is re-armed after that slot is consumed and
+ * the DMA only rewrites it right before this slot, so if it is gone too, this
+ * slot has been overrun.
+ */
+#define AD463X_STREAM_RING  CONFIG_ADC_AD463X_STREAM_RING_SIZE
+#define AD463X_STREAM_SLOT  CONFIG_ADC_AD463X_STREAM_SLOT_SIZE
+#define AD463X_STREAM_SLOTS (AD463X_STREAM_RING / AD463X_STREAM_SLOT)
+#define AD463X_STREAM_MARK0 0xa5a5a5a5U
+#define AD463X_STREAM_MARK1 0x5a5a5a5aU
+
+BUILD_ASSERT(AD463X_STREAM_RING % AD463X_STREAM_SLOT == 0, "slot size must divide ring size");
+BUILD_ASSERT(AD463X_STREAM_SLOTS >= 2, "stream ring needs at least two slots");
+BUILD_ASSERT(AD463X_STREAM_SLOT % 32 == 0, "slot size must be cache-line aligned");
+
+static uint32_t *ad463x_stream_mark(const struct device *dev, uint32_t slot)
+{
+	const struct ad463x_config *cfg = dev->config;
+
+	return (uint32_t *)(cfg->stream_ring + (slot + 1U) * AD463X_STREAM_SLOT) - 2;
+}
+
+static void ad463x_stream_arm(uint32_t *mark)
+{
+	mark[0] = AD463X_STREAM_MARK0;
+	mark[1] = AD463X_STREAM_MARK1;
+	sys_cache_data_flush_range(mark, 2 * sizeof(uint32_t));
+}
+
+static bool ad463x_stream_hit(uint32_t *mark)
+{
+	sys_cache_data_invd_range(mark, 2 * sizeof(uint32_t));
+	return mark[0] != AD463X_STREAM_MARK0 || mark[1] != AD463X_STREAM_MARK1;
+}
+
+static int ad463x_stream_start_locked(const struct device *dev)
+{
+	const struct ad463x_config *cfg = dev->config;
+	struct ad463x_data *data = dev->data;
+	int ret;
+
+	for (uint32_t i = 0; i < AD463X_STREAM_SLOTS; i++) {
+		uint32_t *mark = ad463x_stream_mark(dev, i);
+
+		mark[0] = AD463X_STREAM_MARK0;
+		mark[1] = AD463X_STREAM_MARK1;
+	}
+	data->stream_slot = 0;
+	data->stream_off = 0;
+	data->stream_ready = false;
+
+	/* Flushes the whole ring, markers included. */
+	ret = ad463x_cyclic_start_locked(dev, cfg->stream_ring, AD463X_STREAM_RING);
+	if (ret == 0) {
+		data->stream_running = true;
+	}
+	return ret;
+}
+
+ssize_t ad463x_stream_read(const struct device *dev, void *buf, size_t len)
+{
+	const struct ad463x_config *cfg = dev->config;
+	struct ad463x_data *data = dev->data;
+	uint8_t *dst = buf;
+	size_t done = 0;
+	uint32_t timeout_ms;
+	int ret = 0;
+
+	if (buf == NULL) {
+		return -EINVAL;
+	}
+	if (data->bytes_per_sample == 0 || AD463X_STREAM_RING % data->bytes_per_sample) {
+		return -ENOTSUP;
+	}
+	len -= len % data->bytes_per_sample;
+	if (len == 0) {
+		return -ENOMEM;
+	}
+
+	k_mutex_lock(&data->lock, K_FOREVER);
+
+	if (data->continuous_running) {
+		ad463x_cyclic_stop_locked(dev);
+	}
+	if (!data->stream_running) {
+		ret = ad463x_ensure_chip_ready(dev);
+		if (ret == 0) {
+			ret = ad463x_stream_start_locked(dev);
+		}
+	}
+
+	timeout_ms = (uint64_t)AD463X_STREAM_RING * 1000U /
+		     ((uint64_t)data->bytes_per_sample * MAX(cfg->sample_rate_hz, 1U)) * 2U + 10U;
+
+	while (ret == 0 && done < len) {
+		uint32_t slot = data->stream_slot;
+		uint32_t *prev = ad463x_stream_mark(dev, (slot + AD463X_STREAM_SLOTS - 1U) %
+							   AD463X_STREAM_SLOTS);
+		uint8_t *src = cfg->stream_ring + slot * AD463X_STREAM_SLOT;
+		size_t n;
+
+		if (!data->stream_ready) {
+			int64_t deadline = k_uptime_get() + timeout_ms;
+
+			while (!ad463x_stream_hit(ad463x_stream_mark(dev, slot))) {
+				if (k_uptime_get() > deadline) {
+					LOG_ERR("stream slot %u not filled in %u ms", slot,
+						timeout_ms);
+					ret = -ETIMEDOUT;
+					break;
+				}
+				k_usleep(100);
+			}
+			if (ret) {
+				break;
+			}
+			sys_cache_data_invd_range(src, AD463X_STREAM_SLOT);
+			data->stream_ready = true;
+		}
+
+		n = MIN(len - done, AD463X_STREAM_SLOT - data->stream_off);
+		if (!ad463x_stream_hit(prev)) {
+			memcpy(dst + done, src + data->stream_off, n);
+		}
+		/* Recheck after the copy: the DMA may have lapped us during it. */
+		if (ad463x_stream_hit(prev)) {
+			LOG_WRN("stream overrun at slot %u, restarting", slot);
+			ad463x_cyclic_stop_locked(dev);
+			ret = ad463x_stream_start_locked(dev);
+			continue;
+		}
+
+		done += n;
+		data->stream_off += n;
+		if (data->stream_off == AD463X_STREAM_SLOT) {
+			ad463x_stream_arm(ad463x_stream_mark(dev, slot));
+			data->stream_slot = (slot + 1U) % AD463X_STREAM_SLOTS;
+			data->stream_off = 0;
+			data->stream_ready = false;
+		}
+	}
+
+	k_mutex_unlock(&data->lock);
+
+	return ret ? ret : (ssize_t)done;
+}
+
+void ad463x_stream_stop(const struct device *dev)
+{
+	struct ad463x_data *data = dev->data;
+
+	k_mutex_lock(&data->lock, K_FOREVER);
+	if (data->stream_running) {
+		ad463x_cyclic_stop_locked(dev);
+	}
+	k_mutex_unlock(&data->lock);
 }
 
 /* Accepts channel_id 0/1 with external reference and unity gain only. */
@@ -1050,6 +1255,7 @@ static int ad463x_init(const struct device *dev)
 
 #define AD463X_INIT(n)                                                                             \
 	AD463X_API(n)                                                                              \
+	static uint8_t ad463x_stream_ring_##n[AD463X_STREAM_RING] __aligned(32);                   \
 	static struct ad463x_data ad463x_data_##n;                                                 \
 	static const struct ad463x_config ad463x_config_##n = {                                    \
 		.bus = SPI_DT_SPEC_INST_GET(n, SPI_OP_MODE_MASTER | SPI_WORD_SET(8) |              \
@@ -1071,6 +1277,7 @@ static int ad463x_init(const struct device *dev)
 		.part = DT_INST_PROP(n, adi_part),                                                 \
 		.reset_gpio = GPIO_DT_SPEC_INST_GET_OR(n, reset_gpios, {0}),                       \
 		.cnv_gpio = GPIO_DT_SPEC_INST_GET_OR(n, cnv_gpios, {0}),                           \
+		.stream_ring = ad463x_stream_ring_##n,                                             \
 	};                                                                                         \
 	DEVICE_DT_INST_DEFINE(n, ad463x_init, NULL, &ad463x_data_##n, &ad463x_config_##n,          \
 			      POST_KERNEL, CONFIG_KERNEL_INIT_PRIORITY_DEVICE,                     \
