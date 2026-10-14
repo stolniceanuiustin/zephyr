@@ -299,7 +299,7 @@ manifest:
       revision: 4f141f443d66cfa06269edc1bcf213e86136d0e6
     - name: libiio
       url: https://github.com/ralucabozdog/libiio
-      revision: zedboard-full-speed-iiod
+      revision: zedboard-full-speed-iiod-rebased
       path: modules/lib/libiio
     - name: liblc3
       revision: 48bbd3eacd36e99a57317a0a4867002e0b09e183
