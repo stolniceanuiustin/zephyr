@@ -10,6 +10,7 @@ config XLNX_SDHC
 	select EVENTS
 	select CLOCK_CONTROL
 	select CLOCK_CONTROL_FIXED_RATE_CLOCK
+	select CACHE_MANAGEMENT if DCACHE
 	help
 	  Enable xilinx SD/EMMC host controller driver
 

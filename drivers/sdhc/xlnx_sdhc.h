@@ -22,6 +22,7 @@
 #define XLNX_SDHC_DESC_TRAN	BIT(5)
 
 /* Bit map and constant values for ADMA2 Configuration */
+#define XLNX_SDHC_ADMA2_32		0x10U
 #define XLNX_SDHC_ADMA2_64		0x18U
 #define XLNX_SDHC_DESC_MAX_LENGTH	65536U
 
@@ -78,6 +79,7 @@
 #define XLNX_SDHC_SLOT_TYPE_SHIFT		30U
 #define XLNX_SDHC_SLOT_TYPE_GET			3U
 #define XLNX_SDHC_8BIT_SUPPORT			18U
+#define XLNX_SDHC_64BIT_SYS_BUS_SUPPORT		28U
 #define XLNX_SDHC_4BIT_SUPPORT			18U
 #define XLNX_SDHC_SDR400_SUPPORT		63U
 
@@ -141,6 +143,8 @@
 
 /* Bit map for clock configuration */
 #define XLNX_SDHC_CC_DIV_SHIFT			0x8U
+#define XLNX_SDHC_SPEC_VER_MASK			0xFFU
+#define XLNX_SDHC_SPEC_VER_3_0			0x2U
 #define XLNX_SDHC_CC_EXT_MAX_DIV_CNT		0x7FEU
 #define XLNX_SDHC_CC_SDCLK_FREQ_SEL		0xFFU
 #define XLNX_SDHC_CC_SDCLK_FREQ_SEL_EXT		0x3U
@@ -285,5 +289,13 @@ struct reg_base {
 	volatile uint32_t reserved3[15261];
 	volatile uint32_t itap_dly; /**< Input Tap Delay Select */
 	volatile uint32_t otap_dly; /**< Output Tap Delay Select */
-} __packed;
+};
+
+/* Natural alignment gives the register layout; 16-bit fields need 16-bit accesses */
+BUILD_ASSERT(offsetof(struct reg_base, clock_ctrl) == 0x2CU);
+BUILD_ASSERT(offsetof(struct reg_base, capabilities) == 0x40U);
+BUILD_ASSERT(offsetof(struct reg_base, adma_sys_addr) == 0x58U);
+BUILD_ASSERT(offsetof(struct reg_base, host_cntrl_version) == 0xFEU);
+BUILD_ASSERT(offsetof(struct reg_base, cq_ver) == 0x200U);
+BUILD_ASSERT(offsetof(struct reg_base, itap_dly) == 0xF0F8U);
 #endif /* __XLNX_SDHC_H__ */

@@ -48,6 +48,15 @@ typedef struct {
 } __packed adma2_descriptor;
 
 /**
+ * @brief ADMA2 descriptor for hosts without 64-bit system bus support.
+ */
+typedef struct {
+	uint16_t attribute;
+	uint16_t length;
+	uint32_t address;
+} __packed adma2_descriptor32;
+
+/**
  * @brief Holds device private data.
  */
 struct sd_data {
@@ -60,6 +69,10 @@ struct sd_data {
 	struct k_event irq_event;
 	/**< Used to identify HC internal phy register */
 	bool has_phy;
+	/**< Host supports 64-bit ADMA2 descriptors */
+	bool adma64;
+	/**< Host controller specification version */
+	uint8_t spec_ver;
 	/**< transfer mode and data direction */
 	uint16_t transfermode;
 	/**< Maximum input clock supported by HC */
@@ -242,20 +255,40 @@ static int xlnx_sdhc_setup_adma(const struct device *dev, const struct sdhc_data
 		return -ENOTSUP;
 	}
 
-	for (descnum = 0U; descnum < (adma_table - 1U); descnum++) {
-		dev_data->adma2_descrtbl[descnum].address =
-			((uintptr_t)buff + (descnum * XLNX_SDHC_DESC_MAX_LENGTH));
-		dev_data->adma2_descrtbl[descnum].attribute =
-			XLNX_SDHC_DESC_TRAN | XLNX_SDHC_DESC_VALID;
-		dev_data->adma2_descrtbl[descnum].length = 0U;
-	}
+	if (!dev_data->adma64) {
+		adma2_descriptor32 *desc32 = (adma2_descriptor32 *)dev_data->adma2_descrtbl;
 
-	dev_data->adma2_descrtbl[adma_table - 1U].address =
-		((uintptr_t)buff + (descnum * XLNX_SDHC_DESC_MAX_LENGTH));
-	dev_data->adma2_descrtbl[adma_table - 1U].attribute = XLNX_SDHC_DESC_TRAN |
-		XLNX_SDHC_DESC_END | XLNX_SDHC_DESC_VALID;
-	dev_data->adma2_descrtbl[adma_table - 1U].length =
-		((data->blocks * data->block_size) - (descnum * XLNX_SDHC_DESC_MAX_LENGTH));
+		for (descnum = 0U; descnum < (adma_table - 1U); descnum++) {
+			desc32[descnum].address =
+				((uintptr_t)buff + (descnum * XLNX_SDHC_DESC_MAX_LENGTH));
+			desc32[descnum].attribute = XLNX_SDHC_DESC_TRAN | XLNX_SDHC_DESC_VALID;
+			desc32[descnum].length = 0U;
+		}
+
+		desc32[adma_table - 1U].address =
+			((uintptr_t)buff + (descnum * XLNX_SDHC_DESC_MAX_LENGTH));
+		desc32[adma_table - 1U].attribute = XLNX_SDHC_DESC_TRAN | XLNX_SDHC_DESC_END |
+						    XLNX_SDHC_DESC_VALID;
+		desc32[adma_table - 1U].length =
+			((data->blocks * data->block_size) - (descnum * XLNX_SDHC_DESC_MAX_LENGTH));
+		desc_size = adma_table * sizeof(desc32[0]);
+	} else {
+		for (descnum = 0U; descnum < (adma_table - 1U); descnum++) {
+			dev_data->adma2_descrtbl[descnum].address =
+				((uintptr_t)buff + (descnum * XLNX_SDHC_DESC_MAX_LENGTH));
+			dev_data->adma2_descrtbl[descnum].attribute =
+				XLNX_SDHC_DESC_TRAN | XLNX_SDHC_DESC_VALID;
+			dev_data->adma2_descrtbl[descnum].length = 0U;
+		}
+
+		dev_data->adma2_descrtbl[adma_table - 1U].address =
+			((uintptr_t)buff + (descnum * XLNX_SDHC_DESC_MAX_LENGTH));
+		dev_data->adma2_descrtbl[adma_table - 1U].attribute = XLNX_SDHC_DESC_TRAN |
+			XLNX_SDHC_DESC_END | XLNX_SDHC_DESC_VALID;
+		dev_data->adma2_descrtbl[adma_table - 1U].length =
+			((data->blocks * data->block_size) - (descnum * XLNX_SDHC_DESC_MAX_LENGTH));
+		desc_size = adma_table * sizeof(dev_data->adma2_descrtbl[0]);
+	}
 
 	/*
 	 * The SDHC reads the ADMA2 descriptor table through DMA.
@@ -263,7 +296,6 @@ static int xlnx_sdhc_setup_adma(const struct device *dev, const struct sdhc_data
 	 * descriptor writes are visible to the controller before
 	 * programming ADMA_SYS_ADDR.
 	 */
-	desc_size = adma_table * sizeof(dev_data->adma2_descrtbl[0]);
 	ret = xlnx_sdhc_cache_flush_range(dev_data->adma2_descrtbl, desc_size);
 	if (ret != 0) {
 		LOG_ERR("Failed to flush ADMA descriptor table: ret=%d desc=%p size=%u",
@@ -747,8 +779,13 @@ static int xlnx_sdhc_host_props(const struct device *dev, struct sdhc_host_props
 	props->host_caps.sdr104_support = XLNX_SDHC_GET_HOST_PROP_BIT(cap,
 			XLNX_SDHC_SDR104_SUPPORT);
 	props->host_caps.sdr50_support = XLNX_SDHC_GET_HOST_PROP_BIT(cap, XLNX_SDHC_SDR50_SUPPORT);
-	props->host_caps.slot_type = (uint8_t)((cap >> XLNX_SDHC_SLOT_TYPE_SHIFT) &
-			XLNX_SDHC_SLOT_TYPE_GET);
+	/* Slot type is an SD 3.0 field, SD 2.0 hosts use bits 31:30 for SPI mode */
+	if (dev_data->spec_ver >= XLNX_SDHC_SPEC_VER_3_0) {
+		props->host_caps.slot_type = (uint8_t)((cap >> XLNX_SDHC_SLOT_TYPE_SHIFT) &
+				XLNX_SDHC_SLOT_TYPE_GET);
+	} else {
+		props->host_caps.slot_type = 0U;
+	}
 	props->host_caps.bus_8_bit_support = XLNX_SDHC_GET_HOST_PROP_BIT(cap,
 			XLNX_SDHC_8BIT_SUPPORT);
 	props->bus_4_bit_support = XLNX_SDHC_GET_HOST_PROP_BIT(cap,
@@ -769,10 +806,24 @@ static int xlnx_sdhc_host_props(const struct device *dev, struct sdhc_host_props
  * @brief
  * Calculate clock value based on the selected speed
  */
-static uint16_t xlnx_sdhc_cal_clock(uint32_t maxclock, enum sdhc_clock_speed speed)
+static uint16_t xlnx_sdhc_cal_clock(uint32_t maxclock, enum sdhc_clock_speed speed,
+				    uint8_t spec_ver)
 {
 	uint16_t divcnt;
 	uint16_t divisor = 0U, clockval = 0U;
+
+	/* SD 2.0 hosts take only power-of-two divisors: SDCLK = base / (2 * N) */
+	if (spec_ver < XLNX_SDHC_SPEC_VER_3_0) {
+		if (maxclock > speed) {
+			for (divisor = 1U; divisor < 0x80U; divisor <<= 1U) {
+				if ((maxclock / (2U * divisor)) <= speed) {
+					break;
+				}
+			}
+		}
+
+		return (divisor & XLNX_SDHC_CC_SDCLK_FREQ_SEL) << XLNX_SDHC_CC_DIV_SHIFT;
+	}
 
 	if (maxclock <= speed) {
 		divisor = 0U;
@@ -890,7 +941,7 @@ static int xlnx_sdhc_set_clock(const struct device *dev, enum sdhc_clock_speed s
 	}
 
 	/* Calculate clock */
-	value = xlnx_sdhc_cal_clock(dev_data->maxclock, speed);
+	value = xlnx_sdhc_cal_clock(dev_data->maxclock, speed, dev_data->spec_ver);
 	value |= XLNX_SDHC_CC_INT_CLK_EN_MASK;
 
 	/* Configure dll clock */
@@ -1185,7 +1236,7 @@ static void xlnx_sdhc_config_emmc_itap_delay(const struct device *dev,
  * @brief
  * Set speed mode and config tap delay
  */
-static int8_t xlnx_sdhc_set_timing(const struct device *dev, enum sdhc_timing_mode timing)
+static int xlnx_sdhc_set_timing(const struct device *dev, enum sdhc_timing_mode timing)
 {
 	volatile struct reg_base *reg = (struct reg_base *)DEVICE_MMIO_GET(dev);
 	const struct sd_data *dev_data = dev->data;
@@ -1225,6 +1276,11 @@ static int8_t xlnx_sdhc_set_timing(const struct device *dev, enum sdhc_timing_mo
 
 	default:
 		return -EINVAL;
+	}
+
+	/* SD 2.0 hosts have neither UHS modes nor tap delay registers */
+	if (dev_data->spec_ver < XLNX_SDHC_SPEC_VER_3_0) {
+		return (timing > SDHC_TIMING_HS) ? -ENOTSUP : 0;
 	}
 
 	/* Select one of UHS mode */
@@ -1320,6 +1376,7 @@ static int xlnx_sdhc_host_reset(const struct device *dev)
 {
 	const struct xlnx_sdhc_config *config = dev->config;
 	volatile struct reg_base *reg = (struct reg_base *)DEVICE_MMIO_GET(dev);
+	struct sd_data *dev_data = dev->data;
 	int ret;
 
 	/* Perform software reset  */
@@ -1350,8 +1407,11 @@ static int xlnx_sdhc_host_reset(const struct device *dev)
 	/* Data line time out interval */
 	reg->timeout_ctrl = XLNX_SDHC_DAT_LINE_TIMEOUT;
 
-	/* Select ADMA2 */
-	reg->host_ctrl1 = XLNX_SDHC_ADMA2_64;
+	dev_data->spec_ver = reg->host_cntrl_version & XLNX_SDHC_SPEC_VER_MASK;
+
+	/* Select ADMA2, 32-bit descriptors unless the host has a 64-bit system bus */
+	dev_data->adma64 = (reg->capabilities & BIT64(XLNX_SDHC_64BIT_SYS_BUS_SUPPORT)) != 0U;
+	reg->host_ctrl1 = dev_data->adma64 ? XLNX_SDHC_ADMA2_64 : XLNX_SDHC_ADMA2_32;
 
 	reg->block_size = XLNX_SDHC_BLK_SIZE_512;
 
